@@ -1,0 +1,144 @@
+# ============================================================
+# FaultTreeAI 数据库 Schema
+# 对应 PostgreSQL 18 + pgvector
+# ============================================================
+# 使用方式：
+#   1. 安装 PostgreSQL 18 + pgvector 扩展
+#   2. psql -U postgres -d postgres -c "CREATE DATABASE faulttree;"
+#   3. psql -U postgres -d faulttree -f scripts/init_db.sql
+# ============================================================
+
+-- 启用 pgvector 扩展
+CREATE EXTENSION IF NOT EXISTS vector;
+
+-- =============================================
+-- 1. 文档表（原始文件元数据）
+-- =============================================
+CREATE TABLE IF NOT EXISTS documents (
+    doc_id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    filename         VARCHAR(255) NOT NULL,
+    file_size        BIGINT,
+    file_type        VARCHAR(20) NOT NULL,
+    upload_time      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    status           VARCHAR(20) NOT NULL DEFAULT 'active',
+    metadata         JSONB DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status);
+CREATE INDEX IF NOT EXISTS idx_documents_upload_time ON documents(upload_time);
+
+-- =============================================
+-- 2. 文档分块表（用于 RAG 检索）
+-- =============================================
+CREATE TABLE IF NOT EXISTS document_chunks (
+    chunk_id       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    doc_id         UUID NOT NULL REFERENCES documents(doc_id) ON DELETE CASCADE,
+    chunk_index    INTEGER NOT NULL,
+    page_num       INTEGER DEFAULT 0,
+    text           TEXT NOT NULL,
+    token_count    INTEGER,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_chunks_doc_id ON document_chunks(doc_id);
+
+-- =============================================
+-- 3. 向量表（pgvector 核心）
+-- =============================================
+CREATE TABLE IF NOT EXISTS chunk_embeddings (
+    embedding_id   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    chunk_id       UUID NOT NULL REFERENCES document_chunks(chunk_id) ON DELETE CASCADE UNIQUE,
+    doc_id         UUID NOT NULL REFERENCES documents(doc_id) ON DELETE CASCADE,
+    embedding      VECTOR(1024) NOT NULL,   -- MiniMax embo-01 为 1024 维
+    model_name     VARCHAR(50) NOT NULL DEFAULT 'embo-01',
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- HNSW 索引（pgvector 0.5+ 内置）
+-- m=16: 层间连接数，越大精度越高但内存越大
+-- ef_construction=64: 构建时动态列表大小
+CREATE INDEX ON chunk_embeddings USING hnsw (embedding vector_cosine_ops)
+WITH (m = 16, ef_construction = 64);
+
+CREATE INDEX IF NOT EXISTS idx_chunk_embeddings_doc_id ON chunk_embeddings(doc_id);
+
+-- =============================================
+-- 4. 故障树表（存储生成的故障树）
+-- =============================================
+CREATE TABLE IF NOT EXISTS fault_trees (
+    tree_id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    doc_id            UUID REFERENCES documents(doc_id) ON DELETE SET NULL,
+    top_event         VARCHAR(500) NOT NULL,
+    user_prompt       TEXT,
+    nodes_json        JSONB NOT NULL,
+    gates_json        JSONB NOT NULL,
+    confidence        FLOAT,
+    analysis_summary  TEXT,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_by        VARCHAR(100) DEFAULT 'system',
+    is_valid          BOOLEAN DEFAULT NULL,
+    mcs_json          JSONB
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_tree_top_doc
+    ON fault_trees (top_event, doc_id) WHERE doc_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_fault_trees_top_event ON fault_trees(top_event);
+CREATE INDEX IF NOT EXISTS idx_fault_trees_created_at ON fault_trees(created_at);
+
+-- =============================================
+-- 5. 校验日志表
+-- =============================================
+CREATE TABLE IF NOT EXISTS validation_logs (
+    log_id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tree_id         UUID NOT NULL REFERENCES fault_trees(tree_id) ON DELETE CASCADE,
+    validation_type VARCHAR(50) NOT NULL,
+    node_id         VARCHAR(50),
+    issue_level     VARCHAR(20) NOT NULL,
+    description     TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_validation_logs_tree_id ON validation_logs(tree_id);
+
+-- =============================================
+-- 6. 会话表（多轮对话支持）
+-- =============================================
+CREATE TABLE IF NOT EXISTS sessions (
+    session_id    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tree_id      UUID REFERENCES fault_trees(tree_id) ON DELETE SET NULL,
+    messages     JSONB NOT NULL DEFAULT '[]'::jsonb,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- =============================================
+-- 7. 统计视图
+-- =============================================
+CREATE OR REPLACE VIEW system_stats AS
+SELECT
+    (SELECT COUNT(*) FROM documents WHERE status = 'active')             AS total_docs,
+    (SELECT COUNT(*) FROM document_chunks)                                AS total_chunks,
+    (SELECT COUNT(*) FROM fault_trees)                                     AS total_trees,
+    (SELECT ROUND(SUM(LENGTH(text)) / 1024.0 / 1024, 2) FROM document_chunks) AS total_text_mb,
+    (SELECT COUNT(*) FROM fault_trees WHERE is_valid = TRUE)              AS valid_trees,
+    (SELECT COUNT(*) FROM fault_trees WHERE is_valid = FALSE)             AS invalid_trees;
+
+-- =============================================
+-- 8. 自动更新 updated_at 触发器
+-- =============================================
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER update_fault_trees_updated_at
+    BEFORE UPDATE ON fault_trees
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_sessions_updated_at
+    BEFORE UPDATE ON sessions
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();

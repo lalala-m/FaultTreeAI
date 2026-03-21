@@ -1,0 +1,45 @@
+# ============================================================
+# FaultTreeAI - 外部API + LangChain + PostgreSQL 版本
+# ============================================================
+
+# Web框架
+fastapi==0.115.0
+uvicorn==0.30.6
+pydantic==2.9.2
+pydantic-settings==2.5.2
+
+# LangChain 核心
+langchain==0.3.13
+langchain-core==0.3.26
+langchain-community==0.3.13
+
+# PostgreSQL + pgvector
+psycopg2-binary==2.9.10
+asyncpg==0.30.0
+sqlalchemy[asyncio]==2.0.36
+pgvector==0.3.1
+langchain-postgres==0.1.0
+
+# MiniMax API（主 LLM + Embedding）
+langchain-minimax==0.1.0
+
+# 文档解析
+pymupdf==1.24.10
+python-docx==1.1.2
+
+# 图计算
+networkx==3.3
+numpy==1.26.4
+
+# HTTP客户端
+httpx==0.27.2
+
+# 报告导出
+reportlab==4.2.2
+
+# 工具
+python-multipart==0.0.9
+aiofiles==24.1.0
+python-dotenv==1.0.1
+tenacity==9.0.0
+tiktoken==0.8.0

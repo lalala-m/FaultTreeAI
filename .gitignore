@@ -1,0 +1,71 @@
+# ============================================================
+# Git 忽略规则
+# ============================================================
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+*.pdb
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+*.whl
+
+# 虚拟环境
+venv/
+env/
+.venv/
+.env
+
+# FastAPI / Uvicorn
+*.log
+logs/
+*.pid
+
+# 数据库（敏感信息）
+*.db
+*.sqlite
+*.sqlite3
+data/chroma_db/
+
+# 向量数据（本地存储，不需要提交）
+data/manuals/
+data/samples/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# 测试
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 文档生成
+site/
+
+# 大文件（视频、模型）
+*.bin
+*.onnx
+*.gguf
+*.safetensors
+
+# 环境变量（包含密钥）
+.env
+
+# PostgreSQL 数据目录（服务器上才需要）
+postgresql/
+pgdata/
+
+# Node（前端）
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
