@@ -1,6 +1,6 @@
 """
 知识管理 API — PostgreSQL 持久化
-支持文档上传、列表查询、删除
+支持文档上传、列表查询、删除、搜索
 """
 
 import uuid
@@ -14,11 +14,11 @@ import aiofiles
 from backend.core.database.connection import get_db
 from backend.core.database.models import Document, DocumentChunk
 from backend.core.parser.document import parse_document
-from backend.core.rag.pgvector_retriever import add_chunks_to_db
+from backend.core.rag.pgvector_retriever import add_chunks_to_db, retrieve
 from backend.models.schemas import UploadResponse
 from backend.config import settings
 
-router = APIRouter(prefix="/api/knowledge", tags=["知识管理"])
+router = APIRouter(tags=["知识管理"])
 
 
 @router.post("/upload", response_model=UploadResponse)
@@ -145,3 +145,21 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
         "total_docs": doc_count or 0,
         "total_chunks": chunk_count or 0,
     }
+
+
+@router.post("/search")
+async def search_knowledge(
+    query: str,
+    top_k: int = 5,
+    db: AsyncSession = Depends(get_db),
+):
+    """在知识库中搜索，返回相关段落（不生成故障树）"""
+    try:
+        results = await retrieve(query, top_k=top_k)
+        return {
+            "results": results,
+            "count": len(results),
+            "query": query,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"搜索失败: {str(e)}")

@@ -15,7 +15,7 @@ export default function KnowledgeBase() {
 
   const loadDocs = async () => {
     try {
-      const data = await api.get('/knowledge/documents')
+      const data = await api.listDocuments()
       setDocs(Array.isArray(data) ? data : [])
     } catch {
       setDocs([])

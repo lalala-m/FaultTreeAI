@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.api import knowledge, generate, validate, export
+from backend.api import knowledge, generate, validate, export, edit
 from backend.core.database.connection import init_db, close_db
 
 
@@ -52,6 +52,7 @@ app.include_router(knowledge.router, prefix="/api/knowledge", tags=["knowledge"]
 app.include_router(generate.router, prefix="/api/generate", tags=["generate"])
 app.include_router(validate.router, prefix="/api/validate", tags=["validate"])
 app.include_router(export.router, prefix="/api/export", tags=["export"])
+app.include_router(edit.router, prefix="/api/edit", tags=["edit"])
 
 
 @app.get("/health")

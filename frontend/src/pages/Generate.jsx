@@ -28,7 +28,18 @@ export default function Generate() {
         user_prompt: '',
         rag_top_k: 5,
       })
-      setResult(data)
+      // 修正：后端返回 { fault_tree, mcs, importance, validation_issues }
+      setResult({
+        fault_tree: data.fault_tree,
+        top_event: data.fault_tree?.top_event,
+        nodes_json: data.fault_tree?.nodes,
+        gates_json: data.fault_tree?.gates,
+        confidence: data.fault_tree?.confidence,
+        analysis_summary: data.fault_tree?.analysis_summary,
+        mcs: data.mcs,
+        importance: data.importance,
+        validation_issues: data.validation_issues,
+      })
       message.success('故障树生成成功！')
     } catch (err) {
       const detail = err.response?.data?.detail || err.message
@@ -39,10 +50,9 @@ export default function Generate() {
   }
 
   const handleValidate = async () => {
-    if (!result?.tree_id) return
+    if (!result?.fault_tree) return
     try {
-      const data = await api.getFaultTree(result.tree_id)
-      const validation = await api.validateFaultTree(data)
+      const validation = await api.validateFaultTree(result.fault_tree)
       setResult(prev => ({ ...prev, validation }))
       message.info('校验完成')
     } catch (err) {
@@ -125,24 +135,17 @@ export default function Generate() {
               )}
             </Space>
 
-            {result.validation && (
+            {result.validation_issues && result.validation_issues.length > 0 && (
               <div style={{ marginTop: 16 }}>
-                {result.validation.errors?.length > 0 && (
-                  <Alert type="error" showIcon
-                    message="存在错误"
-                    description={result.validation.errors.join('；')}
-                    style={{ marginBottom: 8 }}
-                  />
-                )}
-                {result.validation.warnings?.length > 0 && (
-                  <Alert type="warning" showIcon
-                    message="存在警告"
-                    description={result.validation.warnings.join('；')}
-                  />
-                )}
-                {result.validation.errors?.length === 0 && result.validation.warnings?.length === 0 && (
-                  <Alert type="success" showIcon message="故障树结构校验通过！" />
-                )}
+                <Alert type="warning" showIcon
+                  message="校验提示"
+                  description={result.validation_issues.join('；')}
+                />
+              </div>
+            )}
+            {(!result.validation_issues || result.validation_issues.length === 0) && result.fault_tree && (
+              <div style={{ marginTop: 16 }}>
+                <Alert type="success" showIcon message="故障树结构校验通过！" />
               </div>
             )}
           </Card>

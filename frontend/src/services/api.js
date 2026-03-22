@@ -18,17 +18,24 @@ export const uploadDocument = async (file, onProgress) => {
 }
 
 export const listDocuments = async () => {
-  const { data } = await api.get('/knowledge/documents')
+  const { data } = await api.get('/knowledge/list')
   return data
 }
 
 export const deleteDocument = async (docId) => {
-  const { data } = await api.delete(`/knowledge/documents/${docId}`)
+  const { data } = await api.delete(`/knowledge/${docId}`)
   return data
 }
 
-export const searchKnowledge = async (query) => {
-  const { data } = await api.post('/knowledge/search', { query })
+export const searchKnowledge = async (query, topK = 5) => {
+  const { data } = await api.post('/knowledge/search', null, {
+    params: { query, top_k: topK }
+  })
+  return data
+}
+
+export const getKnowledgeStats = async () => {
+  const { data } = await api.get('/knowledge/stats')
   return data
 }
 
@@ -49,6 +56,13 @@ export const listFaultTrees = async () => {
   return data
 }
 
+// ── 故障树编辑 ──────────────────────────────────────
+
+export const saveFaultTree = async (treeId, data) => {
+  const { data: result } = await api.put(`/edit/${treeId}`, data)
+  return result
+}
+
 // ── 校验 ────────────────────────────────────────────
 
 export const validateFaultTree = async (faultTree) => {
@@ -64,5 +78,29 @@ export const exportWord = async (faultTree) => {
   })
   return data
 }
+
+export const exportPDF = async (faultTree, mcs) => {
+  const { data } = await api.post('/export/pdf', {
+    fault_tree: faultTree,
+    mcs: mcs,
+  }, {
+    responseType: 'blob',
+  })
+  return data
+}
+
+// 将所有函数绑定到 api 对象上，方便直接通过 api 调用
+api.uploadDocument = uploadDocument
+api.listDocuments = listDocuments
+api.deleteDocument = deleteDocument
+api.searchKnowledge = searchKnowledge
+api.getKnowledgeStats = getKnowledgeStats
+api.generateFaultTree = generateFaultTree
+api.getFaultTree = getFaultTree
+api.listFaultTrees = listFaultTrees
+api.saveFaultTree = saveFaultTree
+api.validateFaultTree = validateFaultTree
+api.exportWord = exportWord
+api.exportPDF = exportPDF
 
 export default api

@@ -1,0 +1,58 @@
+version: '3.8'
+
+services:
+  # PostgreSQL 数据库 + pgvector
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: faulttree-db
+    environment:
+      POSTGRES_DB: faulttree
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-faulttree123}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # 后端服务
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: faulttree-backend
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:${DB_PASSWORD:-faulttree123}@db:5432/faulttree
+      MINIMAX_API_KEY: ${MINIMAX_API_KEY}
+      MINIMAX_GROUP_ID: ${MINIMAX_GROUP_ID}
+      MINIMAX_M2_API_KEY: ${MINIMAX_M2_API_KEY}
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./data/manuals:/app/data/manuals
+      - ./data/chroma_db:/app/data/chroma_db
+
+  # 前端服务
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: faulttree-frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+
+volumes:
+  pgdata:

@@ -1,34 +1,75 @@
-import React from 'react'
+import React, { useEffect, useState } from 'react'
 import { Row, Col, Statistic, Card, Progress, Typography, Button, List, Tag, Space } from 'antd'
 import { FileTextOutlined, ApartmentOutlined, CheckCircleOutlined, CloseCircleOutlined } from '@ant-design/icons'
+import api from '../services/api.js'
 
 const { Title } = Typography
 
-const stats = [
-  { title: '文档总数', value: 0, icon: <FileTextOutlined />, color: '#1677ff' },
-  { title: '已分块数', value: 0, icon: <ApartmentOutlined />, color: '#52c41a' },
-  { title: '故障树', value: 0, icon: <ApartmentOutlined />, color: '#fa8c16' },
-  { title: '有效率', value: 0, suffix: '%', icon: <CheckCircleOutlined />, color: '#13c2c2' },
-]
-
-const recentTrees = [
-  { id: 1, name: '某设备液压系统故障', time: '2小时前', valid: true, confidence: 0.92 },
-  { id: 2, name: '电机启动失败', time: '昨天', valid: true, confidence: 0.88 },
-  { id: 3, name: '控制系统失灵', time: '3天前', valid: false, confidence: 0.65 },
-]
-
 export default function Dashboard({ onNavigate }) {
+  const [stats, setStats] = useState({ total_docs: 0, total_chunks: 0, total_trees: 0, valid_rate: 0 })
+  const [recentTrees, setRecentTrees] = useState([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        // 知识库统计
+        const statsData = await api.get('/api/knowledge/stats')
+        setStats(prev => ({
+          ...prev,
+          total_docs: statsData.total_docs || 0,
+          total_chunks: statsData.total_chunks || 0,
+        }))
+
+        // 最近故障树列表
+        const trees = await api.listFaultTrees()
+        setRecentTrees((trees || []).slice(0, 5))
+        
+        // 计算故障树总数和有效率
+        const totalTrees = trees?.length || 0
+        const validTrees = trees?.filter(t => t.is_valid === true).length || 0
+        const validRate = totalTrees > 0 ? Math.round((validTrees / totalTrees) * 100) : 0
+        
+        setStats(prev => ({
+          ...prev,
+          total_trees: totalTrees,
+          valid_rate: validRate,
+        }))
+      } catch (e) {
+        console.error('Dashboard load failed:', e)
+      } finally {
+        setLoading(false)
+      }
+    }
+    loadData()
+  }, [])
+
+  const statItems = [
+    { title: '文档总数', value: stats.total_docs, icon: <FileTextOutlined />, color: '#1677ff' },
+    { title: '已分块数', value: stats.total_chunks, icon: <ApartmentOutlined />, color: '#52c41a' },
+    { title: '故障树', value: stats.total_trees, icon: <ApartmentOutlined />, color: '#fa8c16' },
+    { title: '有效率', value: stats.valid_rate, suffix: '%', icon: <CheckCircleOutlined />, color: '#13c2c2' },
+  ]
+
+  const listData = recentTrees.map(t => ({
+    id: t.tree_id,
+    name: t.top_event,
+    time: t.created_at ? new Date(t.created_at).toLocaleString('zh-CN') : '-',
+    valid: t.is_valid === true,
+    confidence: t.confidence || 0,
+  }))
+
   return (
     <div>
       <Title level={4}>系统总览</Title>
 
       <Row gutter={16} style={{ marginBottom: 24 }}>
-        {stats.map((s) => (
+        {statItems.map((s) => (
           <Col span={6} key={s.title}>
             <Card size="small">
               <Statistic
                 title={s.title}
-                value={s.value}
+                value={loading ? '-' : s.value}
                 suffix={s.suffix}
                 prefix={<span style={{ color: s.color }}>{s.icon}</span>}
               />
@@ -39,27 +80,37 @@ export default function Dashboard({ onNavigate }) {
 
       <Row gutter={16}>
         <Col span={14}>
-          <Card title="最近故障树" extra={<Button type="link" onClick={() => onNavigate('history')}>查看全部</Button>}>
-            <List
-              size="small"
-              dataSource={recentTrees}
-              renderItem={(item) => (
-                <List.Item
-                  actions={[
-                    <Button key="view" size="small" type="link"
-                      onClick={() => onNavigate('generate')}>查看</Button>
-                  ]}
-                >
-                  <List.Item.Meta
-                    title={item.name}
-                    description={`置信度 ${(item.confidence * 100).toFixed(0)}% · ${item.time}`}
-                  />
-                  <Tag color={item.valid ? 'green' : 'red'} style={{ marginRight: 0 }}>
-                    {item.valid ? '有效' : '需校验'}
-                  </Tag>
-                </List.Item>
-              )}
-            />
+          <Card 
+            title="最近故障树" 
+            extra={<Button type="link" onClick={() => onNavigate('history')}>查看全部</Button>}
+            loading={loading}
+          >
+            {listData.length > 0 ? (
+              <List
+                size="small"
+                dataSource={listData}
+                renderItem={(item) => (
+                  <List.Item
+                    actions={[
+                      <Button key="view" size="small" type="link"
+                        onClick={() => onNavigate('generate')}>查看</Button>
+                    ]}
+                  >
+                    <List.Item.Meta
+                      title={item.name}
+                      description={`置信度 ${(item.confidence * 100).toFixed(0)}% · ${item.time}`}
+                    />
+                    <Tag color={item.valid ? 'green' : 'red'} style={{ marginRight: 0 }}>
+                      {item.valid ? '有效' : '需校验'}
+                    </Tag>
+                  </List.Item>
+                )}
+              />
+            ) : (
+              <div style={{ textAlign: 'center', padding: 24, color: '#888' }}>
+                暂无故障树数据
+              </div>
+            )}
           </Card>
         </Col>
 

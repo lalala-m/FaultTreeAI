@@ -24,17 +24,6 @@ const NODE_COLORS = {
   inhibit: '#cf1322',
 }
 
-const NODE_SHAPES = {
-  top: 'diamond',
-  and: 'rectRight',
-  or: 'rectRight',
-  xor: 'rectRight',
-  basic: 'circle',
-  intermediate: 'rectRight',
-  undeveloped: 'rectRight',
-  inhibit: 'rectRight',
-}
-
 function GateNode({ data }) {
   const color = NODE_COLORS[data.type] || '#999'
   return (
@@ -105,8 +94,9 @@ const nodeTypes = { gate: GateNode, basic: BasicNode, top: TopEventNode }
 // ── 主组件 ─────────────────────────────────────────────
 
 export default function FaultTreeViewer({ tree }) {
+  // 修正：支持 fault_tree 嵌套结构和直接数据两种格式
   const nodes = useMemo(() => {
-    const nodesData = tree.nodes_json || []
+    const nodesData = tree.fault_tree?.nodes || tree.nodes_json || []
     return nodesData.map((n) => {
       const color = NODE_COLORS[n.type] || '#999'
       return {
@@ -114,7 +104,7 @@ export default function FaultTreeViewer({ tree }) {
         type: n.type === 'top' ? 'top' : n.type === 'basic' ? 'basic' : 'gate',
         position: n.position || { x: 0, y: 0 },
         data: {
-          label: n.label,
+          label: n.name,  // 修正：字段是 name 不是 label
           type: n.type,
           gate_type: n.gate_type,
           probability: n.probability,
@@ -124,19 +114,26 @@ export default function FaultTreeViewer({ tree }) {
     })
   }, [tree])
 
+  // 修正：边方向 - 逻辑门是源（上游），子节点是目标（下游）
+  // 同时修正字段名：g.input_nodes 或 g.children
   const edges = useMemo(() => {
-    const gates = tree.gates_json || []
-    return gates.flatMap((g) =>
-      (g.children || []).map((childId, i) => ({
+    const gates = tree.fault_tree?.gates || tree.gates_json || []
+    return gates.flatMap((g) => {
+      // 兼容 input_nodes 或 children 字段
+      const inputNodes = g.input_nodes || g.children || []
+      return inputNodes.map((childId, i) => ({
         id: `${g.output_node}_${childId}_${i}`,
-        source: childId,
-        target: g.output_node,
+        source: g.output_node,   // 逻辑门是源（上游）
+        target: childId,          // 子节点是目标（下游）
         animated: g.gate_type === 'or',
         label: g.gate_type,
-        style: { stroke: NODE_COLORS[g.gate_type] || '#999' },
-        markerEnd: { type: MarkerType.ArrowClosed, color: NODE_COLORS[g.gate_type] || '#999' },
+        style: { stroke: NODE_COLORS[g.gate_type?.toLowerCase()] || '#999' },
+        markerEnd: { 
+          type: MarkerType.ArrowClosed, 
+          color: NODE_COLORS[g.gate_type?.toLowerCase()] || '#999' 
+        },
       }))
-    )
+    })
   }, [tree])
 
   if (!nodes.length) {

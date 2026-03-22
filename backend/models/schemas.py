@@ -41,3 +41,11 @@ class UploadResponse(BaseModel):
     filename: str
     chunk_count: int
     status: str
+
+class EditRequest(BaseModel):
+    nodes: List[FTANode]
+    gates: List[FTAGate]
+    fault_tree: FaultTree
+    mcs: Optional[List[List[str]]] = None
+    importance: Optional[List[dict]] = None
+    validation_issues: Optional[List[str]] = None
