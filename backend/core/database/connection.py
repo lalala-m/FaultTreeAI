@@ -57,7 +57,7 @@ async def init_db():
         async with engine.begin() as conn:
             await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
     except Exception as e:
-        print(f"⚠️  init_db 警告（不影响运行）: {e}")
+        print(f"[WARN] init_db warning (non-critical): {e}")
 
 
 async def close_db():

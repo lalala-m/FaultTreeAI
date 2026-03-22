@@ -24,11 +24,11 @@ async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     # 启动时：初始化数据库（创建 pgvector 扩展和表结构）
     await init_db()
-    print("✅ 数据库初始化完成（pgvector + 表结构）")
+    print("[OK] Database initialized (pgvector + schema)")
     yield
     # 退出时：关闭连接池
     await close_db()
-    print("🔌 数据库连接已关闭")
+    print("[INFO] Database connections closed")
 
 
 app = FastAPI(
