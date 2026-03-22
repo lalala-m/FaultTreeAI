@@ -3,12 +3,20 @@ FastAPI 应用入口
 包含数据库 lifespan 管理（启动初始化、退出清理）
 """
 
+import sys
+from pathlib import Path
+
+# 将项目根目录加入 Python 路径（支持从任意目录启动）
+_project_root = Path(__file__).resolve().parent.parent
+if str(_project_root) not in sys.path:
+    sys.path.insert(0, str(_project_root))
+
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api import knowledge, generate, validate, export
-from core.database.connection import init_db, close_db
+from backend.api import knowledge, generate, validate, export
+from backend.core.database.connection import init_db, close_db
 
 
 @asynccontextmanager

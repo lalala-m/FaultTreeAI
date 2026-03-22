@@ -1,5 +1,5 @@
-from models.schemas import FaultTree
-from core.fta.builder import compute_mcs
+from backend.models.schemas import FaultTree
+from backend.core.fta.builder import compute_mcs
 
 def compute_importance(fault_tree: FaultTree) -> list[dict]:
     """计算底事件Birnbaum结构重要度"""

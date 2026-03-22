@@ -11,12 +11,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 import aiofiles
 
-from core.database.connection import get_db
-from core.database.models import Document, DocumentChunk
-from core.parser.document import parse_document
-from core.rag.pgvector_retriever import add_chunks_to_db
-from models.schemas import UploadResponse
-from config import settings
+from backend.core.database.connection import get_db
+from backend.core.database.models import Document, DocumentChunk
+from backend.core.parser.document import parse_document
+from backend.core.rag.pgvector_retriever import add_chunks_to_db
+from backend.models.schemas import UploadResponse
+from backend.config import settings
 
 router = APIRouter(prefix="/api/knowledge", tags=["知识管理"])
 

@@ -1,6 +1,6 @@
 from fastapi import APIRouter
-from core.validator.checker import validate_fault_tree
-from models.schemas import FaultTree, ValidationResult
+from backend.core.validator.checker import validate_fault_tree
+from backend.models.schemas import FaultTree, ValidationResult
 
 router = APIRouter()
 

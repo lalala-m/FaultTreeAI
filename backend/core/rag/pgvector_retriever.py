@@ -7,7 +7,7 @@ from typing import Optional
 from sqlalchemy import text, select
 from sqlalchemy.ext.asyncio import AsyncSession
 import httpx
-from config import settings
+from backend.config import settings
 
 
 # ─────────────────────────────────────────────

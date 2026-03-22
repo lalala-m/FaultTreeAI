@@ -6,12 +6,12 @@ import uuid
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.database.connection import get_db
-from core.database.models import FaultTree as DBFaultTree
-from core.llm.structured_generator import generate_fault_tree
-from core.fta.builder import compute_mcs
-from core.fta.importance import compute_importance
-from models.schemas import GenerateRequest, GenerateResponse
+from backend.core.database.connection import get_db
+from backend.core.database.models import FaultTree as DBFaultTree
+from backend.core.llm.structured_generator import generate_fault_tree
+from backend.core.fta.builder import compute_mcs
+from backend.core.fta.importance import compute_importance
+from backend.models.schemas import GenerateRequest, GenerateResponse
 
 router = APIRouter(prefix="/api/generate", tags=["故障树生成"])
 

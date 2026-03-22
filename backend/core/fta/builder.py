@@ -1,5 +1,5 @@
 import networkx as nx
-from models.schemas import FaultTree
+from backend.models.schemas import FaultTree
 
 def build_graph(fault_tree: FaultTree) -> nx.DiGraph:
     """将故障树JSON转为有向图"""

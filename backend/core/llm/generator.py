@@ -1,10 +1,10 @@
 import json
 import re
-from core.llm.ollama_client import ollama_client
-from core.rag.retriever import retrieve
-from core.validator.checker import validate_fault_tree
-from models.schemas import FaultTree, GenerateRequest
-from config import settings
+from backend.core.llm.ollama_client import ollama_client
+from backend.core.rag.retriever import retrieve
+from backend.core.validator.checker import validate_fault_tree
+from backend.models.schemas import FaultTree, GenerateRequest
+from backend.config import settings
 
 PROMPT_TEMPLATE = """你是工业设备故障分析专家，精通IEC 61025故障树分析规范。
 

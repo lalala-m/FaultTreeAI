@@ -13,7 +13,7 @@ from langchain_core.callbacks import CallbackManagerForLLMRun
 from pydantic import Field
 import httpx
 
-from config import settings
+from backend.config import settings
 
 
 # ─────────────────────────────────────────────
@@ -150,7 +150,7 @@ class MiniMaxEmbeddings:
         self.dimensions = dimensions
         self.base_url = "https://api.minimax.io/v1/embeddings"
 
-    def _ cosine_to_dot(self, embedding: list[float]) -> list[float]:
+    def _cosine_to_dot(self, embedding: list[float]) -> list[float]:
         """余弦相似度转点积：MiniMax 返回的是余弦相似度，需要归一化"""
         norm = sum(x * x for x in embedding) ** 0.5
         return [x / norm for x in embedding]

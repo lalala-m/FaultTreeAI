@@ -1,14 +1,15 @@
-# ============================================================
-# FaultTreeAI 数据库 Schema
-# 对应 PostgreSQL 18 + pgvector
-# ============================================================
-# 使用方式：
-#   1. 安装 PostgreSQL 18 + pgvector 扩展
-#   2. psql -U postgres -d postgres -c "CREATE DATABASE faulttree;"
-#   3. psql -U postgres -d faulttree -f scripts/init_db.sql
-# ============================================================
+-- ============================================================
+-- FaultTreeAI 数据库 Schema
+-- PostgreSQL 18 + pgvector
+--
+-- 使用方式：
+--   1. 安装 PostgreSQL 18 + pgvector 扩展
+--   2. psql -U postgres -d postgres -c "CREATE DATABASE faulttree;"
+--   3. psql -U postgres -d faulttree -c "CREATE EXTENSION vector;"
+--   4. psql -U postgres -d faulttree -f scripts/init_db.sql
+-- ============================================================
 
--- 启用 pgvector 扩展
+-- 启用 pgvector 扩展（如果尚未启用）
 CREATE EXTENSION IF NOT EXISTS vector;
 
 -- =============================================
@@ -44,12 +45,13 @@ CREATE INDEX IF NOT EXISTS idx_chunks_doc_id ON document_chunks(doc_id);
 
 -- =============================================
 -- 3. 向量表（pgvector 核心）
+-- MiniMax embo-01 为 1024 维向量
 -- =============================================
 CREATE TABLE IF NOT EXISTS chunk_embeddings (
     embedding_id   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     chunk_id       UUID NOT NULL REFERENCES document_chunks(chunk_id) ON DELETE CASCADE UNIQUE,
     doc_id         UUID NOT NULL REFERENCES documents(doc_id) ON DELETE CASCADE,
-    embedding      VECTOR(1024) NOT NULL,   -- MiniMax embo-01 为 1024 维
+    embedding      VECTOR(1024) NOT NULL,
     model_name     VARCHAR(50) NOT NULL DEFAULT 'embo-01',
     created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -106,10 +108,10 @@ CREATE INDEX IF NOT EXISTS idx_validation_logs_tree_id ON validation_logs(tree_i
 -- =============================================
 CREATE TABLE IF NOT EXISTS sessions (
     session_id    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    tree_id      UUID REFERENCES fault_trees(tree_id) ON DELETE SET NULL,
-    messages     JSONB NOT NULL DEFAULT '[]'::jsonb,
-    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    tree_id       UUID REFERENCES fault_trees(tree_id) ON DELETE SET NULL,
+    messages      JSONB NOT NULL DEFAULT '[]'::jsonb,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- =============================================
@@ -117,12 +119,13 @@ CREATE TABLE IF NOT EXISTS sessions (
 -- =============================================
 CREATE OR REPLACE VIEW system_stats AS
 SELECT
-    (SELECT COUNT(*) FROM documents WHERE status = 'active')             AS total_docs,
-    (SELECT COUNT(*) FROM document_chunks)                                AS total_chunks,
-    (SELECT COUNT(*) FROM fault_trees)                                     AS total_trees,
-    (SELECT ROUND(SUM(LENGTH(text)) / 1024.0 / 1024, 2) FROM document_chunks) AS total_text_mb,
-    (SELECT COUNT(*) FROM fault_trees WHERE is_valid = TRUE)              AS valid_trees,
-    (SELECT COUNT(*) FROM fault_trees WHERE is_valid = FALSE)             AS invalid_trees;
+    (SELECT COUNT(*) FROM documents WHERE status = 'active')              AS total_docs,
+    (SELECT COUNT(*) FROM document_chunks)                               AS total_chunks,
+    (SELECT COUNT(*) FROM fault_trees)                                   AS total_trees,
+    (SELECT ROUND(SUM(LENGTH(text)) / 1024.0 / 1024, 2)
+     FROM document_chunks)                                               AS total_text_mb,
+    (SELECT COUNT(*) FROM fault_trees WHERE is_valid = TRUE)             AS valid_trees,
+    (SELECT COUNT(*) FROM fault_trees WHERE is_valid = FALSE)            AS invalid_trees;
 
 -- =============================================
 -- 8. 自动更新 updated_at 触发器

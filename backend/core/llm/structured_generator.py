@@ -8,11 +8,11 @@ import re
 from typing import Optional
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from config import settings
-from core.llm.llm_client import llm_client
-from core.rag.pgvector_retriever import retrieve
-from core.validator.checker import validate_fault_tree
-from models.schemas import FaultTree, GenerateRequest
+from backend.config import settings
+from backend.core.llm.llm_client import llm_client
+from backend.core.rag.pgvector_retriever import retrieve
+from backend.core.validator.checker import validate_fault_tree
+from backend.models.schemas import FaultTree, GenerateRequest
 
 
 # ─────────────────────────────────────────────

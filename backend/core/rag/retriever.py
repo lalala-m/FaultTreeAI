@@ -1,7 +1,7 @@
 import chromadb
 from chromadb.config import Settings as ChromaSettings
-from core.llm.ollama_client import ollama_client
-from config import settings
+from backend.core.llm.ollama_client import ollama_client
+from backend.config import settings
 
 _client = chromadb.PersistentClient(
     path=settings.CHROMA_PATH,

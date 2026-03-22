@@ -1,6 +1,6 @@
 import networkx as nx
-from models.schemas import FaultTree
-from core.fta.builder import build_graph
+from backend.models.schemas import FaultTree
+from backend.core.fta.builder import build_graph
 
 def validate_fault_tree(fault_tree: FaultTree) -> dict:
     """三层逻辑校验，返回问题列表"""

@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 from fastapi.responses import FileResponse
-from models.schemas import FaultTree
+from backend.models.schemas import FaultTree
 from docx import Document
 from docx.shared import Pt
 import tempfile, os

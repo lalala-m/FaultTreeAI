@@ -7,12 +7,13 @@ import uuid
 from datetime import datetime
 from sqlalchemy import (
     Column, String, Text, Integer, Float, BigInteger,
-    Boolean, DateTime, ForeignKey, Index, UniqueConstraint, JSON
+    Boolean, DateTime, ForeignKey, Index, JSON
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from pgvector.sqlalchemy import Vector
+from backend.config import settings
 from .connection import Base
 
 
@@ -114,9 +115,10 @@ class FaultTree(Base):
     validation_logs = relationship("ValidationLog", back_populates="fault_tree", cascade="all, delete-orphan")
 
     __table_args__ = (
-        UniqueConstraint(
+        Index(
+            "uq_tree_top_doc",
             "top_event", "doc_id",
-            name="uq_tree_top_doc",
+            unique=True,
             postgresql_where=doc_id.isnot(None)
         ),
         Index("idx_fault_trees_top_event", "top_event"),
@@ -155,4 +157,4 @@ class Session(Base):
 
 
 # 全局引用 settings（避免循环导入时访问不到）
-from config import settings
+from backend.config import settings

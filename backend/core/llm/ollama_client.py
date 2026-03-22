@@ -1,7 +1,7 @@
 import requests
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from config import settings
+from backend.config import settings
 
 _executor = ThreadPoolExecutor(max_workers=4)
 
