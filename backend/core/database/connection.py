@@ -6,20 +6,21 @@ PostgreSQL + SQLAlchemy 异步连接管理
 from contextlib import asynccontextmanager
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import declarative_base
-from sqlalchemy.pool import AsyncAdaptedQueuePool
+from sqlalchemy.pool import NullPool
 from sqlalchemy import text
 from backend.config import settings
 
 Base = declarative_base()
 
+# Windows 上 asyncpg + QueuePool 有兼容性问题，改用 NullPool
 engine = create_async_engine(
     settings.DATABASE_URL,
     echo=False,
-    poolclass=AsyncAdaptedQueuePool,
-    pool_size=10,
-    max_overflow=20,
-    pool_pre_ping=True,
-    pool_recycle=3600,
+    poolclass=NullPool,
+    connect_args={
+        "timeout": 30,
+        "command_timeout": 60,
+    },
 )
 
 AsyncSessionLocal = async_sessionmaker(
@@ -51,11 +52,12 @@ async def get_db_context() -> AsyncSession:
 
 
 async def init_db():
-    """启动时初始化：创建 pgvector 扩展和所有表结构"""
-    async with engine.begin() as conn:
-        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    """启动时初始化：创建 pgvector 扩展（表已在 SQL 中定义，启动时跳过 create_all）"""
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+    except Exception as e:
+        print(f"⚠️  init_db 警告（不影响运行）: {e}")
 
 
 async def close_db():
