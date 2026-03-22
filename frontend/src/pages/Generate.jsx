@@ -1,10 +1,11 @@
 import React, { useState } from 'react'
-import { Card, Typography, Button, Space, Spin, message, Empty, Tag, Divider, Alert } from 'antd'
-import { ThunderboltOutlined, SaveOutlined, CheckCircleOutlined, WarningOutlined } from '@ant-design/icons'
+import { Card, Typography, Button, Space, Spin, message, Empty, Tag, Divider, Alert, Steps, Progress } from 'antd'
+import { ThunderboltOutlined, SaveOutlined, CheckCircleOutlined, WarningOutlined, RocketOutlined, BookOutlined, ApiOutlined, FileTextOutlined } from '@ant-design/icons'
 import api from '../services/api.js'
 import FaultTreeViewer from '../components/FaultTreeViewer.jsx'
+import MCSView from '../components/MCSView.jsx'
 
-const { Title, Text } = Typography
+const { Title, Text, Paragraph } = Typography
 
 export default function Generate() {
   const [topEvent, setTopEvent] = useState('')
@@ -12,6 +13,7 @@ export default function Generate() {
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState(null)
   const [error, setError] = useState('')
+  const [currentStep, setCurrentStep] = useState(0)
 
   const handleGenerate = async () => {
     if (!topEvent.trim()) {
@@ -21,14 +23,26 @@ export default function Generate() {
     setLoading(true)
     setResult(null)
     setError('')
+    setCurrentStep(0)
+    
     try {
+      // 步骤1: 知识检索
+      setCurrentStep(1)
+      await new Promise(r => setTimeout(r, 500))
+      
+      // 步骤2: AI分析生成
+      setCurrentStep(2)
+      
       const data = await api.generateFaultTree({
         top_event: topEvent,
         system_name: systemName,
         user_prompt: '',
         rag_top_k: 5,
       })
-      // 修正：后端返回 { fault_tree, mcs, importance, validation_issues }
+      
+      // 步骤3: 计算完成
+      setCurrentStep(3)
+      
       setResult({
         fault_tree: data.fault_tree,
         top_event: data.fault_tree?.top_event,
@@ -60,106 +74,227 @@ export default function Generate() {
     }
   }
 
+  // 示例输入
+  const examples = [
+    { text: '电机无法启动', desc: '电动机故障' },
+    { text: '液压系统无压力', desc: '液压系统故障' },
+    { text: '控制系统通讯中断', desc: '工业网络故障' },
+    { text: 'PLC控制器死机', desc: '控制系统故障' },
+  ]
+
   return (
-    <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
-        <Title level={4} style={{ margin: 0 }}>生成故障树</Title>
+    <div className="page-container">
+      {/* 页面标题 */}
+      <div className="flex-between" style={{ marginBottom: 24 }}>
+        <div>
+          <Title level={3} className="page-title" style={{ marginBottom: 4 }}>
+            <RocketOutlined style={{ marginRight: 12, color: '#1890ff' }} />
+            智能故障树生成
+          </Title>
+          <Text type="secondary">基于 MiniMax 大模型 + RAG 知识检索，自动生成工业设备故障树</Text>
+        </div>
       </div>
 
-      <Card style={{ marginBottom: 16 }}>
-        <Space direction="vertical" style={{ width: '100%' }} size="middle">
-          <Text type="secondary">输入设备故障描述，系统将自动分析故障模式，生成完整的故障树结构。</Text>
-
-          <textarea
-            value={topEvent}
-            onChange={e => setTopEvent(e.target.value)}
-            placeholder="例如：某型号液压泵启动后压力无法建立，系统显示低压报警"
-            rows={3}
-            disabled={loading}
-            style={{
-              width: '100%', padding: '10px 12px', fontSize: 14,
-              border: '1px solid #d9d9d9', borderRadius: 6,
-              resize: 'vertical', outline: 'none', fontFamily: 'inherit',
-            }}
-          />
-
-          <Space wrap>
-            <Button
-              type="primary"
-              icon={<ThunderboltOutlined />}
-              onClick={handleGenerate}
-              loading={loading}
-              size="large"
-            >
-              生成故障树
-            </Button>
-            {result && (
-              <>
-                <Button icon={<CheckCircleOutlined />} onClick={handleValidate}>校验</Button>
-                <Button icon={<SaveOutlined />}>保存结果</Button>
-              </>
-            )}
-          </Space>
-        </Space>
-      </Card>
-
+      {/* 步骤指示器 */}
       {loading && (
-        <Card style={{ textAlign: 'center', padding: 48 }}>
-          <Spin size="large" />
-          <div style={{ marginTop: 16, color: '#888' }}>
-            正在分析故障模式、检索知识库、生成故障树...
+        <Card className="glass-card" style={{ marginBottom: 24 }}>
+          <Steps current={currentStep} size="small" status="process">
+            <Steps.Step title="准备分析" icon={<BookOutlined />} />
+            <Steps.Step title="知识检索" icon={<ApiOutlined />} />
+            <Steps.Step title="AI 生成" icon={<ThunderboltOutlined />} />
+            <Steps.Step title="计算完成" icon={<CheckCircleOutlined />} />
+          </Steps>
+          <div style={{ marginTop: 16 }}>
+            {currentStep === 1 && <Text>正在从知识库中检索相关故障信息...</Text>}
+            {currentStep === 2 && <Text>正在调用 AI 分析故障模式，生成故障树...</Text>}
+            {currentStep === 3 && <Text>正在计算最小割集和重要度...</Text>}
           </div>
+          <Progress percent={currentStep * 33} status="active" strokeColor="#1890ff" style={{ marginTop: 12 }} />
         </Card>
       )}
 
-      {error && <Alert type="error" message={error} showIcon style={{ marginBottom: 16 }} />}
+      {/* 输入区域 */}
+      <Card className="glass-card" style={{ marginBottom: 24 }}>
+        <Space direction="vertical" style={{ width: '100%' }} size="large">
+          {/* 引导文字 */}
+          <div>
+            <Text strong style={{ fontSize: 15, color: '#e6f7ff', display: 'block', marginBottom: 8 }}>
+              <FileTextOutlined style={{ marginRight: 8 }} />
+              请描述设备故障现象
+            </Text>
+            <Text type="secondary" style={{ fontSize: 13 }}>
+              输入越详细的故障描述，生成的故障树越准确
+            </Text>
+          </div>
 
-      {result && !loading && (
-        <>
-          <Card style={{ marginBottom: 16 }}>
-            <Space split={<Divider type="vertical" />} wrap>
-              <Text strong>顶事件：</Text><Text>{result.top_event}</Text>
-              {result.confidence != null && (
-                <>
-                  <Text strong>置信度：</Text>
-                  <Tag color={result.confidence > 0.8 ? 'green' : result.confidence > 0.6 ? 'orange' : 'red'}>
-                    {(result.confidence * 100).toFixed(1)}%
-                  </Tag>
-                </>
-              )}
-              {result.analysis_summary && (
-                <>
-                  <Text strong>分析摘要：</Text>
-                  <Text type="secondary">{result.analysis_summary}</Text>
-                </>
-              )}
+          {/* 输入框 */}
+          <textarea
+            value={topEvent}
+            onChange={e => setTopEvent(e.target.value)}
+            placeholder="例如：某型号液压泵启动后压力无法建立，系统显示低压报警；电机无法启动等"
+            rows={4}
+            disabled={loading}
+            className="input-glass"
+            style={{
+              width: '100%', padding: '14px 16px', fontSize: 15,
+              borderRadius: 8, resize: 'vertical', outline: 'none', 
+              fontFamily: 'inherit', minHeight: 100,
+            }}
+          />
+
+          {/* 示例按钮 */}
+          <div className="flex-wrap" style={{ gap: 8 }}>
+            <Text type="secondary" style={{ fontSize: 13 }}>快速输入：</Text>
+            {examples.map((ex, i) => (
+              <Button 
+                key={i} 
+                size="small" 
+                className="btn-secondary"
+                onClick={() => setTopEvent(ex.text)}
+                disabled={loading}
+              >
+                {ex.text}
+              </Button>
+            ))}
+          </div>
+
+          {/* 操作按钮 */}
+          <div className="flex-between">
+            <Text type="secondary" style={{ fontSize: 13 }}>
+              {topEvent.length > 0 && `已输入 ${topEvent.length} 个字符`}
+            </Text>
+            <Space wrap>
+              <Button
+                type="primary"
+                icon={<ThunderboltOutlined />}
+                onClick={handleGenerate}
+                loading={loading}
+                size="large"
+                className="btn-primary"
+              >
+                {loading ? '生成中...' : '生成故障树'}
+              </Button>
             </Space>
+          </div>
+        </Space>
+      </Card>
 
-            {result.validation_issues && result.validation_issues.length > 0 && (
-              <div style={{ marginTop: 16 }}>
-                <Alert type="warning" showIcon
-                  message="校验提示"
-                  description={result.validation_issues.join('；')}
-                />
+      {/* 错误提示 */}
+      {error && (
+        <Alert 
+          type="error" 
+          message="生成失败" 
+          description={error} 
+          showIcon 
+          style={{ marginBottom: 24 }} 
+          className="animate-fadeIn"
+        />
+      )}
+
+      {/* 结果展示 */}
+      {result && !loading && (
+        <div className="animate-fadeIn">
+          {/* 结果概览 */}
+          <Card className="glass-card" style={{ marginBottom: 24 }}>
+            <div className="flex-between" style={{ marginBottom: 16 }}>
+              <Space>
+                <Text strong style={{ fontSize: 16 }}>顶事件：</Text>
+                <Text style={{ fontSize: 16, color: '#1890ff' }}>{result.top_event}</Text>
+              </Space>
+              <Space>
+                <Button icon={<CheckCircleOutlined />} onClick={handleValidate}>重新校验</Button>
+                <Button type="primary" icon={<SaveOutlined />}>保存结果</Button>
+              </Space>
+            </div>
+
+            <div className="flex-gap" style={{ flexWrap: 'wrap', gap: 24 }}>
+              {/* 置信度 */}
+              <div style={{ textAlign: 'center' }}>
+                <div style={{ marginBottom: 4 }}>
+                  <Tag color={result.confidence > 0.8 ? 'green' : result.confidence > 0.6 ? 'orange' : 'red'} 
+                       style={{ fontSize: 16, padding: '4px 12px' }}>
+                    {result.confidence != null ? (result.confidence * 100).toFixed(1) + '%' : '-'}
+                  </Tag>
+                </div>
+                <Text type="secondary" style={{ fontSize: 12 }}>置信度</Text>
+              </div>
+              
+              {/* 节点数 */}
+              <div style={{ textAlign: 'center' }}>
+                <div style={{ marginBottom: 4, color: '#e6f7ff', fontSize: 18, fontWeight: 500 }}>
+                  {result.nodes_json?.length || 0}
+                </div>
+                <Text type="secondary" style={{ fontSize: 12 }}>节点数量</Text>
+              </div>
+              
+              {/* 逻辑门 */}
+              <div style={{ textAlign: 'center' }}>
+                <div style={{ marginBottom: 4, color: '#e6f7ff', fontSize: 18, fontWeight: 500 }}>
+                  {result.gates_json?.length || 0}
+                </div>
+                <Text type="secondary" style={{ fontSize: 12 }}>逻辑门</Text>
+              </div>
+              
+              {/* 最小割集 */}
+              <div style={{ textAlign: 'center' }}>
+                <div style={{ marginBottom: 4, color: '#e6f7ff', fontSize: 18, fontWeight: 500 }}>
+                  {result.mcs?.length || 0}
+                </div>
+                <Text type="secondary" style={{ fontSize: 12 }}>最小割集</Text>
+              </div>
+            </div>
+
+            {/* 分析摘要 */}
+            {result.analysis_summary && (
+              <div style={{ marginTop: 16, padding: '12px 16px', background: 'rgba(24,144,255,0.08)', borderRadius: 8, borderLeft: '3px solid #1890ff' }}>
+                <Text strong style={{ color: '#8cbdff' }}>分析摘要：</Text>
+                <Text style={{ color: '#e6f7ff', marginLeft: 8 }}>{result.analysis_summary}</Text>
               </div>
             )}
+
+            {/* 校验提示 */}
+            {result.validation_issues && result.validation_issues.length > 0 && (
+              <Alert 
+                type="warning" 
+                showIcon 
+                message="校验提示" 
+                description={result.validation_issues.join('；')}
+                style={{ marginTop: 16 }}
+              />
+            )}
             {(!result.validation_issues || result.validation_issues.length === 0) && result.fault_tree && (
-              <div style={{ marginTop: 16 }}>
-                <Alert type="success" showIcon message="故障树结构校验通过！" />
-              </div>
+              <Alert 
+                type="success" 
+                showIcon 
+                message="故障树结构校验通过！" 
+                style={{ marginTop: 16 }}
+              />
             )}
           </Card>
 
-          {result.nodes_json && <FaultTreeViewer tree={result} />}
-        </>
+          {/* 故障树可视化 */}
+          {result.nodes_json && (
+            <Card className="glass-card" title={<Space><ApiOutlined />故障树结构</Space>} style={{ marginBottom: 24 }}>
+              <FaultTreeViewer tree={result} />
+            </Card>
+          )}
+
+          {/* MCS 最小割集 */}
+          {result.mcs && result.mcs.length > 0 && (
+            <Card className="glass-card" title={<Space><FileTextOutlined />最小割集分析</Space>}>
+              <MCSView mcs={result.mcs} importance={result.importance} />
+            </Card>
+          )}
+        </div>
       )}
 
+      {/* 空状态 */}
       {!result && !loading && !error && (
-        <Card>
-          <Empty
-            image={<div style={{ fontSize: 64, color: '#d9d9d9' }}>⚠️</div>}
-            description="暂无生成的故障树，请在上方输入顶事件开始生成"
-          />
+        <Card className="glass-card" style={{ textAlign: 'center', padding: 48 }}>
+          <div style={{ fontSize: 64, marginBottom: 16 }}>🔍</div>
+          <Text type="secondary" style={{ fontSize: 15 }}>
+            在上方输入设备故障现象，开始生成故障树
+          </Text>
         </Card>
       )}
     </div>
