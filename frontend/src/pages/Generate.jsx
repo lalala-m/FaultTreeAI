@@ -1,8 +1,9 @@
 import React, { useState } from 'react'
-import { Card, Typography, Button, Space, Spin, message, Empty, Tag, Divider, Alert, Steps, Progress } from 'antd'
-import { ThunderboltOutlined, SaveOutlined, CheckCircleOutlined, WarningOutlined, RocketOutlined, BookOutlined, ApiOutlined, FileTextOutlined } from '@ant-design/icons'
+import { Card, Typography, Button, Space, Spin, message, Empty, Tag, Divider, Alert, Steps, Progress, Tabs, Modal } from 'antd'
+import { ThunderboltOutlined, SaveOutlined, CheckCircleOutlined, WarningOutlined, RocketOutlined, BookOutlined, ApiOutlined, FileTextOutlined, EditOutlined, EyeOutlined, UndoOutlined } from '@ant-design/icons'
 import api from '../services/api.js'
 import FaultTreeViewer from '../components/FaultTreeViewer.jsx'
+import TreeEditor from '../components/TreeEditor.jsx'
 import MCSView from '../components/MCSView.jsx'
 
 const { Title, Text, Paragraph } = Typography
@@ -14,6 +15,8 @@ export default function Generate() {
   const [result, setResult] = useState(null)
   const [error, setError] = useState('')
   const [currentStep, setCurrentStep] = useState(0)
+  const [viewMode, setViewMode] = useState('view') // 'view' | 'edit'
+  const [saving, setSaving] = useState(false)
 
   const handleGenerate = async () => {
     if (!topEvent.trim()) {
@@ -24,6 +27,7 @@ export default function Generate() {
     setResult(null)
     setError('')
     setCurrentStep(0)
+    setViewMode('view')
     
     try {
       // 步骤1: 知识检索
@@ -74,6 +78,55 @@ export default function Generate() {
     }
   }
 
+  // 保存编辑结果
+  const handleSaveEdit = async (editedData) => {
+    if (!result) return
+    setSaving(true)
+    try {
+      // 更新本地状态
+      setResult({
+        ...result,
+        fault_tree: editedData.fault_tree,
+        nodes_json: editedData.nodes,
+        gates_json: editedData.gates,
+      })
+      message.success('保存成功！')
+      setViewMode('view')
+    } catch (err) {
+      message.error('保存失败: ' + err.message)
+    }
+    setSaving(false)
+  }
+
+  // 切换到编辑模式
+  const handleEnterEdit = () => {
+    Modal.confirm({
+      title: '进入专家编辑模式',
+      icon: <EditOutlined />,
+      content: '进入编辑模式后，您可以手动调整故障树结构、添加或删除节点、修改逻辑门。是否继续？',
+      okText: '进入编辑',
+      cancelText: '取消',
+      onOk() {
+        setViewMode('edit')
+      },
+    })
+  }
+
+  // 取消编辑
+  const handleCancelEdit = () => {
+    Modal.confirm({
+      title: '放弃修改',
+      icon: <WarningOutlined />,
+      content: '确定要放弃所有修改吗？',
+      okText: '放弃修改',
+      cancelText: '继续编辑',
+      onOk() {
+        setViewMode('view')
+        message.info('已放弃修改')
+      },
+    })
+  }
+
   // 示例输入
   const examples = [
     { text: '电机无法启动', desc: '电动机故障' },
@@ -93,6 +146,42 @@ export default function Generate() {
           </Title>
           <Text type="secondary">基于 MiniMax 大模型 + RAG 知识检索，自动生成工业设备故障树</Text>
         </div>
+        
+        {/* 专家编辑按钮 */}
+        {result && !loading && (
+          <Space>
+            {viewMode === 'view' ? (
+              <Button 
+                type="primary" 
+                icon={<EditOutlined />} 
+                onClick={handleEnterEdit}
+                className="btn-primary"
+              >
+                专家编辑
+              </Button>
+            ) : (
+              <>
+                <Button 
+                  icon={<UndoOutlined />} 
+                  onClick={handleCancelEdit}
+                >
+                  取消编辑
+                </Button>
+                <Button 
+                  type="primary" 
+                  icon={<SaveOutlined />} 
+                  loading={saving}
+                  onClick={() => {
+                    // TreeEditor 内部会处理保存
+                  }}
+                  className="btn-primary"
+                >
+                  保存修改
+                </Button>
+              </>
+            )}
+          </Space>
+        )}
       </div>
 
       {/* 步骤指示器 */}
@@ -196,10 +285,25 @@ export default function Generate() {
         <div className="animate-fadeIn">
           {/* 结果概览 */}
           <Card className="glass-card" style={{ marginBottom: 24 }}>
+            {/* 模式提示 */}
+            {viewMode === 'edit' && (
+              <Alert 
+                type="info" 
+                showIcon 
+                icon={<EditOutlined />}
+                message="专家编辑模式" 
+                description="点击节点可查看详情；可拖拽调整位置；点击上方「保存修改」保存编辑结果"
+                style={{ marginBottom: 16 }}
+              />
+            )}
+
             <div className="flex-between" style={{ marginBottom: 16 }}>
               <Space>
                 <Text strong style={{ fontSize: 16 }}>顶事件：</Text>
                 <Text style={{ fontSize: 16, color: '#1890ff' }}>{result.top_event}</Text>
+                {viewMode === 'edit' && (
+                  <Tag color="orange"><EditOutlined /> 编辑模式</Tag>
+                )}
               </Space>
               <Space>
                 <Button icon={<CheckCircleOutlined />} onClick={handleValidate}>重新校验</Button>
@@ -272,15 +376,32 @@ export default function Generate() {
             )}
           </Card>
 
-          {/* 故障树可视化 */}
+          {/* 故障树可视化 / 编辑器 */}
           {result.nodes_json && (
-            <Card className="glass-card" title={<Space><ApiOutlined />故障树结构</Space>} style={{ marginBottom: 24 }}>
-              <FaultTreeViewer tree={result} />
+            <Card 
+              className="glass-card" 
+              title={
+                <Space>
+                  {viewMode === 'view' ? <ApiOutlined /> : <EditOutlined />}
+                  {viewMode === 'view' ? '故障树结构' : '专家编辑模式'}
+                </Space>
+              }
+              style={{ marginBottom: 24 }}
+            >
+              {viewMode === 'view' ? (
+                <FaultTreeViewer tree={result} />
+              ) : (
+                <TreeEditor 
+                  initialTree={result}
+                  onSave={handleSaveEdit}
+                  onCancel={handleCancelEdit}
+                />
+              )}
             </Card>
           )}
 
-          {/* MCS 最小割集 */}
-          {result.mcs && result.mcs.length > 0 && (
+          {/* MCS 最小割集 - 编辑模式下不显示 */}
+          {result.mcs && result.mcs.length > 0 && viewMode === 'view' && (
             <Card className="glass-card" title={<Space><FileTextOutlined />最小割集分析</Space>}>
               <MCSView mcs={result.mcs} importance={result.importance} />
             </Card>
