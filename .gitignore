@@ -33,7 +33,7 @@ data/chroma_db/
 
 # 向量数据（本地存储，不需要提交）
 data/manuals/
-data/samples/
+# data/samples/ - 示例知识库（可提交）
 
 # IDE
 .vscode/
