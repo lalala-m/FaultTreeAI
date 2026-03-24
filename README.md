@@ -1,6 +1,12 @@
 # FaultTreeAI
 
-基于知识的工业设备故障树智能生成与辅助构建系统。
+基于知识驱动与多模型推理的工业设备故障树智能生成与辅助构建系统。
+
+## GitHub 项目描述（可直接用于仓库简介）
+
+FaultTreeAI 是一个面向工业场景的 FTA（Fault Tree Analysis）智能系统，集成 RAG 知识检索、结构化故障树生成、MOCUS 最小割集与 Birnbaum 重要度分析，并支持 Ollama / MiniMax 多模型可切换与自动回退，适合本地离线开发与竞赛/生产演示。
+
+**关键词**：`FastAPI` `React` `RAG` `pgvector` `Ollama` `MiniMax` `FTA` `MOCUS` `Fault Tree`
 
 ## 核心能力
 
