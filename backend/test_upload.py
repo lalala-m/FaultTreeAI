@@ -1,9 +1,14 @@
 import sys
-sys.path.insert(0, 'D:/AllProject/FaultTreeAI/backend')
+from pathlib import Path
+
+_project_root = Path(__file__).resolve().parent.parent
+if str(_project_root) not in sys.path:
+    sys.path.insert(0, str(_project_root))
 
 import asyncio
-from core.parser.document import parse_document
-from core.rag.retriever import add_chunks
+from backend.core.parser.document import parse_document
+from backend.core.rag.retriever import add_chunks, retrieve
+
 
 async def test():
     chunks = parse_document('D:/AllProject/FaultTreeAI/data/manuals/通用型驱动系统故障数据（原始数据）.pdf')
@@ -13,10 +18,10 @@ async def test():
     await add_chunks(chunks, "test001")
     print("向量化完成！")
 
-    from core.rag.retriever import retrieve
     results = await retrieve("驱动系统失效")
     print(f"检索测试，召回 {len(results)} 条：")
     for r in results:
         print(f"  [{r['ref_id']}] {r['text'][:60]}")
+
 
 asyncio.run(test())

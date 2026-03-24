@@ -1,0 +1,125 @@
+{
+  "template_id": "pump",
+  "name": "泵类设备故障",
+  "description": "适用于离心泵、齿轮泵、螺杆泵等各类泵的故障树生成",
+  "category": "pump",
+  "icon": "🔩",
+  "top_events": [
+    "离心泵无法启动",
+    "离心泵流量不足",
+    "离心泵过载",
+    "离心泵振动过大",
+    "离心泵轴承温度过高",
+    "离心泵密封泄漏",
+    "齿轮泵故障",
+    "螺杆泵故障"
+  ],
+  "typical_events": [
+    {
+      "id": "N002",
+      "type": "intermediate",
+      "name": "电源问题",
+      "description": "泵的供电异常"
+    },
+    {
+      "id": "N003",
+      "type": "intermediate",
+      "name": "电机故障",
+      "description": "驱动电机异常"
+    },
+    {
+      "id": "N004",
+      "type": "intermediate",
+      "name": "机械卡阻",
+      "description": "泵内部机械部件卡阻"
+    },
+    {
+      "id": "N005",
+      "type": "basic",
+      "name": "缺相",
+      "description": "三相电源某一相缺失"
+    },
+    {
+      "id": "N006",
+      "type": "basic",
+      "name": "电压过低",
+      "description": "供电电压低于额定值"
+    },
+    {
+      "id": "N007",
+      "type": "basic",
+      "name": "电机绕组烧毁",
+      "description": "电机线圈损坏"
+    },
+    {
+      "id": "N008",
+      "type": "basic",
+      "name": "电机轴承损坏",
+      "description": "电机轴承磨损"
+    },
+    {
+      "id": "N009",
+      "type": "basic",
+      "name": "轴承损坏",
+      "description": "泵轴承磨损"
+    },
+    {
+      "id": "N010",
+      "type": "basic",
+      "name": "叶轮卡住",
+      "description": "叶轮被异物卡住"
+    }
+  ],
+  "typical_gates": [
+    {
+      "id": "G001",
+      "type": "OR",
+      "output_node": "N001",
+      "input_nodes": ["N002", "N003", "N004"]
+    },
+    {
+      "id": "G002",
+      "type": "OR",
+      "output_node": "N002",
+      "input_nodes": ["N005", "N006"]
+    },
+    {
+      "id": "G003",
+      "type": "OR",
+      "output_node": "N003",
+      "input_nodes": ["N007", "N008"]
+    },
+    {
+      "id": "G004",
+      "type": "OR",
+      "output_node": "N004",
+      "input_nodes": ["N009", "N010"]
+    }
+  ],
+  "common_basic_events": [
+    "缺相",
+    "电压过低",
+    "电源开关未合上",
+    "保险丝熔断",
+    "电机绕组烧毁",
+    "电机轴承损坏",
+    "电机过载保护跳闸",
+    "轴承损坏",
+    "叶轮卡住",
+    "叶轮磨损",
+    "密封件粘连",
+    "异物堵塞",
+    "出口阀门关闭",
+    "泵转速不够",
+    "叶轮损坏",
+    "吸入管漏气",
+    "过滤器堵塞",
+    "汽蚀现象",
+    "出口压力过高",
+    "液体粘度不符"
+  ],
+  "analysis_tips": "泵类设备故障主要从电气问题、机械问题、吸入问题、出口问题四个方面分析。无法启动重点检查电源和机械卡阻；流量不足重点检查吸入和叶轮；振动过大重点检查轴承和平衡性。",
+  "references": [
+    "data/samples/pump_faults.md"
+  ]
+}

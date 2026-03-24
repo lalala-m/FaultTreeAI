@@ -89,6 +89,28 @@ export const exportPDF = async (faultTree, mcs) => {
   return data
 }
 
+// ── 模板管理 ────────────────────────────────────────
+
+export const listTemplates = async () => {
+  const { data } = await api.get('/template/list')
+  return data
+}
+
+export const getTemplate = async (templateId) => {
+  const { data } = await api.get(`/template/${templateId}`)
+  return data
+}
+
+export const getTemplateTopEvents = async (templateId) => {
+  const { data } = await api.get(`/template/${templateId}/top-events`)
+  return data
+}
+
+export const getTemplateBasicEvents = async (templateId) => {
+  const { data } = await api.get(`/template/${templateId}/basic-events`)
+  return data
+}
+
 // 将所有函数绑定到 api 对象上，方便直接通过 api 调用
 api.uploadDocument = uploadDocument
 api.listDocuments = listDocuments
@@ -102,5 +124,9 @@ api.saveFaultTree = saveFaultTree
 api.validateFaultTree = validateFaultTree
 api.exportWord = exportWord
 api.exportPDF = exportPDF
+api.listTemplates = listTemplates
+api.getTemplate = getTemplate
+api.getTemplateTopEvents = getTemplateTopEvents
+api.getTemplateBasicEvents = getTemplateBasicEvents
 
 export default api

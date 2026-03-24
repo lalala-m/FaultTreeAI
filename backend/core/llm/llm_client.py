@@ -28,7 +28,7 @@ class MiniMaxChatModel(BaseChatModel):
     group_id: str = Field(default=settings.MINIMAX_GROUP_ID)
     temperature: float = Field(default=settings.LLM_TEMPERATURE)
     max_tokens: int = Field(default=settings.LLM_MAX_TOKENS)
-    base_url: str = "https://api.minimax.io/v1/text/chatcompletion_v2"
+    base_url: str = Field(default=settings.MINIMAX_BASE_URL + "/v1/text/chatcompletion_v2")
 
     @property
     def _llm_type(self) -> str:
@@ -148,7 +148,7 @@ class MiniMaxEmbeddings:
         self.group_id = group_id
         self.model = model
         self.dimensions = dimensions
-        self.base_url = "https://api.minimax.io/v1/embeddings"
+        self.base_url = settings.MINIMAX_BASE_URL + "/v1/embeddings"
 
     def _cosine_to_dot(self, embedding: list[float]) -> list[float]:
         """余弦相似度转点积：MiniMax 返回的是余弦相似度，需要归一化"""

@@ -1,0 +1,32 @@
+{
+  "templates": [
+    {
+      "template_id": "motor",
+      "name": "电动机故障",
+      "description": "适用于各类电动机的故障树生成",
+      "category": "motor",
+      "icon": "⚡"
+    },
+    {
+      "template_id": "hydraulic",
+      "name": "液压系统故障",
+      "description": "适用于各类液压系统的故障树生成",
+      "category": "hydraulic",
+      "icon": "🔧"
+    },
+    {
+      "template_id": "pump",
+      "name": "泵类设备故障",
+      "description": "适用于离心泵、齿轮泵、螺杆泵等各类泵的故障树生成",
+      "category": "pump",
+      "icon": "🔩"
+    },
+    {
+      "template_id": "plc",
+      "name": "PLC控制系统故障",
+      "description": "适用于PLC控制器、工业网络等控制系统故障的故障树生成",
+      "category": "plc",
+      "icon": "📟"
+    }
+  ]
+}

@@ -156,5 +156,29 @@ class Session(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
+class FaultTreeFeedback(Base):
+    """故障树反馈记录表 - 记录专家修改"""
+    __tablename__ = "fault_tree_feedbacks"
+
+    feedback_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tree_id = Column(UUID(as_uuid=True), ForeignKey("fault_trees.tree_id", ondelete="CASCADE"), nullable=False)
+    original_nodes = Column(JSONB, nullable=False)  # 修改前的节点
+    modified_nodes = Column(JSONB, nullable=False)  # 修改后的节点
+    original_gates = Column(JSONB, nullable=False)  # 修改前的逻辑门
+    modified_gates = Column(JSONB, nullable=False)  # 修改后的逻辑门
+    feedback_type = Column(String(20), nullable=False, default="edit")  # edit/add/delete
+    feedback_reason = Column(Text)  # 修改原因
+    status = Column(String(20), nullable=False, default="pending")  # pending/approved/rejected
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    reviewed_at = Column(DateTime(timezone=True))
+    reviewed_by = Column(String(100))
+
+    __table_args__ = (
+        Index("idx_feedbacks_tree_id", "tree_id"),
+        Index("idx_feedbacks_status", "status"),
+        Index("idx_feedbacks_created_at", "created_at"),
+    )
+
+
 # 全局引用 settings（避免循环导入时访问不到）
 from backend.config import settings

@@ -24,7 +24,7 @@ export default function Dashboard({ onNavigate }) {
   useEffect(() => {
     const loadData = async () => {
       try {
-        const statsData = await api.get('/api/knowledge/stats')
+        const statsData = await api.getKnowledgeStats()
         setStats(prev => ({
           ...prev,
           total_docs: statsData.total_docs || 0,
@@ -161,11 +161,11 @@ export default function Dashboard({ onNavigate }) {
                 <div style={{ fontSize: 28, color: s.color, marginBottom: 8 }}>
                   {s.icon}
                 </div>
-                <div style={{ fontSize: 24, fontWeight: 600, color: '#e6f7ff' }}>
+                <div style={{ fontSize: 24, fontWeight: 600, color: '#1a1a1a' }}>
                   {loading ? '-' : s.value}{s.suffix || ''}
                 </div>
-                <div style={{ fontSize: 12, color: '#8cbdff', marginTop: 4 }}>{s.title}</div>
-                <div style={{ fontSize: 11, color: '#5c7a99' }}>{s.desc}</div>
+                <div style={{ fontSize: 12, color: '#595959', marginTop: 4 }}>{s.title}</div>
+                <div style={{ fontSize: 11, color: '#8c8c8c' }}>{s.desc}</div>
               </div>
             </Card>
           </Col>
@@ -200,7 +200,7 @@ export default function Dashboard({ onNavigate }) {
                     ]}
                   >
                     <List.Item.Meta
-                      title={<Text style={{ color: '#e6f7ff' }}>{item.name}</Text>}
+                      title={<Text style={{ color: '#1a1a1a' }}>{item.name}</Text>}
                       description={
                         <Space>
                           <Text type="secondary" style={{ fontSize: 12 }}>
@@ -217,7 +217,7 @@ export default function Dashboard({ onNavigate }) {
               />
             ) : (
               <div style={{ textAlign: 'center', padding: 32 }}>
-                <ThunderboltOutlined style={{ fontSize: 40, color: '#5c7a99', marginBottom: 12 }} />
+                <ThunderboltOutlined style={{ fontSize: 40, color: '#8c8c8c', marginBottom: 12 }} />
                 <div>
                   <Text type="secondary">还没有故障树</Text>
                   <Button 
@@ -242,8 +242,8 @@ export default function Dashboard({ onNavigate }) {
                 <Space>
                   <div style={{ width: 28, height: 28, borderRadius: '50%', background: '#1890ff', color: '#fff', textAlign: 'center', lineHeight: '28px', fontSize: 14 }}>1</div>
                   <div>
-                    <div style={{ color: '#e6f7ff', fontWeight: 500 }}>上传设备手册</div>
-                    <div style={{ color: '#5c7a99', fontSize: 12 }}>支持 PDF/Word/TXT</div>
+                    <div style={{ color: '#1a1a1a', fontWeight: 500 }}>上传设备手册</div>
+                    <div style={{ color: '#8c8c8c', fontSize: 12 }}>支持 PDF/Word/TXT</div>
                   </div>
                 </Space>
                 <Button size="small" type="primary" onClick={() => onNavigate('knowledge')}>
@@ -256,8 +256,8 @@ export default function Dashboard({ onNavigate }) {
                 <Space>
                   <div style={{ width: 28, height: 28, borderRadius: '50%', background: '#36cfc9', color: '#fff', textAlign: 'center', lineHeight: '28px', fontSize: 14 }}>2</div>
                   <div>
-                    <div style={{ color: '#e6f7ff', fontWeight: 500 }}>描述故障现象</div>
-                    <div style={{ color: '#5c7a99', fontSize: 12 }}>AI 自动生成故障树</div>
+                    <div style={{ color: '#1a1a1a', fontWeight: 500 }}>描述故障现象</div>
+                    <div style={{ color: '#8c8c8c', fontSize: 12 }}>AI 自动生成故障树</div>
                   </div>
                 </Space>
                 <Button size="small" type="primary" onClick={() => onNavigate('generate')}>
@@ -270,8 +270,8 @@ export default function Dashboard({ onNavigate }) {
                 <Space>
                   <div style={{ width: 28, height: 28, borderRadius: '50%', background: '#faad14', color: '#fff', textAlign: 'center', lineHeight: '28px', fontSize: 14 }}>3</div>
                   <div>
-                    <div style={{ color: '#e6f7ff', fontWeight: 500 }}>专家编辑优化</div>
-                    <div style={{ color: '#5c7a99', fontSize: 12 }}>手动调整，导出报告</div>
+                    <div style={{ color: '#1a1a1a', fontWeight: 500 }}>专家编辑优化</div>
+                    <div style={{ color: '#8c8c8c', fontSize: 12 }}>手动调整，导出报告</div>
                   </div>
                 </Space>
                 <Button size="small" onClick={() => onNavigate('generate')}>

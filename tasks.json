@@ -1,0 +1,58 @@
+{
+  "tasks": [
+    {
+      "id": "A1",
+      "title": "创建故障树模板配置文件",
+      "description": "在 data/templates/ 目录创建 JSON 格式的故障树模板",
+      "status": "completed"
+    },
+    {
+      "id": "A2",
+      "title": "创建模板管理API",
+      "description": "后端 API 支持列出模板、获取模板详情",
+      "status": "completed"
+    },
+    {
+      "id": "A3",
+      "title": "前端添加模板选择功能",
+      "description": "在生成页面添加模板选择下拉框",
+      "status": "completed"
+    },
+    {
+      "id": "A4",
+      "title": "修改后端支持模板参数",
+      "description": "在 GenerateRequest 中添加模板参数，生成时注入模板信息",
+      "status": "completed"
+    },
+    {
+      "id": "B1",
+      "title": "实现 BM25 关键词检索",
+      "description": "使用 rank_bm25 库实现关键词检索",
+      "status": "completed"
+    },
+    {
+      "id": "B2",
+      "title": "实现混合检索",
+      "description": "结合向量检索 + BM25 关键词检索，提升召回准确率",
+      "status": "completed"
+    },
+    {
+      "id": "C1",
+      "title": "创建反馈记录表",
+      "description": "在数据库中创建 fault_tree_feedbacks 表",
+      "status": "completed"
+    },
+    {
+      "id": "C2",
+      "title": "修改前端保存逻辑支持反馈",
+      "description": "保存时记录用户的修改内容作为反馈",
+      "status": "completed"
+    },
+    {
+      "id": "C3",
+      "title": "创建反馈管理API",
+      "description": "提供反馈列表、反馈审核、加入样本库功能",
+      "status": "completed"
+    }
+  ]
+}

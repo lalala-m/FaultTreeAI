@@ -19,6 +19,9 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    dns:
+      - 8.8.8.8
+      - 114.114.114.114
 
   # 后端服务
   backend:
@@ -27,7 +30,9 @@ services:
       dockerfile: Dockerfile
     container_name: faulttree-backend
     environment:
+      PYTHONPATH: /app:/app/backend
       DATABASE_URL: postgresql+asyncpg://postgres:${DB_PASSWORD:-faulttree123}@db:5432/faulttree
+      DB_HOST: db
       MINIMAX_API_KEY: ${MINIMAX_API_KEY}
       MINIMAX_GROUP_ID: ${MINIMAX_GROUP_ID}
       MINIMAX_M2_API_KEY: ${MINIMAX_M2_API_KEY}
@@ -36,6 +41,11 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    dns:
+      - 8.8.8.8
+      - 114.114.114.114
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./data/manuals:/app/data/manuals
       - ./data/chroma_db:/app/data/chroma_db

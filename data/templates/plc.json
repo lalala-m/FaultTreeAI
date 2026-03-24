@@ -1,0 +1,123 @@
+{
+  "template_id": "plc",
+  "name": "PLC控制系统故障",
+  "description": "适用于PLC控制器、工业网络等控制系统故障的故障树生成",
+  "category": "plc",
+  "icon": "📟",
+  "top_events": [
+    "PLC控制器死机",
+    "控制系统通讯中断",
+    "PLC输入信号异常",
+    "PLC输出信号异常",
+    "PLC程序运行错误",
+    "PLC电池电压低"
+  ],
+  "typical_events": [
+    {
+      "id": "N002",
+      "type": "intermediate",
+      "name": "网络硬件故障",
+      "description": "通讯网络硬件设备故障"
+    },
+    {
+      "id": "N003",
+      "type": "intermediate",
+      "name": "软件配置错误",
+      "description": "通讯参数配置不当"
+    },
+    {
+      "id": "N004",
+      "type": "intermediate",
+      "name": "供电异常",
+      "description": "通讯设备供电不正常"
+    },
+    {
+      "id": "N005",
+      "type": "basic",
+      "name": "网线损坏",
+      "description": "以太网网线断裂或损坏"
+    },
+    {
+      "id": "N006",
+      "type": "basic",
+      "name": "交换机故障",
+      "description": "网络交换机无法正常工作"
+    },
+    {
+      "id": "N007",
+      "type": "basic",
+      "name": "IP地址冲突",
+      "description": "设备IP地址配置冲突"
+    },
+    {
+      "id": "N008",
+      "type": "basic",
+      "name": "波特率不匹配",
+      "description": "通讯双方波特率设置不一致"
+    },
+    {
+      "id": "N009",
+      "type": "basic",
+      "name": "电源模块损坏",
+      "description": "通讯设备电源模块故障"
+    },
+    {
+      "id": "N010",
+      "type": "basic",
+      "name": "供电线路断开",
+      "description": "通讯设备供电线路断开"
+    }
+  ],
+  "typical_gates": [
+    {
+      "id": "G001",
+      "type": "OR",
+      "output_node": "N001",
+      "input_nodes": ["N002", "N003", "N004"]
+    },
+    {
+      "id": "G002",
+      "type": "OR",
+      "output_node": "N002",
+      "input_nodes": ["N005", "N006"]
+    },
+    {
+      "id": "G003",
+      "type": "OR",
+      "output_node": "N003",
+      "input_nodes": ["N007", "N008"]
+    },
+    {
+      "id": "G004",
+      "type": "OR",
+      "output_node": "N004",
+      "input_nodes": ["N009", "N010"]
+    }
+  ],
+  "common_basic_events": [
+    "网线损坏",
+    "交换机故障",
+    "网卡故障",
+    "IP地址冲突",
+    "IP地址配置错误",
+    "波特率不匹配",
+    "通讯协议不匹配",
+    "设备地址重复",
+    "电源模块损坏",
+    "供电线路断开",
+    "电源电压不稳",
+    "PLC死机",
+    "PLC扫描超时",
+    "内存错误",
+    "电池电压低",
+    "干扰信号",
+    "接地不良",
+    "输入点损坏",
+    "输出点损坏",
+    "程序错误"
+  ],
+  "analysis_tips": "PLC控制系统故障主要从硬件故障、软件配置、供电问题、外部干扰四个方面分析。通讯中断重点检查网络硬件和参数配置；输入输出异常重点检查接线和模块状态；死机问题重点检查供电和干扰。",
+  "references": [
+    "data/samples/plc_faults.md"
+  ]
+}

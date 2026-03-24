@@ -1,0 +1,110 @@
+{
+  "template_id": "motor",
+  "name": "电动机故障",
+  "description": "适用于各类电动机的故障树生成",
+  "category": "motor",
+  "icon": "⚡",
+  "top_events": [
+    "电机无法启动",
+    "电机运行异常",
+    "电机过热",
+    "电机转速异常",
+    "电机漏电"
+  ],
+  "typical_events": [
+    {
+      "id": "N002",
+      "type": "intermediate",
+      "name": "电源供电异常",
+      "description": "电机未获得正常供电"
+    },
+    {
+      "id": "N003",
+      "type": "intermediate",
+      "name": "电机本体故障",
+      "description": "电机机械或电气部件损坏"
+    },
+    {
+      "id": "N004",
+      "type": "basic",
+      "name": "电源开关未闭合",
+      "description": "主电源开关处于断开状态"
+    },
+    {
+      "id": "N005",
+      "type": "basic",
+      "name": "缺相运行",
+      "description": "三相电源某一相缺失"
+    },
+    {
+      "id": "N006",
+      "type": "basic",
+      "name": "电压不足",
+      "description": "供电电压低于额定值"
+    },
+    {
+      "id": "N007",
+      "type": "basic",
+      "name": "轴承损坏",
+      "description": "电机轴承磨损或破裂"
+    },
+    {
+      "id": "N008",
+      "type": "basic",
+      "name": "绕组短路",
+      "description": "电机绕组发生短路故障"
+    },
+    {
+      "id": "N009",
+      "type": "basic",
+      "name": "转子卡死",
+      "description": "转子被异物卡住或变形"
+    }
+  ],
+  "typical_gates": [
+    {
+      "id": "G001",
+      "type": "OR",
+      "output_node": "N001",
+      "input_nodes": ["N002", "N003"]
+    },
+    {
+      "id": "G002",
+      "type": "OR",
+      "output_node": "N002",
+      "input_nodes": ["N004", "N005", "N006"]
+    },
+    {
+      "id": "G003",
+      "type": "OR",
+      "output_node": "N003",
+      "input_nodes": ["N007", "N008", "N009"]
+    }
+  ],
+  "common_basic_events": [
+    "电源开关未闭合",
+    "缺相运行",
+    "电压不足",
+    "电压过高",
+    "轴承损坏",
+    "轴承温度过高",
+    "绕组短路",
+    "绕组开路",
+    "绕组过热",
+    "转子卡死",
+    "转子不平衡",
+    "风叶损坏",
+    "散热不良",
+    "负载过大",
+    "机械卡阻",
+    "润滑不良",
+    "绝缘老化",
+    "接线松动",
+    "电机过热保护动作",
+    "变频器故障"
+  ],
+  "analysis_tips": "电机故障主要从电源供电、电机本体、外部负载三个方面分析。电源问题包括缺相、电压异常；本体问题包括轴承、绕组、转子；外部问题包括负载过大、机械卡阻。",
+  "references": [
+    "data/samples/motor_faults.md"
+  ]
+}

@@ -1,6 +1,6 @@
-import React, { useState } from 'react'
-import { Card, Typography, Button, Space, Spin, message, Empty, Tag, Divider, Alert, Steps, Progress, Tabs, Modal } from 'antd'
-import { ThunderboltOutlined, SaveOutlined, CheckCircleOutlined, WarningOutlined, RocketOutlined, BookOutlined, ApiOutlined, FileTextOutlined, EditOutlined, EyeOutlined, UndoOutlined } from '@ant-design/icons'
+import React, { useState, useEffect } from 'react'
+import { Card, Typography, Button, Space, Spin, message, Empty, Tag, Divider, Alert, Steps, Progress, Tabs, Modal, Select, Row, Col, Upload, Progress as ProgressBar } from 'antd'
+import { ThunderboltOutlined, SaveOutlined, CheckCircleOutlined, WarningOutlined, RocketOutlined, BookOutlined, ApiOutlined, FileTextOutlined, EditOutlined, EyeOutlined, UndoOutlined, AppstoreOutlined, UploadOutlined, InboxOutlined, FilePdfOutlined, FileWordOutlined, DeleteOutlined } from '@ant-design/icons'
 import api from '../services/api.js'
 import FaultTreeViewer from '../components/FaultTreeViewer.jsx'
 import TreeEditor from '../components/TreeEditor.jsx'
@@ -17,6 +17,109 @@ export default function Generate() {
   const [currentStep, setCurrentStep] = useState(0)
   const [viewMode, setViewMode] = useState('view') // 'view' | 'edit'
   const [saving, setSaving] = useState(false)
+  
+  // 模板相关状态
+  const [templates, setTemplates] = useState([])
+  const [selectedTemplate, setSelectedTemplate] = useState(null)
+  const [templateTopEvents, setTemplateTopEvents] = useState([])
+  const [loadingTemplates, setLoadingTemplates] = useState(false)
+  
+  // 文档相关状态
+  const [docs, setDocs] = useState([])
+  const [selectedDoc, setSelectedDoc] = useState(null)
+  const [loadingDocs, setLoadingDocs] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState(0)
+  
+  // 加载模板列表
+  useEffect(() => {
+    const loadTemplates = async () => {
+      try {
+        setLoadingTemplates(true)
+        const data = await api.listTemplates()
+        setTemplates(data.templates || [])
+      } catch (err) {
+        console.error('加载模板失败:', err)
+      } finally {
+        setLoadingTemplates(false)
+      }
+    }
+    loadTemplates()
+  }, [])
+  
+  // 加载文档列表
+  useEffect(() => {
+    const loadDocs = async () => {
+      try {
+        setLoadingDocs(true)
+        const data = await api.listDocuments()
+        setDocs(Array.isArray(data) ? data : [])
+      } catch (err) {
+        console.error('加载文档失败:', err)
+        setDocs([])
+      } finally {
+        setLoadingDocs(false)
+      }
+    }
+    loadDocs()
+  }, [])
+  
+  // 当选择模板时，加载预设顶事件
+  const handleTemplateChange = async (templateId) => {
+    setSelectedTemplate(templateId)
+    if (templateId) {
+      try {
+        const topEvents = await api.getTemplateTopEvents(templateId)
+        setTemplateTopEvents(topEvents)
+      } catch (err) {
+        console.error('加载模板顶事件失败:', err)
+        setTemplateTopEvents([])
+      }
+    } else {
+      setTemplateTopEvents([])
+    }
+  }
+  
+  // 选择预设顶事件
+  const handleTopEventSelect = (event) => {
+    setTopEvent(event)
+  }
+  
+  // 处理文档上传
+  const handleUpload = async ({ file }) => {
+    setUploading(true)
+    setUploadProgress(0)
+    
+    try {
+      await api.uploadDocument(file, setUploadProgress)
+      message.success('文档上传成功！')
+      // 刷新文档列表
+      const data = await api.listDocuments()
+      setDocs(Array.isArray(data) ? data : [])
+    } catch (err) {
+      message.error('上传失败: ' + (err.response?.data?.detail || err.message))
+    }
+    setUploading(false)
+    setUploadProgress(0)
+  }
+  
+  // 处理文档删除
+  const handleDeleteDoc = async (docId, e) => {
+    e.stopPropagation()
+    try {
+      await api.deleteDocument(docId)
+      message.success('已删除')
+      // 刷新文档列表
+      const data = await api.listDocuments()
+      setDocs(Array.isArray(data) ? data : [])
+      // 如果删除的是当前选中的文档，清除选择
+      if (selectedDoc === docId) {
+        setSelectedDoc(null)
+      }
+    } catch (err) {
+      message.error('删除失败')
+    }
+  }
 
   const handleGenerate = async () => {
     if (!topEvent.trim()) {
@@ -37,11 +140,14 @@ export default function Generate() {
       // 步骤2: AI分析生成
       setCurrentStep(2)
       
+      // 传递选中的文档ID
       const data = await api.generateFaultTree({
         top_event: topEvent,
         system_name: systemName,
         user_prompt: '',
         rag_top_k: 5,
+        template_id: selectedTemplate || undefined,
+        doc_ids: selectedDoc ? [selectedDoc] : undefined,
       })
       
       // 步骤3: 计算完成
@@ -134,6 +240,13 @@ export default function Generate() {
     { text: '控制系统通讯中断', desc: '工业网络故障' },
     { text: 'PLC控制器死机', desc: '控制系统故障' },
   ]
+  
+  // 获取文件图标
+  const getFileIcon = (filename) => {
+    if (filename?.endsWith('.pdf')) return <FilePdfOutlined style={{ color: '#ff4d4f' }} />
+    if (filename?.endsWith('.docx') || filename?.endsWith('.doc')) return <FileWordOutlined style={{ color: '#1890ff' }} />
+    return <FileTextOutlined style={{ color: '#52c41a' }} />
+  }
 
   return (
     <div className="page-container">
@@ -205,9 +318,138 @@ export default function Generate() {
       {/* 输入区域 */}
       <Card className="glass-card" style={{ marginBottom: 24 }}>
         <Space direction="vertical" style={{ width: '100%' }} size="large">
+          {/* 第一行：模板选择 + 文档选择 */}
+          <Row gutter={[16, 16]}>
+            {/* 模板选择 */}
+            <Col xs={24} md={12}>
+              <Text strong style={{ fontSize: 15, display: 'block', marginBottom: 8 }}>
+                <AppstoreOutlined style={{ marginRight: 8 }} />
+                选择设备类型模板（可选）
+              </Text>
+              <Text type="secondary" style={{ fontSize: 13, display: 'block', marginBottom: 12 }}>
+                选择模板后，系统会结合该类型设备的常见故障模式进行生成
+              </Text>
+              <Select
+                style={{ width: '100%' }}
+                placeholder="选择设备模板..."
+                value={selectedTemplate}
+                onChange={handleTemplateChange}
+                loading={loadingTemplates}
+                allowClear
+                options={templates.map(t => ({
+                  value: t.template_id,
+                  label: <span>{t.icon} {t.name}</span>,
+                }))}
+              />
+              {templateTopEvents.length > 0 && (
+                <div style={{ marginTop: 12 }}>
+                  <Text type="secondary" style={{ fontSize: 13, marginRight: 8 }}>常见故障：</Text>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+                    {templateTopEvents.slice(0, 5).map((event, idx) => (
+                      <Button
+                        key={idx}
+                        size="small"
+                        type={topEvent === event ? 'primary' : 'default'}
+                        onClick={() => handleTopEventSelect(event)}
+                        disabled={loading}
+                      >
+                        {event}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </Col>
+            
+            {/* 文档选择 */}
+            <Col xs={24} md={12}>
+              <Text strong style={{ fontSize: 15, display: 'block', marginBottom: 8 }}>
+                <BookOutlined style={{ marginRight: 8 }} />
+                选择操作手册（可选）
+              </Text>
+              <Text type="secondary" style={{ fontSize: 13, display: 'block', marginBottom: 12 }}>
+                选择已上传的操作手册，让AI基于特定文档生成更准确的故障树
+              </Text>
+              
+              {/* 上传进度 */}
+              {uploading && (
+                <div style={{ marginBottom: 12 }}>
+                  <ProgressBar percent={uploadProgress} status="active" strokeColor="#1890ff" />
+                  <Text type="secondary" style={{ fontSize: 12 }}>正在上传文档...</Text>
+                </div>
+              )}
+              
+              {/* 文档选择器 */}
+              <Select
+                style={{ width: '100%' }}
+                placeholder="选择已上传的操作手册..."
+                value={selectedDoc}
+                onChange={setSelectedDoc}
+                loading={loadingDocs}
+                allowClear
+                dropdownRender={(menu) => (
+                  <>
+                    {menu}
+                    <Divider style={{ margin: '8px 0' }} />
+                    <div style={{ padding: '8px' }}>
+                      <Upload
+                        accept=".pdf,.docx,.doc,.txt"
+                        showUploadList={false}
+                        beforeUpload={() => false}
+                        onChange={handleUpload}
+                        disabled={uploading}
+                      >
+                        <Button 
+                          type="primary" 
+                          icon={<UploadOutlined />} 
+                          loading={uploading}
+                          block
+                          style={{ marginBottom: 8 }}
+                        >
+                          {uploading ? '上传中...' : '上传新文档'}
+                        </Button>
+                      </Upload>
+                      <Text type="secondary" style={{ fontSize: 12, display: 'block', textAlign: 'center' }}>
+                        支持 PDF、Word、TXT 格式
+                      </Text>
+                    </div>
+                  </>
+                )}
+                options={docs
+                  .filter(d => d.status === 'active')
+                  .map(d => ({
+                    value: d.doc_id,
+                    label: (
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+                        <Space>
+                          {getFileIcon(d.filename)}
+                          <Text>{d.filename}</Text>
+                        </Space>
+                        <Button 
+                          size="small" 
+                          type="text" 
+                          danger 
+                          icon={<DeleteOutlined />}
+                          onClick={(e) => handleDeleteDoc(d.doc_id, e)}
+                        />
+                      </div>
+                    ),
+                  }))}
+              />
+              {selectedDoc && (
+                <div style={{ marginTop: 8 }}>
+                  <Tag color="blue">已选择: {docs.find(d => d.doc_id === selectedDoc)?.filename}</Tag>
+                </div>
+              )}
+            </Col>
+          </Row>
+
+          {/* 分割线 */}
+          <Divider style={{ margin: '8px 0' }} />
+
           {/* 引导文字 */}
           <div>
-            <Text strong style={{ fontSize: 15, color: '#e6f7ff', display: 'block', marginBottom: 8 }}>
+            <Text strong style={{ fontSize: 15, display: 'block', marginBottom: 8 }}>
               <FileTextOutlined style={{ marginRight: 8 }} />
               请描述设备故障现象
             </Text>
@@ -251,6 +493,8 @@ export default function Generate() {
           <div className="flex-between">
             <Text type="secondary" style={{ fontSize: 13 }}>
               {topEvent.length > 0 && `已输入 ${topEvent.length} 个字符`}
+              {selectedDoc && <span style={{ marginLeft: 16 }}>📚 已选择操作手册</span>}
+              {selectedTemplate && <span style={{ marginLeft: 16 }}>⚙️ 已选择模板</span>}
             </Text>
             <Space wrap>
               <Button
@@ -325,7 +569,7 @@ export default function Generate() {
               
               {/* 节点数 */}
               <div style={{ textAlign: 'center' }}>
-                <div style={{ marginBottom: 4, color: '#e6f7ff', fontSize: 18, fontWeight: 500 }}>
+                <div style={{ marginBottom: 4, fontSize: 18, fontWeight: 500 }}>
                   {result.nodes_json?.length || 0}
                 </div>
                 <Text type="secondary" style={{ fontSize: 12 }}>节点数量</Text>
@@ -333,7 +577,7 @@ export default function Generate() {
               
               {/* 逻辑门 */}
               <div style={{ textAlign: 'center' }}>
-                <div style={{ marginBottom: 4, color: '#e6f7ff', fontSize: 18, fontWeight: 500 }}>
+                <div style={{ marginBottom: 4, fontSize: 18, fontWeight: 500 }}>
                   {result.gates_json?.length || 0}
                 </div>
                 <Text type="secondary" style={{ fontSize: 12 }}>逻辑门</Text>
@@ -341,7 +585,7 @@ export default function Generate() {
               
               {/* 最小割集 */}
               <div style={{ textAlign: 'center' }}>
-                <div style={{ marginBottom: 4, color: '#e6f7ff', fontSize: 18, fontWeight: 500 }}>
+                <div style={{ marginBottom: 4, fontSize: 18, fontWeight: 500 }}>
                   {result.mcs?.length || 0}
                 </div>
                 <Text type="secondary" style={{ fontSize: 12 }}>最小割集</Text>
@@ -350,9 +594,9 @@ export default function Generate() {
 
             {/* 分析摘要 */}
             {result.analysis_summary && (
-              <div style={{ marginTop: 16, padding: '12px 16px', background: 'rgba(24,144,255,0.08)', borderRadius: 8, borderLeft: '3px solid #1890ff' }}>
-                <Text strong style={{ color: '#8cbdff' }}>分析摘要：</Text>
-                <Text style={{ color: '#e6f7ff', marginLeft: 8 }}>{result.analysis_summary}</Text>
+              <div style={{ marginTop: 16, padding: '12px 16px', background: '#f0f5ff', borderRadius: 8, borderLeft: '3px solid #1890ff' }}>
+                <Text strong>分析摘要：</Text>
+                <Text style={{ marginLeft: 8 }}>{result.analysis_summary}</Text>
               </div>
             )}
 

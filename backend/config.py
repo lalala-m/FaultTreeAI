@@ -4,7 +4,7 @@ from functools import lru_cache
 
 
 class Settings(BaseSettings):
-    # ─── 数据库配置 ───
+    # ??? ????�????
     DB_HOST: str = "localhost"
     DB_PORT: int = 5432
     DB_USER: str = "postgres"
@@ -28,49 +28,59 @@ class Settings(BaseSettings):
             f"@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
         )
 
-    # ─── LLM Provider ───
+    # ??? LLM Provider ???
     LLM_PROVIDER: str = "minimax"
+    LLM_FALLBACK_PROVIDER: str = "ollama"
 
-    # ─── MiniMax ───
+    # ??? MiniMax ???
     MINIMAX_API_KEY: str = ""
     MINIMAX_GROUP_ID: str = ""
     MINIMAX_MODEL: str = "MiniMax-M2"
     MINIMAX_EMBED_MODEL: str = "embo-01"
+    MINIMAX_BASE_URL: str = "https://api.minimaxi.com"  # ????�?https://api.minimaxi.com
 
-    # ─── OpenAI ───
+    # ??? OpenAI ???
     OPENAI_API_KEY: str = ""
     OPENAI_BASE_URL: str = "https://api.openai.com/v1"
     LLM_MODEL: str = "gpt-4o"
 
-    # ─── Anthropic ───
+    # ??? Anthropic ???
     ANTHROPIC_API_KEY: str = ""
     ANTHROPIC_MODEL: str = "claude-3-5-sonnet-20241022"
 
-    # ─── Azure OpenAI ───
+    # ??? Azure OpenAI ???
     AZURE_OPENAI_KEY: str = ""
     AZURE_OPENAI_ENDPOINT: str = ""
     AZURE_OPENAI_DEPLOYMENT: str = "gpt-4o"
     AZURE_OPENAI_API_VERSION: str = "2024-06-01"
 
-    # ─── Embedding ───
+    # ??? Ollama ???
+    OLLAMA_BASE_URL: str = "http://localhost:11434"
+    OLLAMA_MODEL: str = "qwen2.5:14b-instruct"
+    OLLAMA_EMBED_MODEL: str = "nomic-embed-text"
+
+    # ??? Embedding ???
     EMBED_PROVIDER: str = "minimax"
     EMBED_MODEL: str = "embo-01"
     EMBED_DIM: int = 1024
 
-    # ─── 生成参数 ───
+    # ??? ???? ???
     LLM_TEMPERATURE: float = 0.1
     LLM_MAX_TOKENS: int = 4096
     RAG_TOP_K: int = 5
     RAG_SIMILARITY_THRESHOLD: float = 0.7
+    RAG_USE_HYBRID: bool = False           # ???????�?    RAG_VECTOR_WEIGHT: float = 0.5          # ?????�?(0-1)
     MAX_RETRY: int = 3
 
-    # ─── 文件存储 ───
+    # ??? ???? ???
     MANUALS_PATH: str = "data/manuals"
     SAMPLES_PATH: str = "data/samples"
 
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
+        populate_by_name = True
+        extra = "ignore"
 
 
 @lru_cache

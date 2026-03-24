@@ -10,7 +10,6 @@ import {
   InboxOutlined,
   FilePdfOutlined,
   FileWordOutlined,
-  FileTxtOutlined,
   RocketOutlined,
   BookOutlined
 } from '@ant-design/icons'
@@ -83,11 +82,11 @@ export default function KnowledgeBase() {
     }
   }
 
-  // 获取文件图标
+  // 获取文件图标 - 使用 FileTextOutlined 代替不存在的 FileTxtOutlined
   const getFileIcon = (type) => {
     if (type === 'pdf') return <FilePdfOutlined style={{ color: '#ff4d4f' }} />
     if (type === 'docx' || type === 'doc') return <FileWordOutlined style={{ color: '#1890ff' }} />
-    return <FileTxtOutlined style={{ color: '#52c41a' }} />
+    return <FileTextOutlined style={{ color: '#52c41a' }} />
   }
 
   const columns = [
@@ -98,7 +97,7 @@ export default function KnowledgeBase() {
       render: (name, row) => (
         <Space>
           {getFileIcon(row.file_type)}
-          <Text style={{ color: '#e6f7ff' }}>{name}</Text>
+          <Text style={{ color: '#1a1a1a' }}>{name}</Text>
         </Space>
       ),
     },
@@ -165,14 +164,14 @@ export default function KnowledgeBase() {
       <Card className="glass-card" style={{ marginBottom: 24 }}>
         <Space direction="vertical" style={{ width: '100%' }} size="middle">
           <div>
-            <Text strong style={{ fontSize: 15, color: '#e6f7ff', display: 'block', marginBottom: 8 }}>
+            <Text strong style={{ fontSize: 15, color: '#1a1a1a', display: 'block', marginBottom: 8 }}>
               <RocketOutlined style={{ marginRight: 8 }} />
               为什么要上传文档？
             </Text>
             <Text type="secondary" style={{ fontSize: 13, lineHeight: 1.8 }}>
               上传设备手册、维修记录等文档后，系统会：
             </Text>
-            <ul style={{ margin: '8px 0 0 20px', color: '#8cbdff', fontSize: 13, lineHeight: 1.8 }}>
+            <ul style={{ margin: '8px 0 0 20px', color: '#595959', fontSize: 13, lineHeight: 1.8 }}>
               <li>自动解析文档中的故障信息</li>
               <li>将知识向量化存储到知识库</li>
               <li>生成故障树时自动检索相关知识</li>
@@ -226,13 +225,13 @@ export default function KnowledgeBase() {
             <p style={{ fontSize: 48, marginBottom: 16, color: '#1890ff' }}>
               <InboxOutlined />
             </p>
-            <p style={{ fontSize: 16, color: '#e6f7ff', marginBottom: 8 }}>
+            <p style={{ fontSize: 16, color: '#1a1a1a', marginBottom: 8 }}>
               点击或拖拽文件到此处上传
             </p>
-            <p style={{ color: '#5c7a99', fontSize: 13 }}>
+            <p style={{ color: '#8c8c8c', fontSize: 13 }}>
               支持 PDF、Word (.docx/.doc)、TXT 格式
             </p>
-            <p style={{ color: '#5c7a99', fontSize: 12, marginTop: 16 }}>
+            <p style={{ color: '#8c8c8c', fontSize: 12, marginTop: 16 }}>
               文件大小限制：50MB以内
             </p>
           </div>
@@ -256,7 +255,7 @@ export default function KnowledgeBase() {
           locale={{ 
             emptyText: (
               <div style={{ textAlign: 'center', padding: '48px 0' }}>
-                <FileTextOutlined style={{ fontSize: 48, color: '#5c7a99', marginBottom: 16 }} />
+                <FileTextOutlined style={{ fontSize: 48, color: '#8c8c8c', marginBottom: 16 }} />
                 <div>
                   <Text type="secondary">还没有上传文档</Text>
                 </div>

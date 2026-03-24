@@ -1,0 +1,124 @@
+{
+  "template_id": "hydraulic",
+  "name": "液压系统故障",
+  "description": "适用于各类液压系统的故障树生成",
+  "category": "hydraulic",
+  "icon": "🔧",
+  "top_events": [
+    "液压系统无压力",
+    "液压系统压力不足",
+    "液压系统压力过高",
+    "液压缸动作缓慢",
+    "液压油温过高",
+    "液压系统噪音过大",
+    "液压系统泄漏"
+  ],
+  "typical_events": [
+    {
+      "id": "N002",
+      "type": "intermediate",
+      "name": "液压泵故障",
+      "description": "液压泵无法正常工作"
+    },
+    {
+      "id": "N003",
+      "type": "intermediate",
+      "name": "油箱故障",
+      "description": "油箱油液异常"
+    },
+    {
+      "id": "N004",
+      "type": "intermediate",
+      "name": "控制阀组故障",
+      "description": "控制阀组无法正常工作"
+    },
+    {
+      "id": "N005",
+      "type": "basic",
+      "name": "泵内磨损",
+      "description": "液压泵内部零件磨损"
+    },
+    {
+      "id": "N006",
+      "type": "basic",
+      "name": "泵电机故障",
+      "description": "驱动泵的电机故障"
+    },
+    {
+      "id": "N007",
+      "type": "basic",
+      "name": "油量不足",
+      "description": "油箱油液位过低"
+    },
+    {
+      "id": "N008",
+      "type": "basic",
+      "name": "油液污染",
+      "description": "油液含有杂质或水分"
+    },
+    {
+      "id": "N009",
+      "type": "basic",
+      "name": "阀芯卡滞",
+      "description": "控制阀阀芯卡住"
+    },
+    {
+      "id": "N010",
+      "type": "basic",
+      "name": "阀内泄漏",
+      "description": "控制阀内部泄漏"
+    }
+  ],
+  "typical_gates": [
+    {
+      "id": "G001",
+      "type": "OR",
+      "output_node": "N001",
+      "input_nodes": ["N002", "N003", "N004"]
+    },
+    {
+      "id": "G002",
+      "type": "OR",
+      "output_node": "N002",
+      "input_nodes": ["N005", "N006"]
+    },
+    {
+      "id": "G003",
+      "type": "OR",
+      "output_node": "N003",
+      "input_nodes": ["N007", "N008"]
+    },
+    {
+      "id": "G004",
+      "type": "OR",
+      "output_node": "N004",
+      "input_nodes": ["N009", "N010"]
+    }
+  ],
+  "common_basic_events": [
+    "泵内磨损",
+    "泵轴断裂",
+    "泵反转",
+    "泵电机故障",
+    "油量不足",
+    "油液污染",
+    "油液粘度不当",
+    "吸油管堵塞",
+    "吸油管漏气",
+    "过滤器堵塞",
+    "溢流阀故障",
+    "换向阀故障",
+    "顺序阀故障",
+    "阀芯卡滞",
+    "阀内泄漏",
+    "液压缸内泄",
+    "密封件损坏",
+    "冷却器故障",
+    "油温过高",
+    "系统进气"
+  ],
+  "analysis_tips": "液压系统故障主要从泵源、执行机构、控制元件、辅助元件四个方面分析。无压力故障重点检查泵、阀、油箱；油温过高重点检查冷却系统和泄漏；噪音过大重点检查进气和平稳性。",
+  "references": [
+    "data/samples/hydraulic_faults.md"
+  ]
+}

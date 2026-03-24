@@ -50,6 +50,19 @@ def parse_docx(file_path: str) -> list[dict]:
         })
     return chunks
 
+def parse_markdown(file_path: str) -> list[dict]:
+    """解析 Markdown 文件"""
+    text = Path(file_path).read_text(encoding="utf-8")
+    chunks = []
+    for i, chunk in enumerate(splitter.split_text(text)):
+        chunks.append({
+            "text": chunk,
+            "source": Path(file_path).name,
+            "page": 0,
+            "chunk_index": i
+        })
+    return chunks
+
 def parse_document(file_path: str) -> list[dict]:
     ext = Path(file_path).suffix.lower()
     if ext == ".pdf":
@@ -58,5 +71,7 @@ def parse_document(file_path: str) -> list[dict]:
         return parse_txt(file_path)
     elif ext == ".docx":
         return parse_docx(file_path)
+    elif ext == ".md" or ext == ".markdown":
+        return parse_markdown(file_path)
     else:
         raise ValueError(f"不支持的文件格式: {ext}")

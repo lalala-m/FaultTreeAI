@@ -1,18 +1,57 @@
 """
 结构化输出生成器 — 替代手写正则提取 JSON
 使用 LangChain PromptTemplate + MiniMax LLM + PydanticOutputParser
+支持模板功能
 """
 
 import json
 import re
+from pathlib import Path
 from typing import Optional
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from backend.config import settings
-from backend.core.llm.llm_client import llm_client
-from backend.core.rag.pgvector_retriever import retrieve
+from backend.core.llm.manager import get_llm_manager
+from backend.core.rag.pgvector_retriever import retrieve, retrieve_hybrid
 from backend.core.validator.checker import validate_fault_tree
 from backend.models.schemas import FaultTree, GenerateRequest
+
+# 模板目录
+TEMPLATES_DIR = Path(__file__).parent.parent.parent / "data" / "templates"
+
+
+def load_template(template_id: str) -> Optional[dict]:
+    """加载模板信息"""
+    if not template_id:
+        return None
+    template_path = TEMPLATES_DIR / f"{template_id}.json"
+    if not template_path.exists():
+        return None
+    with open(template_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def build_template_context(template: dict) -> str:
+    """构建模板上下文，注入到 Prompt 中"""
+    if not template:
+        return ""
+    
+    ctx = f"\n\n## 故障树模板参考: {template.get('name', '')}\n"
+    ctx += f"模板类型: {template.get('description', '')}\n"
+    
+    # 添加常见底事件
+    basic_events = template.get("common_basic_events", [])
+    if basic_events:
+        ctx += f"\n常见底事件（供参考）:\n"
+        for event in basic_events[:15]:  # 限制数量
+            ctx += f"- {event}\n"
+    
+    # 添加分析提示
+    tips = template.get("analysis_tips", "")
+    if tips:
+        ctx += f"\n分析提示: {tips}\n"
+    
+    return ctx
 
 
 # ─────────────────────────────────────────────
@@ -153,7 +192,8 @@ SYSTEM_PROMPT = """你是工业设备故障分析专家，精通IEC 61025和GB/T
 - nodes中的id必须按序编号（如N001, N002...）
 - gates中的input_nodes必须引用nodes中已定义的id
 - 每个非top节点都必须被某个gate引用
-- 只输出JSON，不要有任何其他文字""""
+- 只输出JSON，不要有任何其他文字
+"""
 
 USER_PROMPT_TEMPLATE = """## 知识来源
 {context}
@@ -197,10 +237,12 @@ def extract_json(text: str) -> dict:
 async def _call_llm_with_retry(
     full_prompt: str,
     attempt: int,
-) -> str:
-    """带指数退避重试的 LLM 调用"""
+) -> tuple[str, str]:
+    """带指数退避重试的 LLM 调用，返回 (原始输出, 实际使用的 provider 名)"""
+    manager = get_llm_manager()
     try:
-        return await llm_client.agenerate(full_prompt)
+        resp, provider = await manager.generate_with_fallback(full_prompt)
+        return resp.content, provider
     except Exception as e:
         raise RuntimeError(f"第{attempt}次尝试失败: {str(e)}") from e
 
@@ -212,41 +254,54 @@ async def _call_llm_with_retry(
 async def generate_fault_tree(req: GenerateRequest) -> tuple[FaultTree, list]:
     """
     RAG检索 + MiniMax LLM生成 + 三层校验，最多重试3次
+    支持模板参数
 
     流程：
     1. 从 PostgreSQL 向量库检索相关知识片段
-    2. 组装 SYSTEM + USER prompt 发给 MiniMax
-    3. 从输出中提取 JSON，转换为 Pydantic 模型
-    4. 三层逻辑校验（循环依赖、孤立节点、逻辑门）
-    5. 任何环节失败自动重试，最多3次
+    2. 如果指定了模板，加载模板上下文
+    3. 组装 SYSTEM + USER prompt 发给 MiniMax
+    4. 从输出中提取 JSON，转换为 Pydantic 模型
+    5. 三层逻辑校验（循环依赖、孤立节点、逻辑门）
+    6. 任何环节失败自动重试，最多3次
     """
     # Step 1: RAG 检索
-    chunks = await retrieve(req.top_event, doc_ids=req.doc_ids)
+    top_k = req.rag_top_k or 5
+    chunks = await retrieve(req.top_event, top_k=top_k, doc_ids=req.doc_ids)
     context = "\n\n".join(
         f"[{c['ref_id']}] (来源:{c['source']} 第{c['page']}页, 相似度:{c['score']})\n{c['text']}"
         for c in chunks
     )
     context_str = context or "暂无相关知识，请基于通用FTA规范和你的领域知识生成。"
 
-    # Step 2: 组装 prompt
+    # Step 2: 加载模板上下文（可选）
+    template = None
+    template_context = ""
+    if req.template_id:
+        template = load_template(req.template_id)
+        if template:
+            template_context = build_template_context(template)
+
+    # Step 3: 组装 prompt
     user_prompt = USER_PROMPT_TEMPLATE.format(
         context=context_str,
         top_event=req.top_event,
         user_prompt=req.user_prompt,
     )
-    full_prompt = f"{SYSTEM_PROMPT}\n\n{user_prompt}"
+    full_prompt = f"{SYSTEM_PROMPT}{template_context}\n\n{user_prompt}"
 
     # Step 3: 带重试的 LLM 调用
     last_error = None
+    last_provider = None
     for attempt in range(1, settings.MAX_RETRY + 1):
         try:
-            raw = await _call_llm_with_retry(full_prompt, attempt)
+            raw, provider = await _call_llm_with_retry(full_prompt, attempt)
+            last_provider = provider
             data = extract_json(raw)
             ft = FaultTree(**data)
 
             # Step 4: 三层逻辑校验
             validation_result = validate_fault_tree(ft)
-            return ft, validation_result["issues"]
+            return ft, validation_result["issues"], provider
 
         except json.JSONDecodeError as e:
             last_error = f"JSON解析失败: {e}"

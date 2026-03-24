@@ -6,17 +6,14 @@
 import uuid
 import tiktoken
 from pathlib import Path
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from fastapi import APIRouter, UploadFile, File, HTTPException
 import aiofiles
 
-from backend.core.database.connection import get_db
-from backend.core.database.models import Document, DocumentChunk
 from backend.core.parser.document import parse_document
 from backend.core.rag.pgvector_retriever import add_chunks_to_db, retrieve
 from backend.models.schemas import UploadResponse
 from backend.config import settings
+import psycopg2, psycopg2.extras
 
 router = APIRouter(tags=["知识管理"])
 
@@ -24,7 +21,6 @@ router = APIRouter(tags=["知识管理"])
 @router.post("/upload", response_model=UploadResponse)
 async def upload_document(
     file: UploadFile = File(...),
-    db: AsyncSession = Depends(get_db),
 ):
     """上传设备文档，自动解析分块并存入 PostgreSQL 向量库"""
     # 文件大小校验
@@ -58,18 +54,22 @@ async def upload_document(
         save_path.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail="文档中未提取到有效文本")
 
-    # 创建文档记录
-    doc_record = Document(
-        doc_id=doc_id,
-        filename=file.filename,
-        file_size=len(content),
-        file_type=ext[1:],
-        metadata_={
-            "original_path": str(save_path),
-        },
-    )
-    db.add(doc_record)
-    await db.commit()
+    # 创建文档记录（psycopg2 直连）
+    import psycopg2.extras
+    with psycopg2.connect(
+        host=settings.DB_HOST, port=settings.DB_PORT,
+        user=settings.DB_USER, password=settings.DB_PASSWORD,
+        database=settings.DB_NAME
+    ) as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO documents (doc_id, filename, file_size, file_type, status, metadata_)
+                VALUES (%s, %s, %s, %s, 'active', %s)
+            """, (
+                str(doc_id), file.filename, len(content),
+                ext[1:], psycopg2.extras.Json({"original_path": str(save_path)})
+            ))
+            conn.commit()
 
     # 估算 token 数（用于成本记录）
     try:
@@ -82,7 +82,7 @@ async def upload_document(
 
     # 存入 PostgreSQL（文本 + 向量双写）
     try:
-        await add_chunks_to_db(chunks, str(doc_id), db)
+        await add_chunks_to_db(chunks, str(doc_id))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"向量入库失败: {e}")
 
@@ -95,52 +95,70 @@ async def upload_document(
 
 
 @router.get("/list")
-async def list_documents(db: AsyncSession = Depends(get_db)):
+async def list_documents():
     """列出已上传的文档"""
-    result = await db.execute(
-        select(Document).where(Document.status == "active").order_by(Document.upload_time.desc())
-    )
-    docs = result.scalars().all()
+    import psycopg2.extras
+    with psycopg2.connect(
+        host=settings.DB_HOST, port=settings.DB_PORT,
+        user=settings.DB_USER, password=settings.DB_PASSWORD,
+        database=settings.DB_NAME
+    ) as conn:
+        with conn.cursor(name="list_docs") as cur:
+            cur.execute("""
+                SELECT doc_id, filename, file_size, file_type, upload_time, status
+                FROM documents WHERE status = 'active'
+                ORDER BY upload_time DESC
+            """)
+            rows = cur.fetchall()
 
     return [
         {
-            "doc_id": str(doc.doc_id),
-            "filename": doc.filename,
-            "file_size": doc.file_size,
-            "file_type": doc.file_type,
-            "upload_time": doc.upload_time.isoformat() if doc.upload_time else None,
-            "status": doc.status,
+            "doc_id": str(row[0]),
+            "filename": row[1],
+            "file_size": row[2],
+            "file_type": row[3],
+            "upload_time": row[4].isoformat() if row[4] else None,
+            "status": row[5],
         }
-        for doc in docs
+        for row in rows
     ]
 
 
 @router.delete("/{doc_id}")
-async def delete_document(
-    doc_id: str,
-    db: AsyncSession = Depends(get_db),
-):
+async def delete_document(doc_id: str):
     """软删除文档（将 status 改为 deleted，向量数据通过外键级联删除）"""
-    from sqlalchemy import update
-
-    result = await db.execute(
-        update(Document)
-        .where(Document.doc_id == uuid.UUID(doc_id))
-        .values(status="deleted")
-    )
-    await db.commit()
-
-    if result.rowcount == 0:
-        raise HTTPException(status_code=404, detail="文档不存在")
+    import psycopg2.extras
+    with psycopg2.connect(
+        host=settings.DB_HOST, port=settings.DB_PORT,
+        user=settings.DB_USER, password=settings.DB_PASSWORD,
+        database=settings.DB_NAME
+    ) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE documents SET status = 'deleted' WHERE doc_id = %s AND status = 'active'",
+                (doc_id,)
+            )
+            conn.commit()
+            if cur.rowcount == 0:
+                raise HTTPException(status_code=404, detail="文档不存在或已是删除状态")
 
     return {"message": "文档已删除", "doc_id": doc_id}
 
 
 @router.get("/stats")
-async def get_stats(db: AsyncSession = Depends(get_db)):
+async def get_stats():
     """获取系统统计信息"""
-    doc_count = await db.scalar(select(func.count()).select_from(Document).where(Document.status == "active"))
-    chunk_count = await db.scalar(select(func.count()).select_from(DocumentChunk))
+    import psycopg2
+    with psycopg2.connect(
+        host=settings.DB_HOST, port=settings.DB_PORT,
+        user=settings.DB_USER, password=settings.DB_PASSWORD,
+        database=settings.DB_NAME
+    ) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM documents WHERE status = 'active'")
+            doc_count = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM document_chunks")
+            chunk_count = cur.fetchone()[0]
     return {
         "total_docs": doc_count or 0,
         "total_chunks": chunk_count or 0,
@@ -148,12 +166,8 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/search")
-async def search_knowledge(
-    query: str,
-    top_k: int = 5,
-    db: AsyncSession = Depends(get_db),
-):
-    """在知识库中搜索，返回相关段落（不生成故障树）"""
+async def search_knowledge(query: str, top_k: int = 5):
+    """在知识库中搜索，返回相关段落"""
     try:
         results = await retrieve(query, top_k=top_k)
         return {
