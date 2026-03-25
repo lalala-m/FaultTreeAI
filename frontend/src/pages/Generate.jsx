@@ -5,6 +5,7 @@ import api from '../services/api.js'
 import FaultTreeViewer from '../components/FaultTreeViewer.jsx'
 import TreeEditor from '../components/TreeEditor.jsx'
 import MCSView from '../components/MCSView.jsx'
+import DiagnosisPanel from '../components/DiagnosisPanel.jsx'
 
 const { Title, Text, Paragraph } = Typography
 
@@ -642,6 +643,10 @@ export default function Generate() {
                 />
               )}
             </Card>
+          )}
+
+          {result.nodes_json && viewMode === 'view' && (
+            <DiagnosisPanel tree={result} />
           )}
 
           {/* MCS 最小割集 - 编辑模式下不显示 */}

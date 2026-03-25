@@ -94,15 +94,87 @@ const nodeTypes = { gate: GateNode, basic: BasicNode, top: TopEventNode }
 // ── 主组件 ─────────────────────────────────────────────
 
 export default function FaultTreeViewer({ tree }) {
+  const layouted = useMemo(() => {
+    const nodesData = tree.fault_tree?.nodes || tree.nodes_json || []
+    const gatesData = tree.fault_tree?.gates || tree.gates_json || []
+
+    const nodeById = new Map()
+    nodesData.forEach(n => nodeById.set(n.id, n))
+
+    const childrenByParent = new Map()
+    gatesData.forEach(g => {
+      const inputNodes = g.input_nodes || g.children || []
+      const parent = g.output_node
+      if (!childrenByParent.has(parent)) childrenByParent.set(parent, [])
+      childrenByParent.get(parent).push(...inputNodes)
+    })
+
+    const topNode = nodesData.find(n => n.type === 'top') || nodesData[0]
+    const topId = topNode?.id
+
+    const depthById = new Map()
+    const queue = []
+    if (topId) {
+      depthById.set(topId, 0)
+      queue.push(topId)
+    }
+    while (queue.length) {
+      const cur = queue.shift()
+      const curDepth = depthById.get(cur) ?? 0
+      const children = childrenByParent.get(cur) || []
+      for (const child of children) {
+        const nextDepth = curDepth + 1
+        const prev = depthById.get(child)
+        if (prev == null || nextDepth < prev) {
+          depthById.set(child, nextDepth)
+          queue.push(child)
+        }
+      }
+    }
+
+    const groups = new Map()
+    nodesData.forEach(n => {
+      const d = depthById.get(n.id)
+      const depth = d == null ? 9999 : d
+      if (!groups.has(depth)) groups.set(depth, [])
+      groups.get(depth).push(n)
+    })
+
+    const sortedDepths = Array.from(groups.keys()).sort((a, b) => a - b)
+    const maxCount = Math.max(1, ...sortedDepths.map(d => groups.get(d).length))
+
+    const nodeWidth = 220
+    const nodeGapX = 70
+    const nodeGapY = 140
+    const layoutMap = new Map()
+
+    sortedDepths.forEach((depth, depthIndex) => {
+      const arr = groups.get(depth)
+      const ordered = [...arr].sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+      const levelWidth = ordered.length * nodeWidth + Math.max(0, ordered.length - 1) * nodeGapX
+      const maxWidth = maxCount * nodeWidth + Math.max(0, maxCount - 1) * nodeGapX
+      const xStart = (maxWidth - levelWidth) / 2
+      const y = depthIndex * nodeGapY + 40
+      ordered.forEach((n, i) => {
+        const x = xStart + i * (nodeWidth + nodeGapX)
+        layoutMap.set(n.id, { x, y })
+      })
+    })
+
+    return { nodesData, gatesData, layoutMap }
+  }, [tree])
+
   // 修正：支持 fault_tree 嵌套结构和直接数据两种格式
   const nodes = useMemo(() => {
-    const nodesData = tree.fault_tree?.nodes || tree.nodes_json || []
+    const nodesData = layouted.nodesData
     return nodesData.map((n) => {
       const color = NODE_COLORS[n.type] || '#999'
+      const hasPos = n.position && typeof n.position.x === 'number' && typeof n.position.y === 'number'
+      const pos = hasPos ? n.position : (layouted.layoutMap.get(n.id) || { x: 0, y: 0 })
       return {
         id: n.id,
         type: n.type === 'top' ? 'top' : n.type === 'basic' ? 'basic' : 'gate',
-        position: n.position || { x: 0, y: 0 },
+        position: pos,
         data: {
           label: n.name,  // 修正：字段是 name 不是 label
           type: n.type,
@@ -112,12 +184,12 @@ export default function FaultTreeViewer({ tree }) {
         style: { border: `2px solid ${color}` },
       }
     })
-  }, [tree])
+  }, [layouted])
 
   // 修正：边方向 - 逻辑门是源（上游），子节点是目标（下游）
   // 同时修正字段名：g.input_nodes 或 g.children
   const edges = useMemo(() => {
-    const gates = tree.fault_tree?.gates || tree.gates_json || []
+    const gates = layouted.gatesData
     return gates.flatMap((g) => {
       // 兼容 input_nodes 或 children 字段
       const inputNodes = g.input_nodes || g.children || []
@@ -125,7 +197,7 @@ export default function FaultTreeViewer({ tree }) {
         id: `${g.output_node}_${childId}_${i}`,
         source: g.output_node,   // 逻辑门是源（上游）
         target: childId,          // 子节点是目标（下游）
-        animated: g.gate_type === 'or',
+        animated: String(g.gate_type || '').toUpperCase() === 'OR',
         label: g.gate_type,
         style: { stroke: NODE_COLORS[g.gate_type?.toLowerCase()] || '#999' },
         markerEnd: { 
@@ -134,7 +206,7 @@ export default function FaultTreeViewer({ tree }) {
         },
       }))
     })
-  }, [tree])
+  }, [layouted])
 
   if (!nodes.length) {
     return (

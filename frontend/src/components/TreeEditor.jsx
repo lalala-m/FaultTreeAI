@@ -1,7 +1,5 @@
 import React, { useCallback, useState, useMemo } from 'react'
 import ReactFlow, {
-  addNode,
-  removeNodes,
   useNodesState,
   useEdgesState,
   Controls,

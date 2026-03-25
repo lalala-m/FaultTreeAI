@@ -90,7 +90,7 @@ async def list_trees():
             "top_event": row[1],
             "confidence": row[2],
             "is_valid": row[3],
-            "mcs_json": json.loads(row[4]) if row[4] else [],
+            "mcs_json": (json.loads(row[4]) if isinstance(row[4], str) else (row[4] or [])),
             "created_at": row[5].isoformat() if row[5] else None,
         }
         for row in rows
@@ -117,8 +117,8 @@ async def get_tree(tree_id: str):
     if not row:
         raise HTTPException(status_code=404, detail="故障树不存在")
 
-    nodes = json.loads(row[2]) if row[2] else []
-    gates = json.loads(row[3]) if row[3] else []
+    nodes = json.loads(row[2]) if isinstance(row[2], str) else (row[2] or [])
+    gates = json.loads(row[3]) if isinstance(row[3], str) else (row[3] or [])
     ft = FaultTree(
         top_event=row[1],
         nodes=[FTANode(**n) for n in nodes],

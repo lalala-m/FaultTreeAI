@@ -160,7 +160,7 @@ class LLMManager:
         results: dict[str, list[GenerationMetrics]] = {p: [] for p in providers}
 
         for prompt in prompts:
-            tasks = [self._single_provider_bench(p, pname) for pname in providers]
+            tasks = [self._single_provider_bench(prompt, pname) for pname in providers]
             batch_results = await asyncio.gather(*tasks, return_exceptions=True)
             for pname, result in zip(providers, batch_results):
                 if isinstance(result, Exception):

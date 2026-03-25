@@ -63,8 +63,8 @@ async def upload_document(
     ) as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO documents (doc_id, filename, file_size, file_type, status, metadata_)
-                VALUES (%s, %s, %s, %s, 'active', %s)
+                INSERT INTO documents (doc_id, filename, file_size, file_type, status, metadata)
+                VALUES (%s, %s, %s, %s, 'processing', %s)
             """, (
                 str(doc_id), file.filename, len(content),
                 ext[1:], psycopg2.extras.Json({"original_path": str(save_path)})
@@ -82,8 +82,63 @@ async def upload_document(
 
     # 存入 PostgreSQL（文本 + 向量双写）
     try:
-        await add_chunks_to_db(chunks, str(doc_id))
+        res = await add_chunks_to_db(chunks, str(doc_id))
+        embedded = bool(res.get("embedded"))
+        with psycopg2.connect(
+            host=settings.DB_HOST, port=settings.DB_PORT,
+            user=settings.DB_USER, password=settings.DB_PASSWORD,
+            database=settings.DB_NAME
+        ) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE documents
+                    SET status = %s,
+                        metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb
+                    WHERE doc_id = %s
+                    """,
+                    (
+                        'active',
+                        psycopg2.extras.Json({"embedding": "ok" if embedded else "skipped"}),
+                        str(doc_id),
+                    )
+                )
+                conn.commit()
+    except ValueError as e:
+        with psycopg2.connect(
+            host=settings.DB_HOST, port=settings.DB_PORT,
+            user=settings.DB_USER, password=settings.DB_PASSWORD,
+            database=settings.DB_NAME
+        ) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE documents
+                    SET status = 'failed',
+                        metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb
+                    WHERE doc_id = %s
+                    """,
+                    (psycopg2.extras.Json({"error": str(e)}), str(doc_id))
+                )
+                conn.commit()
+        raise HTTPException(status_code=400, detail=f"向量入库失败: {e}")
     except Exception as e:
+        with psycopg2.connect(
+            host=settings.DB_HOST, port=settings.DB_PORT,
+            user=settings.DB_USER, password=settings.DB_PASSWORD,
+            database=settings.DB_NAME
+        ) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE documents
+                    SET status = 'failed',
+                        metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb
+                    WHERE doc_id = %s
+                    """,
+                    (psycopg2.extras.Json({"error": str(e)}), str(doc_id))
+                )
+                conn.commit()
         raise HTTPException(status_code=500, detail=f"向量入库失败: {e}")
 
     return UploadResponse(

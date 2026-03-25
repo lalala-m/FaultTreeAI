@@ -82,6 +82,17 @@ class MiniMaxEmbeddingService:
         self.base_url = settings.MINIMAX_BASE_URL + "/v1/embeddings"
         self.embedding_dim = settings.EMBED_DIM
 
+    def _headers(self):
+        if not self.api_key:
+            raise ValueError("缺少 MINIMAX_API_KEY，请在 .env 中配置后重启后端")
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        if self.group_id:
+            headers["GroupId"] = self.group_id
+        return headers
+
     async def aembed_query(self, text: str) -> list[float]:
         """异步单条向量化"""
         payload = {
@@ -89,10 +100,7 @@ class MiniMaxEmbeddingService:
             "input": text,
             "type": "float",
         }
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
+        headers = self._headers()
         async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.post(self.base_url, json=payload, headers=headers)
             resp.raise_for_status()
@@ -107,16 +115,32 @@ class MiniMaxEmbeddingService:
             "texts": texts,
             "type": "float",
         }
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
+        headers = self._headers()
         async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.post(self.base_url, json=payload, headers=headers)
             resp.raise_for_status()
             data = resp.json()
-            vectors = data.get("vectors", data.get("data", []))
-            return [v if isinstance(v, list) else v.get("vector", []) for v in vectors]
+            # 兼容多种返回结构：{"vectors":[...]} 或 {"data":[{"vector":[...]}]}
+            vectors = None
+            if isinstance(data, dict):
+                if "vectors" in data:
+                    vectors = data["vectors"]
+                elif "data" in data:
+                    maybe = data["data"]
+                    if isinstance(maybe, list):
+                        vectors = [item.get("vector") if isinstance(item, dict) else item for item in maybe]
+            if not vectors or not isinstance(vectors, list):
+                raise ValueError(f"MiniMax embedding 返回无效：{data}")
+            # 确保每个元素都是浮点列表
+            clean = []
+            for v in vectors:
+                if isinstance(v, list):
+                    clean.append(v)
+                elif isinstance(v, dict) and "vector" in v and isinstance(v["vector"], list):
+                    clean.append(v["vector"])
+                else:
+                    clean.append([])
+            return clean
 
 
 _embed_service = MiniMaxEmbeddingService()
@@ -130,18 +154,34 @@ async def add_chunks_to_db(
     chunks: list[dict],
     doc_id: str,
     db=None,  # 忽略此参数，使用 psycopg2 直连
-) -> int:
+) -> dict:
     """
     将文档分块存入 PostgreSQL（文本 + 向量双写）
     psycopg2 直连（绕过 asyncpg Windows bug）
     """
     texts = [c["text"] for c in chunks]
-    vectors = await _embed_service.aembed_documents(texts)
+    vectors = None
+    embedded = False
+    try:
+        vectors = await _embed_service.aembed_documents(texts)
+        embedded = True
+    except Exception as e:
+        if settings.SKIP_EMBED_ON_FAIL:
+            embedded = False
+        else:
+            raise
+
+    def _to_vector_literal(vec: list[float]) -> str:
+        # pgvector 接受形如 '[1,2,3]' 的文本表示
+        return "[" + ",".join(f"{x:.6f}" for x in vec) + "]"
 
     with _get_sync_conn() as conn:
         with conn.cursor() as cur:
             chunk_ids = []
             for i, chunk in enumerate(chunks):
+                if embedded:
+                    if i >= len(vectors) or not vectors[i]:
+                        raise ValueError("MiniMax embedding 返回为空或数量不匹配")
                 # 插入 chunk 记录
                 cur.execute("""
                     INSERT INTO document_chunks (doc_id, chunk_index, page_num, text, token_count)
@@ -155,17 +195,18 @@ async def add_chunks_to_db(
                 chunk_id = row[0]
                 chunk_ids.append(chunk_id)
 
-                # 插入向量记录
-                cur.execute("""
-                    INSERT INTO chunk_embeddings (chunk_id, doc_id, embedding, model_name)
-                    VALUES (%s, %s, %s, %s)
-                """, (
-                    chunk_id, doc_id,
-                    psycopg2.extras.Json(vectors[i]),
-                    settings.MINIMAX_EMBED_MODEL
-                ))
+                # 插入向量记录（可跳过）
+                if embedded:
+                    cur.execute("""
+                        INSERT INTO chunk_embeddings (chunk_id, doc_id, embedding, model_name)
+                        VALUES (%s, %s, %s, %s)
+                    """, (
+                        chunk_id, doc_id,
+                        _to_vector_literal(vectors[i]),
+                        settings.MINIMAX_EMBED_MODEL
+                    ))
             conn.commit()
-    return len(chunks)
+    return {"chunk_count": len(chunks), "embedded": embedded}
 
 
 async def delete_doc_vectors(doc_id: str, db=None):
