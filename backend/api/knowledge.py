@@ -161,7 +161,7 @@ async def list_documents():
         with conn.cursor(name="list_docs") as cur:
             cur.execute("""
                 SELECT doc_id, filename, file_size, file_type, upload_time, status
-                FROM documents WHERE status = 'active'
+                FROM documents WHERE status <> 'deleted'
                 ORDER BY upload_time DESC
             """)
             rows = cur.fetchall()
@@ -190,7 +190,7 @@ async def delete_document(doc_id: str):
     ) as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "UPDATE documents SET status = 'deleted' WHERE doc_id = %s AND status = 'active'",
+                "UPDATE documents SET status = 'deleted' WHERE doc_id = %s AND status <> 'deleted'",
                 (doc_id,)
             )
             conn.commit()

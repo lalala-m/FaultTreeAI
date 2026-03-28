@@ -72,6 +72,7 @@ async def update_tree(tree_id: str, data: EditRequest):
             conn.commit()
 
     return GenerateResponse(
+        tree_id=tree_id,
         fault_tree=data.fault_tree,
         mcs=mcs,
         importance=importance,

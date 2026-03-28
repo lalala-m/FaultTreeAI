@@ -34,6 +34,10 @@ async def generate_ft(req: GenerateRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+    # 优化层级结构（增加多层分类）
+    from backend.core.fta.builder import restructure_fault_tree
+    fault_tree = restructure_fault_tree(fault_tree)
+
     mcs = compute_mcs(fault_tree)
     importance = compute_importance(fault_tree)
 
@@ -48,24 +52,45 @@ async def generate_ft(req: GenerateRequest):
     tree_id = uuid.uuid4()
     with _pg() as conn:
         with conn.cursor() as cur:
-            cur.execute("""
+            cur.execute(
+                """
                 INSERT INTO fault_trees
                 (tree_id, doc_id, top_event, user_prompt, nodes_json, gates_json,
                  confidence, analysis_summary, is_valid, mcs_json, created_at)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (
-                str(tree_id), str(doc_uuid) if doc_uuid else None,
-                fault_tree.top_event, req.user_prompt,
-                json.dumps([n.model_dump() for n in fault_tree.nodes], ensure_ascii=False),
-                json.dumps([g.model_dump() for g in fault_tree.gates], ensure_ascii=False),
-                fault_tree.confidence, fault_tree.analysis_summary,
-                len(validation_issues) == 0,
-                json.dumps(mcs, ensure_ascii=False),
-                datetime.utcnow()
-            ))
+                ON CONFLICT (top_event, doc_id) WHERE doc_id IS NOT NULL
+                DO UPDATE SET
+                    user_prompt = EXCLUDED.user_prompt,
+                    nodes_json = EXCLUDED.nodes_json,
+                    gates_json = EXCLUDED.gates_json,
+                    confidence = EXCLUDED.confidence,
+                    analysis_summary = EXCLUDED.analysis_summary,
+                    is_valid = EXCLUDED.is_valid,
+                    mcs_json = EXCLUDED.mcs_json,
+                    created_at = EXCLUDED.created_at
+                RETURNING tree_id
+                """,
+                (
+                    str(tree_id),
+                    str(doc_uuid) if doc_uuid else None,
+                    fault_tree.top_event,
+                    req.user_prompt,
+                    json.dumps([n.model_dump() for n in fault_tree.nodes], ensure_ascii=False),
+                    json.dumps([g.model_dump() for g in fault_tree.gates], ensure_ascii=False),
+                    fault_tree.confidence,
+                    fault_tree.analysis_summary,
+                    len(validation_issues) == 0,
+                    json.dumps(mcs, ensure_ascii=False),
+                    datetime.utcnow(),
+                ),
+            )
+            returned = cur.fetchone()
+            if returned and returned[0]:
+                tree_id = UUID(str(returned[0]))
             conn.commit()
 
     return GenerateResponse(
+        tree_id=str(tree_id),
         fault_tree=fault_tree,
         mcs=mcs,
         importance=importance,
@@ -88,9 +113,13 @@ async def list_trees():
         {
             "tree_id": str(row[0]),
             "top_event": row[1],
-            "confidence": row[2],
+            "confidence": float(row[2]) if row[2] is not None else None,
             "is_valid": row[3],
-            "mcs_json": (json.loads(row[4]) if isinstance(row[4], str) else (row[4] or [])),
+            "mcs_json": (
+                json.loads(row[4])
+                if isinstance(row[4], str)
+                else (row[4] if isinstance(row[4], (list, dict)) else (row[4] or []))
+            ),
             "created_at": row[5].isoformat() if row[5] else None,
         }
         for row in rows
@@ -123,13 +152,18 @@ async def get_tree(tree_id: str):
         top_event=row[1],
         nodes=[FTANode(**n) for n in nodes],
         gates=[FTAGate(**g) for g in gates],
-        confidence=row[4] or 0.0,
+        confidence=float(row[4]) if row[4] is not None else 0.0,
         analysis_summary=row[5] or "",
     )
-    mcs = json.loads(row[6]) if row[6] else []
+    mcs = (
+        json.loads(row[6])
+        if isinstance(row[6], str)
+        else (row[6] if isinstance(row[6], list) else [])
+    )
     importance = compute_importance(ft) if mcs else []
 
     return GenerateResponse(
+        tree_id=str(row[0]),
         fault_tree=ft,
         mcs=mcs,
         importance=importance,

@@ -1,11 +1,12 @@
-import React, { useState, useEffect } from 'react'
-import { Card, Typography, Button, Space, Spin, message, Empty, Tag, Divider, Alert, Steps, Progress, Tabs, Modal, Select, Row, Col, Upload, Progress as ProgressBar } from 'antd'
+import React, { useState, useEffect, useRef, Suspense, lazy } from 'react'
+import { Card, Typography, Button, Space, message, Tag, Divider, Alert, Steps, Progress, Modal, Select, Row, Col, Upload, Progress as ProgressBar, Badge } from 'antd'
 import { ThunderboltOutlined, SaveOutlined, CheckCircleOutlined, WarningOutlined, RocketOutlined, BookOutlined, ApiOutlined, FileTextOutlined, EditOutlined, EyeOutlined, UndoOutlined, AppstoreOutlined, UploadOutlined, InboxOutlined, FilePdfOutlined, FileWordOutlined, DeleteOutlined } from '@ant-design/icons'
 import api from '../services/api.js'
-import FaultTreeViewer from '../components/FaultTreeViewer.jsx'
-import TreeEditor from '../components/TreeEditor.jsx'
 import MCSView from '../components/MCSView.jsx'
 import DiagnosisPanel from '../components/DiagnosisPanel.jsx'
+
+const FaultTreeViewer = lazy(() => import('../components/FaultTreeViewer.jsx'))
+const TreeEditor = lazy(() => import('../components/TreeEditor.jsx'))
 
 const { Title, Text, Paragraph } = Typography
 
@@ -32,6 +33,13 @@ export default function Generate() {
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
   
+  // LLM Provider 状态
+  const [providers, setProviders] = useState([])
+  const [selectedProvider, setSelectedProvider] = useState(null)
+  const [providerInfo, setProviderInfo] = useState({ primary: '', fallback: '' })
+  const [savingResult, setSavingResult] = useState(false)
+  const editorRef = useRef(null)
+
   // 加载模板列表
   useEffect(() => {
     const loadTemplates = async () => {
@@ -48,6 +56,22 @@ export default function Generate() {
     loadTemplates()
   }, [])
   
+  // 加载 Provider 列表
+  useEffect(() => {
+    const loadProviders = async () => {
+      try {
+        const data = await api.getProviders()
+        setProviders(data.providers || [])
+        setProviderInfo({ primary: data.primary, fallback: data.fallback })
+        const firstAvailable = (data.providers || []).find(p => p.available)
+        setSelectedProvider(firstAvailable?.name || data.primary || 'minimax')
+      } catch (e) {
+        console.error('加载模型列表失败', e)
+      }
+    }
+    loadProviders()
+  }, [])
+
   // 加载文档列表
   useEffect(() => {
     const loadDocs = async () => {
@@ -149,12 +173,15 @@ export default function Generate() {
         rag_top_k: 5,
         template_id: selectedTemplate || undefined,
         doc_ids: selectedDoc ? [selectedDoc] : undefined,
+        provider: selectedProvider || undefined,
+        use_fallback: true,
       })
       
       // 步骤3: 计算完成
       setCurrentStep(3)
       
       setResult({
+        tree_id: data.tree_id,
         fault_tree: data.fault_tree,
         top_event: data.fault_tree?.top_event,
         nodes_json: data.fault_tree?.nodes,
@@ -185,18 +212,55 @@ export default function Generate() {
     }
   }
 
+  const handleSaveResult = async () => {
+    if (!result?.tree_id) {
+      message.error('缺少 tree_id，无法保存')
+      return
+    }
+    if (!result?.fault_tree || !result?.nodes_json || !result?.gates_json) {
+      message.error('缺少故障树数据，无法保存')
+      return
+    }
+    setSavingResult(true)
+    try {
+      const payload = {
+        nodes: result.nodes_json,
+        gates: result.gates_json,
+        fault_tree: result.fault_tree,
+        mcs: result.mcs,
+        importance: result.importance,
+        validation_issues: result.validation_issues,
+      }
+      await api.saveFaultTree(result.tree_id, payload)
+      message.success('已保存到数据库')
+    } catch (err) {
+      message.error(err.response?.data?.detail || '保存失败')
+    }
+    setSavingResult(false)
+  }
+
   // 保存编辑结果
   const handleSaveEdit = async (editedData) => {
     if (!result) return
     setSaving(true)
     try {
-      // 更新本地状态
-      setResult({
+      const next = {
         ...result,
         fault_tree: editedData.fault_tree,
         nodes_json: editedData.nodes,
         gates_json: editedData.gates,
-      })
+      }
+      setResult(next)
+      if (result.tree_id) {
+        await api.saveFaultTree(result.tree_id, {
+          nodes: next.nodes_json,
+          gates: next.gates_json,
+          fault_tree: next.fault_tree,
+          mcs: next.mcs,
+          importance: next.importance,
+          validation_issues: next.validation_issues,
+        })
+      }
       message.success('保存成功！')
       setViewMode('view')
     } catch (err) {
@@ -252,50 +316,12 @@ export default function Generate() {
   return (
     <div className="page-container">
       {/* 页面标题 */}
-      <div className="flex-between" style={{ marginBottom: 24 }}>
-        <div>
-          <Title level={3} className="page-title" style={{ marginBottom: 4 }}>
-            <RocketOutlined style={{ marginRight: 12, color: '#1890ff' }} />
-            智能故障树生成
-          </Title>
-          <Text type="secondary">基于 MiniMax 大模型 + RAG 知识检索，自动生成工业设备故障树</Text>
-        </div>
-        
-        {/* 专家编辑按钮 */}
-        {result && !loading && (
-          <Space>
-            {viewMode === 'view' ? (
-              <Button 
-                type="primary" 
-                icon={<EditOutlined />} 
-                onClick={handleEnterEdit}
-                className="btn-primary"
-              >
-                专家编辑
-              </Button>
-            ) : (
-              <>
-                <Button 
-                  icon={<UndoOutlined />} 
-                  onClick={handleCancelEdit}
-                >
-                  取消编辑
-                </Button>
-                <Button 
-                  type="primary" 
-                  icon={<SaveOutlined />} 
-                  loading={saving}
-                  onClick={() => {
-                    // TreeEditor 内部会处理保存
-                  }}
-                  className="btn-primary"
-                >
-                  保存修改
-                </Button>
-              </>
-            )}
-          </Space>
-        )}
+      <div style={{ marginBottom: 24 }}>
+        <Title level={3} className="page-title" style={{ marginBottom: 4 }}>
+          <RocketOutlined style={{ marginRight: 12, color: '#1890ff' }} />
+          智能故障树生成
+        </Title>
+        <Text type="secondary">基于 MiniMax 大模型 + RAG 知识检索，自动生成工业设备故障树</Text>
       </div>
 
       {/* 步骤指示器 */}
@@ -319,16 +345,13 @@ export default function Generate() {
       {/* 输入区域 */}
       <Card className="glass-card" style={{ marginBottom: 24 }}>
         <Space direction="vertical" style={{ width: '100%' }} size="large">
-          {/* 第一行：模板选择 + 文档选择 */}
-          <Row gutter={[16, 16]}>
+          {/* 第一行：模板选择 + 模型选择 */}
+          <Row gutter={[16, 8]}>
             {/* 模板选择 */}
             <Col xs={24} md={12}>
               <Text strong style={{ fontSize: 15, display: 'block', marginBottom: 8 }}>
                 <AppstoreOutlined style={{ marginRight: 8 }} />
                 选择设备类型模板（可选）
-              </Text>
-              <Text type="secondary" style={{ fontSize: 13, display: 'block', marginBottom: 12 }}>
-                选择模板后，系统会结合该类型设备的常见故障模式进行生成
               </Text>
               <Select
                 style={{ width: '100%' }}
@@ -342,9 +365,12 @@ export default function Generate() {
                   label: <span>{t.icon} {t.name}</span>,
                 }))}
               />
+              <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 6 }}>
+                可选项，用于快速贴合设备类型的常见模式
+              </Text>
               {templateTopEvents.length > 0 && (
                 <div style={{ marginTop: 12 }}>
-                  <Text type="secondary" style={{ fontSize: 13, marginRight: 8 }}>常见故障：</Text>
+                  <Text type="secondary" style={{ fontSize: 12, marginRight: 8 }}>常见故障：</Text>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
                     {templateTopEvents.slice(0, 5).map((event, idx) => (
                       <Button
@@ -361,17 +387,50 @@ export default function Generate() {
                 </div>
               )}
             </Col>
-            
-            {/* 文档选择 */}
+
+            {/* 模型选择 */}
+            <Col xs={24} md={12}>
+              <Text strong style={{ fontSize: 15, display: 'block', marginBottom: 8 }}>
+                <ApiOutlined style={{ marginRight: 8 }} />
+                选择调用模型
+              </Text>
+              <Select
+                style={{ width: '100%' }}
+                value={selectedProvider}
+                onChange={setSelectedProvider}
+                options={providers.map(p => {
+                  const unavailableText = p.reason || '不可用'
+                  return {
+                    value: p.name,
+                    disabled: !p.available,
+                    label: (
+                      <Space>
+                        <span style={{ textTransform: 'capitalize' }}>{p.name}</span>
+                        <Badge status={p.available ? 'success' : 'error'} text={p.available ? '可用' : unavailableText} />
+                      </Space>
+                    )
+                  }
+                })}
+              />
+              <div style={{ marginTop: 6 }}>
+                <Space wrap>
+                  {providerInfo.primary ? <Tag color="blue">主: {providerInfo.primary}</Tag> : null}
+                  {providerInfo.fallback ? <Tag color="purple">备: {providerInfo.fallback}</Tag> : null}
+                </Space>
+              </div>
+            </Col>
+          </Row>
+
+          {/* 第二行：文档选择（与模板等宽） */}
+          <Row gutter={[16, 8]}>
             <Col xs={24} md={12}>
               <Text strong style={{ fontSize: 15, display: 'block', marginBottom: 8 }}>
                 <BookOutlined style={{ marginRight: 8 }} />
                 选择操作手册（可选）
               </Text>
-              <Text type="secondary" style={{ fontSize: 13, display: 'block', marginBottom: 12 }}>
-                选择已上传的操作手册，让AI基于特定文档生成更准确的故障树
+              <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>
+                选择已上传的操作手册，让 AI 基于特定文档生成更贴合的故障树
               </Text>
-              
               {/* 上传进度 */}
               {uploading && (
                 <div style={{ marginBottom: 12 }}>
@@ -388,7 +447,7 @@ export default function Generate() {
                 onChange={setSelectedDoc}
                 loading={loadingDocs}
                 allowClear
-                dropdownRender={(menu) => (
+                popupRender={(menu) => (
                   <>
                     {menu}
                     <Divider style={{ margin: '8px 0' }} />
@@ -552,7 +611,7 @@ export default function Generate() {
               </Space>
               <Space>
                 <Button icon={<CheckCircleOutlined />} onClick={handleValidate}>重新校验</Button>
-                <Button type="primary" icon={<SaveOutlined />}>保存结果</Button>
+                <Button type="primary" icon={<SaveOutlined />} loading={savingResult} onClick={handleSaveResult}>保存结果</Button>
               </Space>
             </div>
 
@@ -631,16 +690,50 @@ export default function Generate() {
                   {viewMode === 'view' ? '故障树结构' : '专家编辑模式'}
                 </Space>
               }
+              extra={
+                <Space>
+                  {viewMode === 'view' ? (
+                    <Button
+                      type="primary"
+                      icon={<EditOutlined />}
+                      onClick={handleEnterEdit}
+                      className="btn-primary"
+                    >
+                      专家编辑
+                    </Button>
+                  ) : (
+                    <>
+                      <Button icon={<UndoOutlined />} onClick={handleCancelEdit}>
+                        取消
+                      </Button>
+                      <Button
+                        type="primary"
+                        icon={<SaveOutlined />}
+                        loading={saving}
+                        onClick={() => editorRef.current?.save?.()}
+                        className="btn-primary"
+                      >
+                        保存
+                      </Button>
+                    </>
+                  )}
+                </Space>
+              }
               style={{ marginBottom: 24 }}
             >
               {viewMode === 'view' ? (
-                <FaultTreeViewer tree={result} />
+                <Suspense fallback={null}>
+                  <FaultTreeViewer tree={result} />
+                </Suspense>
               ) : (
-                <TreeEditor 
-                  initialTree={result}
-                  onSave={handleSaveEdit}
-                  onCancel={handleCancelEdit}
-                />
+                <Suspense fallback={null}>
+                  <TreeEditor 
+                    ref={editorRef}
+                    initialTree={result}
+                    onSave={handleSaveEdit}
+                    onCancel={handleCancelEdit}
+                  />
+                </Suspense>
               )}
             </Card>
           )}

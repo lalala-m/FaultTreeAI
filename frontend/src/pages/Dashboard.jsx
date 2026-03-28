@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react'
-import { Row, Col, Card, Typography, Button, List, Tag, Space, Steps, Alert, Divider } from 'antd'
+import React, { useEffect, useMemo, useRef, useState, Suspense, lazy } from 'react'
+import { Row, Col, Card, Typography, Button, List, Tag, Space, Steps, Divider, Modal, Table, Popconfirm, message } from 'antd'
 import { 
   FileTextOutlined, 
   ApartmentOutlined, 
@@ -13,6 +13,9 @@ import {
 } from '@ant-design/icons'
 import api from '../services/api.js'
 
+const FaultTreeViewer = lazy(() => import('../components/FaultTreeViewer.jsx'))
+const TreeEditor = lazy(() => import('../components/TreeEditor.jsx'))
+
 const { Title, Text, Paragraph } = Typography
 
 export default function Dashboard({ onNavigate }) {
@@ -20,32 +23,41 @@ export default function Dashboard({ onNavigate }) {
   const [recentTrees, setRecentTrees] = useState([])
   const [loading, setLoading] = useState(true)
   const [isFirstTime, setIsFirstTime] = useState(false)
+  const [docsOpen, setDocsOpen] = useState(false)
+  const [docsLoading, setDocsLoading] = useState(false)
+  const [docs, setDocs] = useState([])
+  const [selectedTree, setSelectedTree] = useState(null)
+  const [treeModalMode, setTreeModalMode] = useState('view')
+  const [treeDetailLoading, setTreeDetailLoading] = useState(false)
+  const [treeSaving, setTreeSaving] = useState(false)
+  const editorRef = useRef(null)
+
+  const loadStatsAndTrees = async () => {
+    const [statsData, trees] = await Promise.all([api.getKnowledgeStats(), api.listFaultTrees()])
+    setStats(prev => ({
+      ...prev,
+      total_docs: statsData.total_docs || 0,
+      total_chunks: statsData.total_chunks || 0,
+    }))
+    setRecentTrees((trees || []).slice(0, 5))
+    
+    const totalTrees = trees?.length || 0
+    const validTrees = trees?.filter(t => t.is_valid === true).length || 0
+    const validRate = totalTrees > 0 ? Math.round((validTrees / totalTrees) * 100) : 0
+    
+    setIsFirstTime(totalTrees === 0 && (statsData.total_docs || 0) === 0)
+    
+    setStats(prev => ({
+      ...prev,
+      total_trees: totalTrees,
+      valid_rate: validRate,
+    }))
+  }
 
   useEffect(() => {
     const loadData = async () => {
       try {
-        const statsData = await api.getKnowledgeStats()
-        setStats(prev => ({
-          ...prev,
-          total_docs: statsData.total_docs || 0,
-          total_chunks: statsData.total_chunks || 0,
-        }))
-
-        const trees = await api.listFaultTrees()
-        setRecentTrees((trees || []).slice(0, 5))
-        
-        const totalTrees = trees?.length || 0
-        const validTrees = trees?.filter(t => t.is_valid === true).length || 0
-        const validRate = totalTrees > 0 ? Math.round((validTrees / totalTrees) * 100) : 0
-        
-        // 首次使用判断
-        setIsFirstTime(totalTrees === 0 && (statsData.total_docs || 0) === 0)
-        
-        setStats(prev => ({
-          ...prev,
-          total_trees: totalTrees,
-          valid_rate: validRate,
-        }))
+        await loadStatsAndTrees()
       } catch (e) {
         console.error('Dashboard load failed:', e)
       } finally {
@@ -54,6 +66,84 @@ export default function Dashboard({ onNavigate }) {
     }
     loadData()
   }, [])
+
+  const loadDocs = async () => {
+    setDocsLoading(true)
+    try {
+      const data = await api.listDocuments()
+      setDocs(Array.isArray(data) ? data : [])
+    } catch (e) {
+      setDocs([])
+      message.error('加载文档失败')
+    } finally {
+      setDocsLoading(false)
+    }
+  }
+
+  const openDocs = async () => {
+    setDocsOpen(true)
+    await loadDocs()
+  }
+
+  const handleDeleteDoc = async (docId) => {
+    try {
+      await api.deleteDocument(docId)
+      message.success('文档已删除')
+      await Promise.all([loadDocs(), loadStatsAndTrees()])
+    } catch (e) {
+      message.error(e.response?.data?.detail || '删除失败')
+    }
+  }
+
+  const openTree = async (treeId) => {
+    setTreeDetailLoading(true)
+    try {
+      const detail = await api.getFaultTree(treeId)
+      setTreeModalMode('view')
+      setSelectedTree({
+        tree_id: detail.tree_id || treeId,
+        fault_tree: detail.fault_tree,
+        top_event: detail.fault_tree?.top_event,
+        nodes_json: detail.fault_tree?.nodes,
+        gates_json: detail.fault_tree?.gates,
+        confidence: detail.fault_tree?.confidence,
+        analysis_summary: detail.fault_tree?.analysis_summary,
+        mcs: detail.mcs,
+        importance: detail.importance,
+        validation_issues: detail.validation_issues,
+      })
+    } catch (e) {
+      message.error(e.response?.data?.detail || '加载故障树失败')
+    }
+    setTreeDetailLoading(false)
+  }
+
+  const handleSaveEditedTree = async (editedData) => {
+    if (!selectedTree?.tree_id) return
+    setTreeSaving(true)
+    try {
+      await api.saveFaultTree(selectedTree.tree_id, {
+        nodes: editedData.nodes,
+        gates: editedData.gates,
+        fault_tree: editedData.fault_tree,
+        mcs: selectedTree.mcs,
+        importance: selectedTree.importance,
+        validation_issues: selectedTree.validation_issues,
+      })
+      setSelectedTree(prev => ({
+        ...prev,
+        fault_tree: editedData.fault_tree,
+        nodes_json: editedData.nodes,
+        gates_json: editedData.gates,
+      }))
+      message.success('已保存到数据库')
+      setTreeModalMode('view')
+      await loadStatsAndTrees()
+    } catch (e) {
+      message.error(e.response?.data?.detail || '保存失败')
+    }
+    setTreeSaving(false)
+  }
 
   // 操作步骤
   const guideSteps = [
@@ -95,11 +185,75 @@ export default function Dashboard({ onNavigate }) {
   ]
 
   const statItems = [
-    { title: '文档总数', value: stats.total_docs, icon: <FileTextOutlined />, color: '#1890ff', desc: '已上传的设备手册' },
+    { title: '文档总数', value: stats.total_docs, icon: <FileTextOutlined />, color: '#1890ff', desc: '已上传的设备手册', onClick: openDocs },
     { title: '知识分块', value: stats.total_chunks, icon: <ApartmentOutlined />, color: '#36cfc9', desc: '已向量化的知识' },
     { title: '故障树', value: stats.total_trees, icon: <ThunderboltOutlined />, color: '#faad14', desc: '已生成的故障树' },
     { title: '有效率', value: stats.valid_rate, suffix: '%', icon: <CheckCircleOutlined />, color: '#52c41a', desc: '校验通过率' },
   ]
+
+  const docColumns = useMemo(() => ([
+    {
+      title: '文件名',
+      dataIndex: 'filename',
+      key: 'filename',
+      ellipsis: true,
+    },
+    {
+      title: '类型',
+      dataIndex: 'file_type',
+      key: 'file_type',
+      width: 90,
+    },
+    {
+      title: '大小',
+      dataIndex: 'file_size',
+      key: 'file_size',
+      width: 110,
+      render: (v) => {
+        const n = Number(v || 0)
+        if (!n) return '-'
+        if (n < 1024) return `${n} B`
+        if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+        return `${(n / 1024 / 1024).toFixed(2)} MB`
+      }
+    },
+    {
+      title: '状态',
+      dataIndex: 'status',
+      key: 'status',
+      width: 110,
+      render: (s) => {
+        if (s === 'active') return <Tag color="green">可用</Tag>
+        if (s === 'processing') return <Tag color="blue">处理中</Tag>
+        if (s === 'failed') return <Tag color="red">失败</Tag>
+        if (s === 'deleted') return <Tag>已删除</Tag>
+        return <Tag>{s || '-'}</Tag>
+      }
+    },
+    {
+      title: '上传时间',
+      dataIndex: 'upload_time',
+      key: 'upload_time',
+      width: 180,
+      render: (t) => t ? new Date(t).toLocaleString('zh-CN') : '-',
+    },
+    {
+      title: '操作',
+      key: 'action',
+      width: 90,
+      render: (_, row) => (
+        <Popconfirm
+          title="删除文档"
+          description="确定要删除该文档吗？"
+          okText="删除"
+          cancelText="取消"
+          onConfirm={() => handleDeleteDoc(row.doc_id)}
+        >
+          <Button danger size="small">删除</Button>
+        </Popconfirm>
+      ),
+    }
+  ]), [docs])
 
   const listData = recentTrees.map(t => ({
     id: t.tree_id,
@@ -156,7 +310,7 @@ export default function Dashboard({ onNavigate }) {
       <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
         {statItems.map((s) => (
           <Col xs={12} sm={12} md={6} key={s.title}>
-            <Card className="glass-card" size="small" hoverable>
+            <Card className="glass-card" size="small" hoverable onClick={s.onClick}>
               <div style={{ textAlign: 'center' }}>
                 <div style={{ fontSize: 28, color: s.color, marginBottom: 8 }}>
                   {s.icon}
@@ -171,6 +325,25 @@ export default function Dashboard({ onNavigate }) {
           </Col>
         ))}
       </Row>
+
+      <Modal
+        title="全部文档"
+        open={docsOpen}
+        onCancel={() => setDocsOpen(false)}
+        footer={[
+          <Button key="refresh" onClick={loadDocs} loading={docsLoading}>刷新</Button>,
+          <Button key="goto" type="primary" onClick={() => { setDocsOpen(false); onNavigate('knowledge') }}>前往知识库</Button>,
+        ]}
+        width={980}
+      >
+        <Table
+          rowKey="doc_id"
+          loading={docsLoading}
+          columns={docColumns}
+          dataSource={docs}
+          pagination={{ pageSize: 8, showTotal: (t) => `共 ${t} 个文档` }}
+        />
+      </Modal>
 
       <Row gutter={[16, 16]}>
         {/* 最近故障树 */}
@@ -192,7 +365,8 @@ export default function Dashboard({ onNavigate }) {
                         key="view" 
                         size="small" 
                         type="link"
-                        onClick={() => onNavigate('generate')}
+                        loading={treeDetailLoading && selectedTree?.tree_id === item.id}
+                        onClick={() => openTree(item.id)}
                         style={{ color: '#1890ff' }}
                       >
                         查看 <ArrowRightOutlined />
@@ -301,6 +475,37 @@ export default function Dashboard({ onNavigate }) {
           </Card>
         </Col>
       </Row>
+
+      <Modal
+        open={!!selectedTree}
+        title={selectedTree?.top_event}
+        onCancel={() => { setSelectedTree(null); setTreeModalMode('view') }}
+        footer={
+          treeModalMode === 'view'
+            ? [
+                <Button key="close" onClick={() => setSelectedTree(null)}>关闭</Button>,
+                <Button key="history" onClick={() => { setSelectedTree(null); onNavigate('history') }}>查看全部</Button>,
+                <Button key="edit" type="primary" onClick={() => setTreeModalMode('edit')}>编辑</Button>,
+              ]
+            : [
+                <Button key="cancel" onClick={() => setTreeModalMode('view')}>取消</Button>,
+                <Button key="save" type="primary" loading={treeSaving} onClick={() => editorRef.current?.save?.()}>保存</Button>,
+              ]
+        }
+        width={980}
+      >
+        <Suspense fallback={null}>
+          {selectedTree && treeModalMode === 'view' && <FaultTreeViewer tree={selectedTree} />}
+          {selectedTree && treeModalMode === 'edit' && (
+            <TreeEditor
+              ref={editorRef}
+              initialTree={selectedTree}
+              onSave={handleSaveEditedTree}
+              onCancel={() => setTreeModalMode('view')}
+            />
+          )}
+        </Suspense>
+      </Modal>
     </div>
   )
 }

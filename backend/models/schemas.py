@@ -1,12 +1,17 @@
 from pydantic import BaseModel
 from typing import List, Optional, Literal
 
+class Position(BaseModel):
+    x: float
+    y: float
+
 class FTANode(BaseModel):
     id: str
     type: Literal["top", "intermediate", "basic"]
     name: str
     description: str
     source_ref: Optional[str] = None
+    position: Optional[Position] = None
 
 class FTAGate(BaseModel):
     id: str
@@ -27,8 +32,11 @@ class GenerateRequest(BaseModel):
     doc_ids: Optional[List[str]] = None  # 指定知识来源文档
     template_id: Optional[str] = None     # 故障树模板ID（可选）
     rag_top_k: Optional[int] = 5          # RAG 检索的 Top K
+    provider: Optional[str] = None        # 指定调用的 LLM Provider（如 'minimax' / 'ollama'）
+    use_fallback: Optional[bool] = True   # 失败时是否允许自动回退
 
 class GenerateResponse(BaseModel):
+    tree_id: Optional[str] = None
     fault_tree: FaultTree
     mcs: List[List[str]]           # 最小割集
     importance: List[dict]          # 重要度排序

@@ -1,10 +1,11 @@
-import React, { useState } from 'react'
+import React, { useMemo, useState, Suspense, lazy } from 'react'
 import { Layout, Menu, Typography } from 'antd'
 import { UploadOutlined, ApiOutlined, HistoryOutlined, DashboardOutlined } from '@ant-design/icons'
-import KnowledgeBase from './pages/KnowledgeBase.jsx'
-import Generate from './pages/Generate.jsx'
-import History from './pages/History.jsx'
-import Dashboard from './pages/Dashboard.jsx'
+
+const KnowledgeBase = lazy(() => import('./pages/KnowledgeBase.jsx'))
+const Generate = lazy(() => import('./pages/Generate.jsx'))
+const History = lazy(() => import('./pages/History.jsx'))
+const Dashboard = lazy(() => import('./pages/Dashboard.jsx'))
 
 const { Header, Sider, Content } = Layout
 const { Title } = Typography
@@ -12,12 +13,12 @@ const { Title } = Typography
 export default function App() {
   const [active, setActive] = useState('dashboard')
 
-  const items = [
+  const items = useMemo(() => ([
     { key: 'dashboard', icon: <DashboardOutlined />, label: '总览' },
     { key: 'knowledge', icon: <UploadOutlined />, label: '知识库' },
     { key: 'generate', icon: <ApiOutlined />, label: '生成故障树' },
     { key: 'history', icon: <HistoryOutlined />, label: '历史记录' },
-  ]
+  ]), [])
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
@@ -53,10 +54,12 @@ export default function App() {
         </Header>
 
         <Content style={{ padding: 24, overflow: 'auto' }}>
-          {active === 'dashboard' && <Dashboard onNavigate={setActive} />}
-          {active === 'knowledge' && <KnowledgeBase />}
-          {active === 'generate' && <Generate />}
-          {active === 'history' && <History />}
+          <Suspense fallback={null}>
+            {active === 'dashboard' && <Dashboard onNavigate={setActive} />}
+            {active === 'knowledge' && <KnowledgeBase />}
+            {active === 'generate' && <Generate />}
+            {active === 'history' && <History />}
+          </Suspense>
         </Content>
       </Layout>
     </Layout>

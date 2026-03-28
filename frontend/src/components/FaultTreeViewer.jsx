@@ -33,12 +33,12 @@ function GateNode({ data }) {
       borderRadius: 8,
       background: '#fff',
       textAlign: 'center',
-      minWidth: 100,
+      minWidth: 90,
       fontSize: 12,
     }}>
       <Handle type="target" position={Position.Top} style={{ background: color }} />
       <div style={{ fontWeight: 700, color, fontSize: 11, marginBottom: 4 }}>
-        {data.gate_type?.toUpperCase() || 'GATE'}
+        {String(data.gate_type || '').toUpperCase() || 'EVENT'}
       </div>
       <div style={{ fontSize: 13 }}>{data.label}</div>
       <Handle type="source" position={Position.Bottom} style={{ background: color }} />
@@ -55,7 +55,7 @@ function BasicNode({ data }) {
       borderRadius: 20,
       background: '#fff',
       textAlign: 'center',
-      minWidth: 120,
+      minWidth: 105,
       fontSize: 13,
     }}>
       <Handle type="target" position={Position.Top} style={{ background: color }} />
@@ -78,7 +78,7 @@ function TopEventNode({ data }) {
       borderRadius: 4,
       background: '#e6f4ff',
       textAlign: 'center',
-      minWidth: 140,
+      minWidth: 125,
       fontWeight: 700,
     }}>
       <Handle type="target" position={Position.Top} style={{ visibility: 'hidden' }} />
@@ -106,59 +106,67 @@ export default function FaultTreeViewer({ tree }) {
       const inputNodes = g.input_nodes || g.children || []
       const parent = g.output_node
       if (!childrenByParent.has(parent)) childrenByParent.set(parent, [])
-      childrenByParent.get(parent).push(...inputNodes)
+      inputNodes.forEach((cid) => {
+        const arr = childrenByParent.get(parent)
+        if (!arr.includes(cid)) arr.push(cid)
+      })
     })
 
-    const topNode = nodesData.find(n => n.type === 'top') || nodesData[0]
+    const topNode = nodesData.find(n => n.type === 'top') || nodesData.find(n => n && n.id) || null
     const topId = topNode?.id
 
-    const depthById = new Map()
-    const queue = []
-    if (topId) {
-      depthById.set(topId, 0)
-      queue.push(topId)
-    }
-    while (queue.length) {
-      const cur = queue.shift()
-      const curDepth = depthById.get(cur) ?? 0
-      const children = childrenByParent.get(cur) || []
-      for (const child of children) {
-        const nextDepth = curDepth + 1
-        const prev = depthById.get(child)
-        if (prev == null || nextDepth < prev) {
-          depthById.set(child, nextDepth)
-          queue.push(child)
-        }
-      }
+    const nodeWidth = 180
+    const nodeGapX = 40
+    const nodeGapY = 120
+    const layoutMap = new Map()
+    const visited = new Set()
+    let cursorX = 0
+
+    const getNodeName = (id) => {
+      const n = nodeById.get(id)
+      return (n?.name || '').toString()
     }
 
-    const groups = new Map()
-    nodesData.forEach(n => {
-      const d = depthById.get(n.id)
-      const depth = d == null ? 9999 : d
-      if (!groups.has(depth)) groups.set(depth, [])
-      groups.get(depth).push(n)
+    const layoutDfs = (id, depth) => {
+      if (!id) return null
+      if (visited.has(id)) return layoutMap.get(id) || null
+      visited.add(id)
+
+      const children = (childrenByParent.get(id) || []).slice().sort((a, b) => getNodeName(a).localeCompare(getNodeName(b)))
+      const childPositions = []
+      for (const cid of children) {
+        const cp = layoutDfs(cid, depth + 1)
+        if (cp) childPositions.push(cp)
+      }
+
+      let x = cursorX
+      if (childPositions.length === 0) {
+        x = cursorX
+        cursorX += nodeWidth + nodeGapX
+      } else {
+        const minX = Math.min(...childPositions.map(p => p.x))
+        const maxX = Math.max(...childPositions.map(p => p.x))
+        x = (minX + maxX) / 2
+      }
+
+      const pos = { x, y: depth * nodeGapY + 40 }
+      layoutMap.set(id, pos)
+      return pos
+    }
+
+    if (topId) layoutDfs(topId, 0)
+    nodesData.forEach((n) => {
+      if (!layoutMap.has(n.id)) {
+        cursorX += nodeWidth + nodeGapX
+        layoutDfs(n.id, 0)
+      }
     })
 
-    const sortedDepths = Array.from(groups.keys()).sort((a, b) => a - b)
-    const maxCount = Math.max(1, ...sortedDepths.map(d => groups.get(d).length))
-
-    const nodeWidth = 220
-    const nodeGapX = 70
-    const nodeGapY = 140
-    const layoutMap = new Map()
-
-    sortedDepths.forEach((depth, depthIndex) => {
-      const arr = groups.get(depth)
-      const ordered = [...arr].sort((a, b) => (a.name || '').localeCompare(b.name || ''))
-      const levelWidth = ordered.length * nodeWidth + Math.max(0, ordered.length - 1) * nodeGapX
-      const maxWidth = maxCount * nodeWidth + Math.max(0, maxCount - 1) * nodeGapX
-      const xStart = (maxWidth - levelWidth) / 2
-      const y = depthIndex * nodeGapY + 40
-      ordered.forEach((n, i) => {
-        const x = xStart + i * (nodeWidth + nodeGapX)
-        layoutMap.set(n.id, { x, y })
-      })
+    const xs = Array.from(layoutMap.values()).map(p => p.x)
+    const minX = xs.length ? Math.min(...xs) : 0
+    const shiftX = -minX + 40
+    layoutMap.forEach((p, id) => {
+      layoutMap.set(id, { x: p.x + shiftX, y: p.y })
     })
 
     return { nodesData, gatesData, layoutMap }
@@ -167,6 +175,12 @@ export default function FaultTreeViewer({ tree }) {
   // 修正：支持 fault_tree 嵌套结构和直接数据两种格式
   const nodes = useMemo(() => {
     const nodesData = layouted.nodesData
+    const gatesData = layouted.gatesData
+    const gateTypeByOutput = new Map()
+    gatesData.forEach((g) => {
+      const t = g.type || g.gate_type
+      if (t) gateTypeByOutput.set(g.output_node, String(t).toUpperCase())
+    })
     return nodesData.map((n) => {
       const color = NODE_COLORS[n.type] || '#999'
       const hasPos = n.position && typeof n.position.x === 'number' && typeof n.position.y === 'number'
@@ -178,7 +192,7 @@ export default function FaultTreeViewer({ tree }) {
         data: {
           label: n.name,  // 修正：字段是 name 不是 label
           type: n.type,
-          gate_type: n.gate_type,
+          gate_type: gateTypeByOutput.get(n.id),
           probability: n.probability,
         },
         style: { border: `2px solid ${color}` },
@@ -193,16 +207,17 @@ export default function FaultTreeViewer({ tree }) {
     return gates.flatMap((g) => {
       // 兼容 input_nodes 或 children 字段
       const inputNodes = g.input_nodes || g.children || []
+      const gateType = String(g.type || g.gate_type || '').toUpperCase()
       return inputNodes.map((childId, i) => ({
         id: `${g.output_node}_${childId}_${i}`,
         source: g.output_node,   // 逻辑门是源（上游）
         target: childId,          // 子节点是目标（下游）
-        animated: String(g.gate_type || '').toUpperCase() === 'OR',
-        label: g.gate_type,
-        style: { stroke: NODE_COLORS[g.gate_type?.toLowerCase()] || '#999' },
+        animated: gateType === 'OR',
+        label: gateType,
+        style: { stroke: NODE_COLORS[gateType.toLowerCase()] || '#999' },
         markerEnd: { 
           type: MarkerType.ArrowClosed, 
-          color: NODE_COLORS[g.gate_type?.toLowerCase()] || '#999' 
+          color: NODE_COLORS[gateType.toLowerCase()] || '#999' 
         },
       }))
     })
@@ -230,7 +245,7 @@ export default function FaultTreeViewer({ tree }) {
           <Tag color={NODE_COLORS.top}>顶事件</Tag>
         </Space>
       }
-      bodyStyle={{ padding: 0 }}
+      styles={{ body: { padding: 0 } }}
     >
       <div style={{ height: 500, background: '#fafafa' }}>
         <ReactFlow

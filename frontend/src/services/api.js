@@ -89,6 +89,12 @@ export const exportPDF = async (faultTree, mcs) => {
   return data
 }
 
+// ── LLM Provider 管理 ─────────────────────────────────
+export const getProviders = async () => {
+  const { data } = await api.get('/llm/providers')
+  return data
+}
+
 // ── 模板管理 ────────────────────────────────────────
 
 export const listTemplates = async () => {
@@ -124,6 +130,7 @@ api.saveFaultTree = saveFaultTree
 api.validateFaultTree = validateFaultTree
 api.exportWord = exportWord
 api.exportPDF = exportPDF
+api.getProviders = getProviders
 api.listTemplates = listTemplates
 api.getTemplate = getTemplate
 api.getTemplateTopEvents = getTemplateTopEvents

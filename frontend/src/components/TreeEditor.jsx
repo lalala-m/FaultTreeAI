@@ -1,4 +1,4 @@
-import React, { useCallback, useState, useMemo } from 'react'
+import React, { useCallback, useState, useMemo, forwardRef, useImperativeHandle } from 'react'
 import ReactFlow, {
   useNodesState,
   useEdgesState,
@@ -98,19 +98,99 @@ const nodeTypes = {
   top: TopEventNode,
 }
 
-export default function TreeEditor({ initialTree, onSave, onCancel }) {
+const TreeEditor = forwardRef(function TreeEditor({ initialTree, onSave, onCancel }, ref) {
   // 转换初始数据到 ReactFlow 格式
   const initialNodes = useMemo(() => {
     if (!initialTree) return []
     const nodesData = initialTree.fault_tree?.nodes || initialTree.nodes_json || []
+    const gatesData = initialTree.fault_tree?.gates || initialTree.gates_json || []
+
+    const nodeById = new Map()
+    nodesData.forEach(n => nodeById.set(n.id, n))
+
+    const gateTypeByOutput = new Map()
+    gatesData.forEach((g) => {
+      const t = g.type || g.gate_type
+      if (t) gateTypeByOutput.set(g.output_node, String(t).toUpperCase())
+    })
+
+    const childrenByParent = new Map()
+    gatesData.forEach(g => {
+      const inputNodes = g.input_nodes || g.children || []
+      const parent = g.output_node
+      if (!childrenByParent.has(parent)) childrenByParent.set(parent, [])
+      inputNodes.forEach((cid) => {
+        const arr = childrenByParent.get(parent)
+        if (!arr.includes(cid)) arr.push(cid)
+      })
+    })
+
+    const topNode = nodesData.find(n => n.type === 'top') || nodesData.find(n => n && n.id) || null
+    const topId = topNode?.id
+
+    const nodeWidth = 180
+    const nodeGapX = 40
+    const nodeGapY = 120
+    const layoutMap = new Map()
+    const visited = new Set()
+    let cursorX = 0
+
+    const getNodeName = (id) => {
+      const n = nodeById.get(id)
+      return (n?.name || '').toString()
+    }
+
+    const layoutDfs = (id, depth) => {
+      if (!id) return null
+      if (visited.has(id)) return layoutMap.get(id) || null
+      visited.add(id)
+
+      const children = (childrenByParent.get(id) || []).slice().sort((a, b) => getNodeName(a).localeCompare(getNodeName(b)))
+      const childPositions = []
+      for (const cid of children) {
+        const cp = layoutDfs(cid, depth + 1)
+        if (cp) childPositions.push(cp)
+      }
+
+      let x = cursorX
+      if (childPositions.length === 0) {
+        x = cursorX
+        cursorX += nodeWidth + nodeGapX
+      } else {
+        const minX = Math.min(...childPositions.map(p => p.x))
+        const maxX = Math.max(...childPositions.map(p => p.x))
+        x = (minX + maxX) / 2
+      }
+
+      const pos = { x, y: depth * nodeGapY + 40 }
+      layoutMap.set(id, pos)
+      return pos
+    }
+
+    if (topId) layoutDfs(topId, 0)
+    nodesData.forEach((n) => {
+      if (!layoutMap.has(n.id)) {
+        cursorX += nodeWidth + nodeGapX
+        layoutDfs(n.id, 0)
+      }
+    })
+
+    const xs = Array.from(layoutMap.values()).map(p => p.x)
+    const minX = xs.length ? Math.min(...xs) : 0
+    const shiftX = -minX + 40
+    layoutMap.forEach((p, id) => {
+      layoutMap.set(id, { x: p.x + shiftX, y: p.y })
+    })
+
     return nodesData.map((n, idx) => ({
       id: n.id,
       type: n.type === 'top' ? 'top' : n.type === 'basic' ? 'basic' : 'gate',
-      position: n.position || { x: 200 + (idx % 4) * 180, y: 50 + Math.floor(idx / 4) * 120 },
+      position: n.position || layoutMap.get(n.id) || { x: 200 + (idx % 4) * 180, y: 50 + Math.floor(idx / 4) * 120 },
       data: {
         label: n.name,
         type: n.type,
-        gate_type: n.gate_type,
+        gate_type: gateTypeByOutput.get(n.id) || n.gate_type,
+        description: n.description,
       },
     }))
   }, [initialTree])
@@ -124,12 +204,12 @@ export default function TreeEditor({ initialTree, onSave, onCancel }) {
         id: `${g.id}_${childId}_${i}`,
         source: g.output_node,
         target: childId,
-        animated: g.gate_type === 'OR',
-        label: g.gate_type,
-        style: { stroke: NODE_COLORS[g.gate_type?.toLowerCase()] || '#999', strokeWidth: 2 },
+        animated: g.type === 'OR',
+        label: g.type,
+        style: { stroke: NODE_COLORS[g.type?.toLowerCase()] || '#999', strokeWidth: 2 },
         markerEnd: {
           type: MarkerType.ArrowClosed,
-          color: NODE_COLORS[g.gate_type?.toLowerCase()] || '#999',
+          color: NODE_COLORS[g.type?.toLowerCase()] || '#999',
         },
       }))
     })
@@ -141,6 +221,28 @@ export default function TreeEditor({ initialTree, onSave, onCancel }) {
   const [modalType, setModalType] = useState('addNode')
   const [selectedNode, setSelectedNode] = useState(null)
   const [form] = Form.useForm()
+
+  const wouldCreateCycle = useCallback((sourceId, targetId) => {
+    const adj = new Map()
+    edges.forEach(e => {
+      if (!adj.has(e.source)) adj.set(e.source, [])
+      adj.get(e.source).push(e.target)
+    })
+    if (!adj.has(sourceId)) adj.set(sourceId, [])
+    adj.get(sourceId).push(targetId)
+
+    const stack = [targetId]
+    const seen = new Set()
+    while (stack.length) {
+      const cur = stack.pop()
+      if (!cur || seen.has(cur)) continue
+      if (cur === sourceId) return true
+      seen.add(cur)
+      const next = adj.get(cur) || []
+      next.forEach(n => stack.push(n))
+    }
+    return false
+  }, [edges])
 
   // 处理节点点击
   const onNodeClick = useCallback((event, node) => {
@@ -196,6 +298,7 @@ export default function TreeEditor({ initialTree, onSave, onCancel }) {
             label: values.label,
             type: values.nodeType,
             gate_type: values.gateType,
+            description: '',
           },
         }
         setNodes((nds) => [...nds, newNode])
@@ -207,8 +310,26 @@ export default function TreeEditor({ initialTree, onSave, onCancel }) {
           message.warning('这条连接已存在')
           return
         }
-        
+        if (values.sourceNode === values.targetNode) {
+          message.warning('不能连接到自身')
+          return
+        }
+
         const sourceNode = nodes.find(n => n.id === values.sourceNode)
+        const targetNode = nodes.find(n => n.id === values.targetNode)
+        if (sourceNode?.type === 'basic') {
+          message.warning('底事件不能作为父节点')
+          return
+        }
+        if (targetNode?.type === 'top') {
+          message.warning('顶事件不能作为子节点')
+          return
+        }
+        if (wouldCreateCycle(values.sourceNode, values.targetNode)) {
+          message.warning('该连接会形成循环依赖')
+          return
+        }
+        
         const newEdge = {
           id: `edge_${Date.now()}`,
           source: values.sourceNode,
@@ -234,14 +355,37 @@ export default function TreeEditor({ initialTree, onSave, onCancel }) {
       message.warning('没有可保存的节点')
       return
     }
+    const top = nodes.find((n) => n.type === 'top')
+    if (!top) {
+      message.warning('必须包含一个顶事件')
+      return
+    }
+
+    const inputsByOutput = new Map()
+    edges.forEach((e) => {
+      if (!inputsByOutput.has(e.source)) inputsByOutput.set(e.source, new Set())
+      inputsByOutput.get(e.source).add(e.target)
+    })
+    for (const [out, set] of inputsByOutput.entries()) {
+      const outNode = nodes.find(n => n.id === out)
+      if (outNode?.type === 'basic') {
+        message.warning('底事件不能有子节点')
+        return
+      }
+      if (set.size < 2) {
+        message.warning('每个逻辑门必须至少有2个输入节点')
+        return
+      }
+    }
 
     // 将 nodes/edges 转换回故障树结构
     const ftNodes = nodes.map((n) => ({
       id: n.id,
-      type: n.type,
+      type: n.data.type,
       name: n.data.label,
-      description: '',
+      description: n.data.description || '',
       gate_type: n.data.gate_type,
+      position: n.position,
     }))
 
     const ftGates = []
@@ -277,6 +421,10 @@ export default function TreeEditor({ initialTree, onSave, onCancel }) {
     })
     message.success('保存成功！')
   }
+
+  useImperativeHandle(ref, () => ({
+    save: () => handleSave(),
+  }))
 
   return (
     <div>
@@ -429,7 +577,7 @@ export default function TreeEditor({ initialTree, onSave, onCancel }) {
           <Form form={form} layout="vertical">
             <Form.Item name="sourceNode" label="源节点（父节点）" rules={[{ required: true, message: '请选择源节点' }]}>
               <Select placeholder="选择源节点">
-                {nodes.map((n) => (
+                {nodes.filter(n => n.type !== 'basic').map((n) => (
                   <Select.Option key={n.id} value={n.id}>
                     {n.data.label} 
                     <Tag style={{ marginLeft: 8 }} color={NODE_COLORS[n.type]}>
@@ -441,7 +589,7 @@ export default function TreeEditor({ initialTree, onSave, onCancel }) {
             </Form.Item>
             <Form.Item name="targetNode" label="目标节点（子节点）" rules={[{ required: true, message: '请选择目标节点' }]}>
               <Select placeholder="选择目标节点">
-                {nodes.map((n) => (
+                {nodes.filter(n => n.type !== 'top').map((n) => (
                   <Select.Option key={n.id} value={n.id}>
                     {n.data.label}
                     <Tag style={{ marginLeft: 8 }} color={NODE_COLORS[n.type]}>
@@ -456,4 +604,6 @@ export default function TreeEditor({ initialTree, onSave, onCancel }) {
       </Modal>
     </div>
   )
-}
+})
+
+export default TreeEditor

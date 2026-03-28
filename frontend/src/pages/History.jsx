@@ -1,8 +1,10 @@
-import React, { useState, useEffect } from 'react'
-import { Card, Table, Tag, Typography, Button, Space, Empty, Modal } from 'antd'
+import React, { useRef, useState, useEffect, Suspense, lazy } from 'react'
+import { Card, Table, Tag, Typography, Button, Space, Empty, Modal, message } from 'antd'
 import { EyeOutlined, DeleteOutlined, FileWordOutlined } from '@ant-design/icons'
 import api from '../services/api.js'
-import FaultTreeViewer from '../components/FaultTreeViewer.jsx'
+
+const FaultTreeViewer = lazy(() => import('../components/FaultTreeViewer.jsx'))
+const TreeEditor = lazy(() => import('../components/TreeEditor.jsx'))
 
 const { Title } = Typography
 
@@ -10,6 +12,10 @@ export default function History() {
   const [trees, setTrees] = useState([])
   const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState(null)
+  const [detailLoading, setDetailLoading] = useState(false)
+  const [mode, setMode] = useState('view')
+  const [saving, setSaving] = useState(false)
+  const editorRef = useRef(null)
 
   const loadTrees = async () => {
     setLoading(true)
@@ -26,7 +32,8 @@ export default function History() {
 
   const handleExport = async (tree) => {
     try {
-      const blob = await api.exportWord(tree)
+      const detail = await api.getFaultTree(tree.tree_id)
+      const blob = await api.exportWord(detail.fault_tree)
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
@@ -36,6 +43,57 @@ export default function History() {
     } catch (err) {
       console.error(err)
     }
+  }
+
+  const handleView = async (row) => {
+    setDetailLoading(true)
+    try {
+      const detail = await api.getFaultTree(row.tree_id)
+      setMode('view')
+      setSelected({
+        tree_id: detail.tree_id || row.tree_id,
+        fault_tree: detail.fault_tree,
+        top_event: detail.fault_tree?.top_event,
+        nodes_json: detail.fault_tree?.nodes,
+        gates_json: detail.fault_tree?.gates,
+        confidence: detail.fault_tree?.confidence,
+        analysis_summary: detail.fault_tree?.analysis_summary,
+        mcs: detail.mcs,
+        importance: detail.importance,
+        validation_issues: detail.validation_issues,
+      })
+    } catch (e) {
+      message.error(e.response?.data?.detail || '加载详情失败')
+    }
+    setDetailLoading(false)
+  }
+
+  const handleSaveEdited = async (editedData) => {
+    if (!selected?.tree_id) return
+    setSaving(true)
+    try {
+      const payload = {
+        nodes: editedData.nodes,
+        gates: editedData.gates,
+        fault_tree: editedData.fault_tree,
+        mcs: selected.mcs,
+        importance: selected.importance,
+        validation_issues: selected.validation_issues,
+      }
+      await api.saveFaultTree(selected.tree_id, payload)
+      setSelected(prev => ({
+        ...prev,
+        fault_tree: editedData.fault_tree,
+        nodes_json: editedData.nodes,
+        gates_json: editedData.gates,
+      }))
+      message.success('已保存到数据库')
+      setMode('view')
+      await loadTrees()
+    } catch (e) {
+      message.error(e.response?.data?.detail || '保存失败')
+    }
+    setSaving(false)
   }
 
   const columns = [
@@ -68,7 +126,7 @@ export default function History() {
       render: (_, row) => (
         <Space>
           <Button size="small" icon={<EyeOutlined />}
-            onClick={() => setSelected(row)}>查看</Button>
+            onClick={() => handleView(row)} loading={detailLoading && selected?.tree_id === row.tree_id}>查看</Button>
           <Button size="small" icon={<FileWordOutlined />}
             onClick={() => handleExport(row)}>导出</Button>
         </Space>
@@ -97,11 +155,31 @@ export default function History() {
       <Modal
         open={!!selected}
         title={selected?.top_event}
-        onCancel={() => setSelected(null)}
-        footer={null}
+        onCancel={() => { setSelected(null); setMode('view') }}
+        footer={
+          mode === 'view'
+            ? [
+                <Button key="close" onClick={() => setSelected(null)}>关闭</Button>,
+                <Button key="edit" type="primary" onClick={() => setMode('edit')}>编辑</Button>,
+              ]
+            : [
+                <Button key="cancel" onClick={() => setMode('view')}>取消</Button>,
+                <Button key="save" type="primary" loading={saving} onClick={() => editorRef.current?.save?.()}>保存</Button>,
+              ]
+        }
         width={900}
       >
-        {selected && <FaultTreeViewer tree={selected} />}
+        <Suspense fallback={null}>
+          {selected && mode === 'view' && <FaultTreeViewer tree={selected} />}
+          {selected && mode === 'edit' && (
+            <TreeEditor
+              ref={editorRef}
+              initialTree={selected}
+              onSave={handleSaveEdited}
+              onCancel={() => setMode('view')}
+            />
+          )}
+        </Suspense>
       </Modal>
     </div>
   )
