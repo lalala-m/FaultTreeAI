@@ -490,12 +490,18 @@ except ImportError:
     pass
 
 
+import os
+
+# 项目根目录
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+DEFAULT_MODEL_PATH = os.path.join(PROJECT_ROOT, "data", "models", "yolo11m.pt")
+
 # 全局检测器实例（延迟加载）
 _detector_instance: Optional[YOLODetector] = None
 
 
 def get_detector(
-    model_path: str = "yolo11m.pt",
+    model_path: str = None,
     device: str = "cuda",
     conf_threshold: float = 0.25,
     **kwargs
@@ -504,7 +510,7 @@ def get_detector(
     获取全局检测器实例（单例模式）
     
     Args:
-        model_path: 模型路径
+        model_path: 模型路径（默认使用 data/models/yolo11m.pt）
         device: 设备类型
         conf_threshold: 置信度阈值
         
@@ -512,6 +518,14 @@ def get_detector(
         YOLODetector 实例
     """
     global _detector_instance
+    
+    # 使用默认模型路径
+    if model_path is None:
+        model_path = DEFAULT_MODEL_PATH
+        # 如果默认路径不存在，尝试使用 yolo11m.pt（ultralytics会自动下载）
+        if not os.path.exists(model_path):
+            logger.warning(f"Model not found at {model_path}, will use default yolo11m.pt")
+            model_path = "yolo11m.pt"
     
     if _detector_instance is None:
         _detector_instance = YOLODetector(
