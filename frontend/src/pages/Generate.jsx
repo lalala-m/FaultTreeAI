@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef, Suspense, lazy } from 'react'
 import { Card, Typography, Button, Space, message, Tag, Divider, Alert, Steps, Progress, Modal, Select, Row, Col, Upload, Progress as ProgressBar, Badge, Slider, Tooltip } from 'antd'
 import { ThunderboltOutlined, SaveOutlined, CheckCircleOutlined, WarningOutlined, RocketOutlined, BookOutlined, ApiOutlined, FileTextOutlined, EditOutlined, EyeOutlined, UndoOutlined, AppstoreOutlined, UploadOutlined, InboxOutlined, FilePdfOutlined, FileWordOutlined, DeleteOutlined } from '@ant-design/icons'
 import api from '../services/api.js'
-import MCSView from '../components/MCSView.jsx'
 import DiagnosisPanel from '../components/DiagnosisPanel.jsx'
 
 const FaultTreeViewer = lazy(() => import('../components/FaultTreeViewer.jsx'))
@@ -40,6 +39,38 @@ export default function Generate() {
   const [providerInfo, setProviderInfo] = useState({ primary: '', fallback: '' })
   const [savingResult, setSavingResult] = useState(false)
   const editorRef = useRef(null)
+  const generateCacheKey = 'faulttreeai_generate_state_v1'
+
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(generateCacheKey)
+      if (!raw) return
+      const data = JSON.parse(raw)
+      if (typeof data?.topEvent === 'string') setTopEvent(data.topEvent)
+      if (typeof data?.systemName === 'string') setSystemName(data.systemName)
+      if (typeof data?.selectedDoc === 'string' || data?.selectedDoc === null) setSelectedDoc(data.selectedDoc)
+      if (typeof data?.selectedProvider === 'string' || data?.selectedProvider === null) setSelectedProvider(data.selectedProvider)
+      if (data?.result) setResult(data.result)
+      if (data?.viewMode === 'view' || data?.viewMode === 'edit') setViewMode(data.viewMode)
+    } catch {
+    }
+  }, [])
+
+  useEffect(() => {
+    try {
+      const payload = {
+        topEvent,
+        systemName,
+        selectedDoc,
+        selectedProvider,
+        result,
+        viewMode,
+        savedAt: Date.now(),
+      }
+      sessionStorage.setItem(generateCacheKey, JSON.stringify(payload))
+    } catch {
+    }
+  }, [topEvent, systemName, selectedDoc, selectedProvider, result, viewMode])
 
   // 加载模板列表
   useEffect(() => {
@@ -774,12 +805,6 @@ export default function Generate() {
             <DiagnosisPanel tree={result} />
           )}
 
-          {/* MCS 最小割集 - 编辑模式下不显示 */}
-          {result.mcs && result.mcs.length > 0 && viewMode === 'view' && (
-            <Card className="glass-card" title={<Space><FileTextOutlined />最小割集分析</Space>}>
-              <MCSView mcs={result.mcs} importance={result.importance} />
-            </Card>
-          )}
         </div>
       )}
 

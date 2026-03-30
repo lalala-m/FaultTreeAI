@@ -5,6 +5,55 @@ const api = axios.create({
   timeout: 120000,
 })
 
+const _cachePrefix = 'faulttreeai_api_cache_v1:'
+const _memCache = new Map()
+
+const _now = () => Date.now()
+
+const _getCached = (key, ttlMs) => {
+  const mem = _memCache.get(key)
+  if (mem && _now() - mem.ts < ttlMs) return mem.value
+  try {
+    const raw = sessionStorage.getItem(_cachePrefix + key)
+    if (!raw) return undefined
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed.ts !== 'number') return undefined
+    if (_now() - parsed.ts >= ttlMs) return undefined
+    _memCache.set(key, parsed)
+    return parsed.value
+  } catch {
+    return undefined
+  }
+}
+
+const _setCached = (key, value) => {
+  const payload = { ts: _now(), value }
+  _memCache.set(key, payload)
+  try {
+    sessionStorage.setItem(_cachePrefix + key, JSON.stringify(payload))
+  } catch {
+  }
+}
+
+export const invalidateCache = (keys) => {
+  const arr = Array.isArray(keys) ? keys : [keys]
+  arr.filter(Boolean).forEach((k) => {
+    _memCache.delete(k)
+    try {
+      sessionStorage.removeItem(_cachePrefix + k)
+    } catch {
+    }
+  })
+}
+
+const _cached = async (key, ttlMs, fetcher) => {
+  const hit = _getCached(key, ttlMs)
+  if (hit !== undefined) return hit
+  const value = await fetcher()
+  _setCached(key, value)
+  return value
+}
+
 // ── 知识库 ──────────────────────────────────────────
 
 export const uploadDocument = async (file, onProgress) => {
@@ -14,16 +63,20 @@ export const uploadDocument = async (file, onProgress) => {
     headers: { 'Content-Type': 'multipart/form-data' },
     onUploadProgress: (e) => onProgress?.(Math.round((e.loaded * 100) / (e.total || 1))),
   })
+  invalidateCache(['documents', 'knowledgeStats'])
   return data
 }
 
 export const listDocuments = async () => {
-  const { data } = await api.get('/knowledge/list')
-  return data
+  return _cached('documents', 30_000, async () => {
+    const { data } = await api.get('/knowledge/list')
+    return data
+  })
 }
 
 export const deleteDocument = async (docId) => {
   const { data } = await api.delete(`/knowledge/${docId}`)
+  invalidateCache(['documents', 'knowledgeStats'])
   return data
 }
 
@@ -35,14 +88,17 @@ export const searchKnowledge = async (query, topK = 5) => {
 }
 
 export const getKnowledgeStats = async () => {
-  const { data } = await api.get('/knowledge/stats')
-  return data
+  return _cached('knowledgeStats', 15_000, async () => {
+    const { data } = await api.get('/knowledge/stats')
+    return data
+  })
 }
 
 // ── 故障树生成 ──────────────────────────────────────
 
 export const generateFaultTree = async (params) => {
   const { data } = await api.post('/generate/', params)
+  invalidateCache(['faultTrees'])
   return data
 }
 
@@ -52,14 +108,17 @@ export const getFaultTree = async (treeId) => {
 }
 
 export const listFaultTrees = async () => {
-  const { data } = await api.get('/generate/')
-  return data
+  return _cached('faultTrees', 15_000, async () => {
+    const { data } = await api.get('/generate/')
+    return data
+  })
 }
 
 // ── 故障树编辑 ──────────────────────────────────────
 
 export const saveFaultTree = async (treeId, data) => {
   const { data: result } = await api.put(`/edit/${treeId}`, data)
+  invalidateCache(['faultTrees'])
   return result
 }
 
@@ -91,15 +150,19 @@ export const exportPDF = async (faultTree, mcs) => {
 
 // ── LLM Provider 管理 ─────────────────────────────────
 export const getProviders = async () => {
-  const { data } = await api.get('/llm/providers')
-  return data
+  return _cached('providers', 60_000, async () => {
+    const { data } = await api.get('/llm/providers')
+    return data
+  })
 }
 
 // ── 模板管理 ────────────────────────────────────────
 
 export const listTemplates = async () => {
-  const { data } = await api.get('/template/list')
-  return data
+  return _cached('templates', 300_000, async () => {
+    const { data } = await api.get('/template/list')
+    return data
+  })
 }
 
 export const getTemplate = async (templateId) => {
@@ -115,6 +178,19 @@ export const getTemplateTopEvents = async (templateId) => {
 export const getTemplateBasicEvents = async (templateId) => {
   const { data } = await api.get(`/template/${templateId}/basic-events`)
   return data
+}
+
+export const prefetchBootstrap = async () => {
+  try {
+    await Promise.all([
+      getKnowledgeStats(),
+      listFaultTrees(),
+      listDocuments(),
+      listTemplates(),
+      getProviders(),
+    ])
+  } catch {
+  }
 }
 
 // 将所有函数绑定到 api 对象上，方便直接通过 api 调用
@@ -135,5 +211,7 @@ api.listTemplates = listTemplates
 api.getTemplate = getTemplate
 api.getTemplateTopEvents = getTemplateTopEvents
 api.getTemplateBasicEvents = getTemplateBasicEvents
+api.prefetchBootstrap = prefetchBootstrap
+api.invalidateCache = invalidateCache
 
 export default api

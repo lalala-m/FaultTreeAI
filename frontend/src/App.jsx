@@ -1,6 +1,7 @@
-import React, { useMemo, useState, Suspense, lazy } from 'react'
+import React, { useEffect, useMemo, useState, Suspense, lazy } from 'react'
 import { Layout, Menu, Typography } from 'antd'
 import { UploadOutlined, ApiOutlined, HistoryOutlined, DashboardOutlined, ThunderboltOutlined } from '@ant-design/icons'
+import api from './services/api.js'
 
 const KnowledgeBase = lazy(() => import('./pages/KnowledgeBase.jsx'))
 const Generate = lazy(() => import('./pages/Generate.jsx'))
@@ -13,6 +14,10 @@ const { Title } = Typography
 
 export default function App() {
   const [active, setActive] = useState('dashboard')
+
+  useEffect(() => {
+    api.prefetchBootstrap?.()
+  }, [])
 
   const items = useMemo(() => ([
     { key: 'dashboard', icon: <DashboardOutlined />, label: '总览' },
