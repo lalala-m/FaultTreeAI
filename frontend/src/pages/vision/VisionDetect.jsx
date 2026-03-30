@@ -1,49 +1,77 @@
 /**
  * 视觉识别主页面
- * 整合图片上传、识别、结果展示、故障树生成等功能
+ * 整合图片上传、视频识别、摄像头捕获、识别、结果展示、故障树生成等功能
  */
 
-import React, { useState, useCallback } from 'react';
-import { Layout, Row, Col, Card, Button, message, Divider, Space, Modal, Input, Select, Alert } from 'antd';
-import { ThunderboltOutlined, RocketOutlined, SyncOutlined, SettingOutlined, QuestionCircleOutlined } from '@ant-design/icons';
+import React, { useState, useCallback, useEffect } from 'react';
+import { Layout, Row, Col, Card, Button, message, Divider, Space, Tabs, Alert } from 'antd';
+import { ThunderboltOutlined, RocketOutlined, SyncOutlined, CameraOutlined, VideoCameraOutlined, PictureOutlined } from '@ant-design/icons';
 import ImageUploader from '../components/vision/ImageUploader';
+import CameraCapture from '../components/vision/CameraCapture';
+import VideoUploader from '../components/vision/VideoUploader';
 import DetectionResult from '../components/vision/DetectionResult';
-import './VisionDetect.css';
 
 const { Content } = Layout;
-const { TextArea } = Input;
-const { Option } = Select;
+const { TabPane } = Tabs;
 
-/**
- * VisionDetect 页面
- */
 export default function VisionDetect() {
-  // 状态
   const [images, setImages] = useState([]);
+  const [cameraImage, setCameraImage] = useState(null);
+  const [videoFrames, setVideoFrames] = useState([]);
+  const [allImages, setAllImages] = useState([]);
   const [results, setResults] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [settingsVisible, setSettingsVisible] = useState(false);
-  const [faultTreeModalVisible, setFaultTreeModalVisible] = useState(false);
-  const [faultDescription, setFaultDescription] = useState('');
   const [equipmentType, setEquipmentType] = useState('motor');
+  const [activeTab, setActiveTab] = useState('image');
   
-  // 识别设置
-  const [settings, setSettings] = useState({
+  const [settings] = useState({
     confThreshold: 0.25,
     iouThreshold: 0.45,
     device: 'cuda',
     returnAnnotated: true,
   });
 
-  // 处理图片上传
+  // 收集所有图片
+  useEffect(() => {
+    const collected = [];
+    
+    images.forEach((img, idx) => {
+      if (img.originFileObj) {
+        collected.push({
+          id: `img-${idx}`,
+          source: 'upload',
+          file: img.originFileObj,
+        });
+      }
+    });
+    
+    if (cameraImage) {
+      collected.push({ id: 'camera-1', source: 'camera', base64: cameraImage });
+    }
+    
+    videoFrames.forEach((frame) => {
+      collected.push({ id: `video-${frame.id}`, source: 'video', base64: frame.image });
+    });
+    
+    setAllImages(collected);
+  }, [images, cameraImage, videoFrames]);
+
   const handleImageUpload = useCallback((fileList) => {
-    setImages(fileList);
+    setImages(fileList || []);
   }, []);
 
-  // 执行识别
+  const handleCameraCapture = useCallback((base64Image) => {
+    setCameraImage(base64Image);
+    message.success('摄像头图片已捕获');
+  }, []);
+
+  const handleVideoFrameCapture = useCallback((frames) => {
+    setVideoFrames(frames || []);
+  }, []);
+
   const handleDetect = useCallback(async () => {
-    if (images.length === 0) {
-      message.warning('请先上传图片');
+    if (allImages.length === 0) {
+      message.warning('请先上传图片、拍照或从视频中提取帧');
       return;
     }
 
@@ -51,39 +79,32 @@ export default function VisionDetect() {
     setResults(null);
 
     try {
-      // 构建 FormData
+      const firstImage = allImages[0];
       const formData = new FormData();
       
-      // 添加第一张图片进行测试（简化处理）
-      if (images.length > 0) {
-        const firstImage = images[0];
-        const file = firstImage.originFileObj || firstImage;
-        
-        // 如果 file 还没有 uid，使用 images[0]
-        if (!file.name) {
-          file.name = firstImage.name || 'image.jpg';
-        }
-        if (!file.type) {
-          file.type = 'image/jpeg';
-        }
-        
-        formData.append('file', file);
-        formData.append('conf_threshold', settings.confThreshold.toString());
-        formData.append('iou_threshold', settings.iouThreshold.toString());
-        formData.append('return_annotated', settings.returnAnnotated.toString());
-        formData.append('device', settings.device);
+      if (firstImage.source === 'upload' && firstImage.file) {
+        formData.append('file', firstImage.file);
+      } else {
+        const base64Data = firstImage.base64.split(',')[1] || firstImage.base64;
+        formData.append('image_data', base64Data);
       }
+      
+      formData.append('conf_threshold', settings.confThreshold.toString());
+      formData.append('iou_threshold', settings.iouThreshold.toString());
+      formData.append('return_annotated', settings.returnAnnotated.toString());
+      formData.append('device', settings.device);
 
-      // 调用 API
       const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-      const response = await fetch(`${API_URL}/api/vision/detect/image`, {
+      const endpoint = (firstImage.source === 'upload' && firstImage.file) 
+        ? '/api/vision/detect/image' 
+        : '/api/vision/detect/base64';
+      
+      const response = await fetch(`${API_URL}${endpoint}`, {
         method: 'POST',
         body: formData,
       });
 
-      if (!response.ok) {
-        throw new Error(`识别失败: ${response.statusText}`);
-      }
+      if (!response.ok) throw new Error(`识别失败: ${response.statusText}`);
 
       const data = await response.json();
       setResults(data);
@@ -91,23 +112,85 @@ export default function VisionDetect() {
 
     } catch (error) {
       console.error('识别错误:', error);
-      message.error('识别失败: ' + error.message);
-      
-      // 模拟结果用于测试
       setResults(createMockResult());
+      message.warning('API 调用失败，使用模拟结果');
     } finally {
       setLoading(false);
     }
-  }, [images, settings]);
+  }, [allImages, settings]);
 
-  // 生成故障树
+  const handleBatchDetect = useCallback(async () => {
+    if (allImages.length === 0) {
+      message.warning('没有可识别的图片');
+      return;
+    }
+
+    setLoading(true);
+    
+    try {
+      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+      const resultsList = [];
+      
+      for (const img of allImages) {
+        try {
+          const formData = new FormData();
+          
+          if (img.source === 'upload' && img.file) {
+            formData.append('file', img.file);
+          } else {
+            const base64Data = img.base64.split(',')[1] || img.base64;
+            formData.append('image_data', base64Data);
+          }
+          
+          formData.append('conf_threshold', settings.confThreshold.toString());
+          formData.append('return_annotated', 'false');
+          formData.append('device', settings.device);
+
+          const endpoint = (img.source === 'upload' && img.file) 
+            ? '/api/vision/detect/image' 
+            : '/api/vision/detect/base64';
+          
+          const response = await fetch(`${API_URL}${endpoint}`, { method: 'POST', body: formData });
+          
+          if (response.ok) {
+            const data = await response.json();
+            resultsList.push({ ...data, source: img.source });
+          }
+        } catch (e) {
+          console.error('单张识别失败:', e);
+        }
+      }
+      
+      if (resultsList.length > 0) {
+        const totalDetections = resultsList.reduce((sum, r) => sum + r.total_detections, 0);
+        const totalAnomalies = resultsList.reduce((sum, r) => sum + r.anomaly_count, 0);
+        
+        setResults({
+          ...resultsList[0],
+          total_detections: totalDetections,
+          anomaly_count: totalAnomalies,
+          batch_results: resultsList
+        });
+        
+        message.success(`批量识别完成！共处理 ${resultsList.length} 张图片`);
+      } else {
+        message.error('所有图片识别失败');
+      }
+      
+    } catch (error) {
+      console.error('批量识别错误:', error);
+      message.error('批量识别失败');
+    } finally {
+      setLoading(false);
+    }
+  }, [allImages, settings]);
+
   const handleGenerateFaultTree = useCallback(() => {
     if (!results) {
       message.warning('请先进行识别');
       return;
     }
     
-    // 构建故障描述
     const detections = results.detections || [];
     const anomalyDetections = detections.filter(d => d.is_anomaly);
     
@@ -116,278 +199,142 @@ export default function VisionDetect() {
       return;
     }
     
-    // 跳转到生成页面，携带识别结果
     const faultInfo = {
       vision_result: JSON.stringify(results),
-      fault_description: anomalyDetections.map(d => `${d.class_name}（置信度${(d.confidence * 100).toFixed(1)}%）`).join('；'),
-      equipment_type: equipmentType
+      fault_description: anomalyDetections.map(d => 
+        `${d.class_name}（置信度${(d.confidence * 100).toFixed(1)}%）：${d.description}`
+      ).join('；\n'),
+      equipment_type: equipmentType,
+      source: 'vision'
     };
     
-    // 构建 URL 参数
-    const params = new URLSearchParams(faultInfo);
+    const params = new URLSearchParams();
+    Object.entries(faultInfo).forEach(([key, value]) => {
+      params.append(key, value);
+    });
+    
     window.location.href = `/generate?${params.toString()}`;
   }, [results, equipmentType]);
 
-  // 模拟结果（用于测试）
+  const handleReset = useCallback(() => {
+    setImages([]);
+    setCameraImage(null);
+    setVideoFrames([]);
+    setAllImages([]);
+    setResults(null);
+  }, []);
+
   const createMockResult = () => {
     return {
       detection_id: 'mock-' + Date.now(),
       image_width: 640,
       image_height: 480,
-      process_time_ms: 150,
+      process_time_ms: 20,
       model_name: 'yolo11m',
       device: 'cuda',
       total_detections: 3,
-      anomaly_count: 1,
+      anomaly_count: 2,
       overall_status: 'warning',
       detections: [
-        {
-          class_id: 0,
-          class_name: 'motor_normal',
-          confidence: 0.95,
-          bbox: [100, 100, 300, 250],
-          area_ratio: 0.25,
-          is_anomaly: false,
-          description: '电机外观正常，无明显异常'
-        },
-        {
-          class_id: 3,
-          class_name: 'bearing_wear',
-          confidence: 0.87,
-          bbox: [350, 200, 500, 350],
-          area_ratio: 0.12,
-          is_anomaly: true,
-          description: '检测到轴承磨损，建议检查润滑系统'
-        },
-        {
-          class_id: 5,
-          class_name: 'pipe_corrosion',
-          confidence: 0.72,
-          bbox: [50, 300, 200, 420],
-          area_ratio: 0.15,
-          is_anomaly: true,
-          description: '检测到管道腐蚀，需要进行防腐处理'
-        }
+        { class_id: 0, class_name: 'motor_normal', confidence: 0.95, bbox: [100, 100, 300, 250], area_ratio: 0.25, is_anomaly: false, description: '电机外观正常' },
+        { class_id: 3, class_name: 'bearing_wear', confidence: 0.87, bbox: [350, 200, 500, 350], area_ratio: 0.12, is_anomaly: true, description: '检测到轴承磨损，建议检查润滑系统' },
+        { class_id: 5, class_name: 'pipe_corrosion', confidence: 0.72, bbox: [50, 300, 200, 420], area_ratio: 0.15, is_anomaly: true, description: '检测到管道腐蚀，需要进行防腐处理' }
       ],
       annotated_image: null
     };
   };
 
+  const sourceStats = {
+    upload: images.length,
+    camera: cameraImage ? 1 : 0,
+    video: videoFrames.length,
+    total: allImages.length
+  };
+
   return (
     <Layout className="vision-detect-page">
       <Content>
-        {/* 页面标题 */}
         <div className="page-header">
-          <h1>
-            <ThunderboltOutlined /> 设备视觉识别
-          </h1>
-          <Space>
-            <Button 
-              icon={<SettingOutlined />}
-              onClick={() => setSettingsVisible(true)}
-            >
-              设置
-            </Button>
-            <Button 
-              icon={<QuestionCircleOutlined />}
-              onClick={() => message.info('帮助信息：上传设备图片，系统将自动识别设备状态')}
-            >
-              帮助
-            </Button>
-          </Space>
+          <h1><ThunderboltOutlined /> 设备视觉识别</h1>
+          <Button icon={<SyncOutlined />} onClick={handleReset} disabled={loading}>重置</Button>
         </div>
 
-        {/* 警告信息 */}
         {results?.anomaly_count > 0 && (
           <Alert
             message="检测到异常"
             description={`发现 ${results.anomaly_count} 个异常部位，建议生成故障树进行深入分析`}
             type="warning"
             showIcon
-            action={
-              <Button 
-                type="primary" 
-                icon={<RocketOutlined />}
-                onClick={handleGenerateFaultTree}
-                danger
-              >
-                生成故障树
-              </Button>
-            }
+            action={<Button type="primary" icon={<RocketOutlined />} onClick={handleGenerateFaultTree} danger>生成故障树</Button>}
             style={{ marginBottom: 16 }}
           />
         )}
 
-        {/* 主内容区 */}
         <Row gutter={24}>
-          {/* 左侧：上传区域 */}
-          <Col span={8}>
-            <Card 
-              title="图片上传" 
-              className="upload-card"
-              extra={
-                <Button 
-                  type="text" 
-                  icon={<SyncOutlined spin={loading} />}
-                  onClick={() => {
-                    setImages([]);
-                    setResults(null);
-                  }}
-                  disabled={images.length === 0}
-                >
-                  重置
-                </Button>
-              }
-            >
-              <ImageUploader
-                onUpload={handleImageUpload}
-                onDetect={handleDetect}
-                loading={loading}
-                maxCount={9}
-              />
+          <Col span={10}>
+            <Tabs activeKey={activeTab} onChange={setActiveTab} size="small">
+              <TabPane tab={<span><PictureOutlined /> 图片上传</span>} key="image">
+                <Card size="small">
+                  <ImageUploader onUpload={handleImageUpload} onDetect={handleDetect} loading={loading} maxCount={9} />
+                </Card>
+              </TabPane>
+              
+              <TabPane tab={<span><CameraOutlined /> 摄像头</span>} key="camera">
+                <Card size="small">
+                  <CameraCapture onCapture={handleCameraCapture} disabled={loading} />
+                </Card>
+              </TabPane>
+              
+              <TabPane tab={<span><VideoCameraOutlined /> 视频</span>} key="video">
+                <Card size="small">
+                  <VideoUploader onFrameCapture={(img) => setVideoFrames(prev => [...prev, { id: Date.now(), image: img, time: 0 }])} disabled={loading} />
+                </Card>
+              </TabPane>
+            </Tabs>
+
+            <Card size="small" style={{ marginTop: 16 }}>
+              <div className="source-stats">
+                <div><span>图片上传:</span> <span>{sourceStats.upload} 张</span></div>
+                <div><span>摄像头:</span> <span>{sourceStats.camera} 张</span></div>
+                <div><span>视频帧:</span> <span>{sourceStats.video} 张</span></div>
+                <Divider style={{ margin: '8px 0' }} />
+                <div><span>总计:</span> <span>{sourceStats.total} 张</span></div>
+              </div>
             </Card>
 
-            {/* 识别设置 */}
-            <Card size="small" title="识别设置" style={{ marginTop: 16 }} className="settings-card">
+            <Card size="small" style={{ marginTop: 16 }}>
               <Space direction="vertical" style={{ width: '100%' }}>
-                <div>
-                  <span>置信度阈值: {settings.confThreshold}</span>
-                </div>
-                <div>
-                  <span>设备: {settings.device === 'cuda' ? 'GPU (CUDA)' : 'CPU'}</span>
-                </div>
-                <Button 
-                  type="link" 
-                  onClick={() => setSettingsVisible(true)}
-                  icon={<SettingOutlined />}
-                >
-                  详细设置
+                <Button type="primary" icon={<ThunderboltOutlined />} onClick={handleDetect} loading={loading} size="large" block disabled={allImages.length === 0}>
+                  识别当前图片
                 </Button>
+                
+                {allImages.length > 1 && (
+                  <Button icon={<ThunderboltOutlined />} onClick={handleBatchDetect} loading={loading} size="large" block>
+                    批量识别所有图片 ({allImages.length}张)
+                  </Button>
+                )}
+                
+                <Divider>设备类型</Divider>
+                
+                <select value={equipmentType} onChange={(e) => setEquipmentType(e.target.value)} style={{ width: '100%', padding: '8px' }}>
+                  <option value="motor">电机</option>
+                  <option value="pump">泵</option>
+                  <option value="valve">阀门</option>
+                  <option value="pipe">管道</option>
+                  <option value="bearing">轴承</option>
+                  <option value="hydraulic">液压系统</option>
+                  <option value="plc">PLC控制器</option>
+                  <option value="other">其他</option>
+                </select>
               </Space>
             </Card>
           </Col>
 
-          {/* 右侧：结果展示 */}
-          <Col span={16}>
-            <DetectionResult 
-              result={results}
-              loading={loading}
-              onGenerateFaultTree={handleGenerateFaultTree}
-            />
+          <Col span={14}>
+            <DetectionResult result={results} loading={loading} onGenerateFaultTree={handleGenerateFaultTree} />
           </Col>
         </Row>
       </Content>
-
-      {/* 设置弹窗 */}
-      <Modal
-        title="识别设置"
-        open={settingsVisible}
-        onCancel={() => setSettingsVisible(false)}
-        footer={[
-          <Button key="cancel" onClick={() => setSettingsVisible(false)}>
-            取消
-          </Button>,
-          <Button key="save" type="primary" onClick={() => setSettingsVisible(false)}>
-            保存
-          </Button>
-        ]}
-      >
-        <Space direction="vertical" style={{ width: '100%' }}>
-          <div>
-            <label>置信度阈值: {settings.confThreshold}</label>
-            <input
-              type="range"
-              min="0"
-              max="1"
-              step="0.05"
-              value={settings.confThreshold}
-              onChange={(e) => setSettings({...settings, confThreshold: parseFloat(e.target.value)})}
-              style={{ width: '100%' }}
-            />
-            <small>低于此置信度的检测结果将被过滤</small>
-          </div>
-          
-          <div>
-            <label>IOU 阈值: {settings.iouThreshold}</label>
-            <input
-              type="range"
-              min="0"
-              max="1"
-              step="0.05"
-              value={settings.iouThreshold}
-              onChange={(e) => setSettings({...settings, iouThreshold: parseFloat(e.target.value)})}
-              style={{ width: '100%' }}
-            />
-            <small>用于非极大值抑制(NMS)的IOU阈值</small>
-          </div>
-          
-          <div>
-            <label>计算设备</label>
-            <Select 
-              value={settings.device} 
-              onChange={(value) => setSettings({...settings, device: value})}
-              style={{ width: '100%' }}
-            >
-              <Option value="cuda">GPU (CUDA)</Option>
-              <Option value="cpu">CPU</Option>
-            </Select>
-            <small>推荐使用GPU以获得更快的识别速度</small>
-          </div>
-          
-          <div>
-            <label>
-              <input
-                type="checkbox"
-                checked={settings.returnAnnotated}
-                onChange={(e) => setSettings({...settings, returnAnnotated: e.target.checked})}
-              />
-              {' '}返回标注图片
-            </label>
-            <small>启用后返回的图片会标注检测结果</small>
-          </div>
-        </Space>
-      </Modal>
-
-      {/* 故障树生成弹窗 */}
-      <Modal
-        title="生成故障树"
-        open={faultTreeModalVisible}
-        onCancel={() => setFaultTreeModalVisible(false)}
-        onOk={() => {
-          setFaultTreeModalVisible(false);
-          handleGenerateFaultTree();
-        }}
-        okText="生成故障树"
-        cancelText="取消"
-      >
-        <Space direction="vertical" style={{ width: '100%' }}>
-          <div>
-            <label>设备类型</label>
-            <Select 
-              value={equipmentType}
-              onChange={setEquipmentType}
-              style={{ width: '100%' }}
-            >
-              <Option value="motor">电机</Option>
-              <Option value="pump">泵</Option>
-              <Option value="valve">阀门</Option>
-              <Option value="pipe">管道</Option>
-              <Option value="bearing">轴承</Option>
-              <Option value="other">其他</Option>
-            </Select>
-          </div>
-          
-          <div>
-            <label>补充描述（可选）</label>
-            <TextArea
-              rows={4}
-              value={faultDescription}
-              onChange={(e) => setFaultDescription(e.target.value)}
-              placeholder="补充更多故障信息..."
-            />
-          </div>
-        </Space>
-      </Modal>
     </Layout>
   );
 }

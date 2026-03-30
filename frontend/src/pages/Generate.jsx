@@ -41,6 +41,51 @@ export default function Generate() {
   const editorRef = useRef(null)
   const generateCacheKey = 'faulttreeai_generate_state_v1'
 
+  // 视觉识别传入的数据
+  const [visionData, setVisionData] = useState(null)
+  
+  // 从 URL 参数初始化（支持视觉识别传入的数据）
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    
+    const visionResult = params.get('vision_result')
+    const faultDescription = params.get('fault_description')
+    const equipmentType = params.get('equipment_type')
+    const source = params.get('source')
+    
+    if (source === 'vision' && (faultDescription || visionResult)) {
+      let parsedVisionResult = null
+      try {
+        if (visionResult) parsedVisionResult = JSON.parse(visionResult)
+      } catch (e) {
+        console.error('解析视觉识别结果失败:', e)
+      }
+      
+      setVisionData({
+        result: parsedVisionResult,
+        faultDescription: faultDescription || '',
+        equipmentType: equipmentType || 'other'
+      })
+      
+      if (faultDescription) {
+        setTopEvent(faultDescription)
+        message.info('已从视觉识别结果填充故障描述')
+      }
+      
+      // 根据设备类型自动选择模板
+      if (equipmentType) {
+        const templateMap = {
+          'motor': 'motor', 'pump': 'pump', 'valve': 'valve',
+          'pipe': 'pipe', 'bearing': 'bearing', 'hydraulic': 'hydraulic', 'plc': 'plc'
+        }
+        const templateId = templateMap[equipmentType.toLowerCase()]
+        if (templateId) setSelectedTemplate(templateId)
+      }
+      
+      window.history.replaceState({}, document.title, window.location.pathname)
+    }
+  }, [])
+
   useEffect(() => {
     try {
       const raw = sessionStorage.getItem(generateCacheKey)
