@@ -6,10 +6,10 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { Layout, Row, Col, Card, Button, message, Divider, Space, Tabs, Alert } from 'antd';
 import { ThunderboltOutlined, RocketOutlined, SyncOutlined, CameraOutlined, VideoCameraOutlined, PictureOutlined } from '@ant-design/icons';
-import ImageUploader from '../components/vision/ImageUploader';
-import CameraCapture from '../components/vision/CameraCapture';
-import VideoUploader from '../components/vision/VideoUploader';
-import DetectionResult from '../components/vision/DetectionResult';
+import ImageUploader from '../../components/vision/ImageUploader';
+import CameraCapture from '../../components/vision/CameraCapture';
+import VideoUploader from '../../components/vision/VideoUploader';
+import DetectionResult from '../../components/vision/DetectionResult';
 
 const { Content } = Layout;
 const { TabPane } = Tabs;
