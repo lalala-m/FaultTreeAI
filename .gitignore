@@ -56,6 +56,10 @@ site/
 *.onnx
 *.gguf
 *.safetensors
+*.pt           # YOLO 模型权重文件
+yolo*.pt
+data/models/   # YOLO 模型目录
+vision_api_temp/  # 临时重命名的目录
 
 # 环境变量（包含密钥）
 .env

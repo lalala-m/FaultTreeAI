@@ -1,7 +1,8 @@
 """
-视觉识别 API 模块
+视觉识别核心模块
+提供 YOLO 检测器功能
 """
 
-from .vision import router
+from .detector import YOLODetector, get_detector, reset_detector, DetectionResult, DetectionBox
 
-__all__ = ['router']
+__all__ = ['YOLODetector', 'get_detector', 'reset_detector', 'DetectionResult', 'DetectionBox']

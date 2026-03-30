@@ -101,11 +101,11 @@ class YOLODetector:
     def __init__(
         self,
         model_path: str = "yolo11m.pt",
-        device: str = "cuda",
+        device: str = "cuda",  # 默认使用 GPU
         conf_threshold: float = 0.25,
         iou_threshold: float = 0.45,
         img_size: int = 640,
-        half: bool = False,
+        half: bool = True,  # GPU 下启用半精度加速
         verbose: bool = False
     ):
         """
