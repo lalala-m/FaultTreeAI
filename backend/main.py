@@ -27,6 +27,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.api import knowledge, generate, validate, export, edit, template, feedback
 from backend.api import llm
+from backend.api import vision  # 视觉识别 API
 from backend.core.database.connection import init_db, close_db
 
 
@@ -67,6 +68,7 @@ app.include_router(edit.router, prefix="/api/edit", tags=["edit"])
 app.include_router(template.router, prefix="/api/template", tags=["template"])
 app.include_router(feedback.router, prefix="/api/feedback", tags=["feedback"])
 app.include_router(llm.router, tags=["llm"])
+app.include_router(vision.router, prefix="/api/vision", tags=["vision"])
 
 
 @app.get("/health")
