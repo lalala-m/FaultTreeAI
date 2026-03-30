@@ -45,7 +45,7 @@ def _sync_retrieve(query_vector: list[float], top_k: int, doc_ids: Optional[list
                     JOIN document_chunks dc ON dc.chunk_id = ce.chunk_id
                     JOIN documents d ON d.doc_id = ce.doc_id
                     WHERE d.status = 'active'
-                      AND ce.doc_id = ANY(%s)
+                      AND ce.doc_id = ANY(%s::uuid[])
                     ORDER BY ce.embedding <=> %s::vector
                     LIMIT %s
                 """, (query_vector, doc_ids, query_vector, top_k))

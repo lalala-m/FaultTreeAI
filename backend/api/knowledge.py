@@ -56,20 +56,24 @@ async def upload_document(
 
     # 创建文档记录（psycopg2 直连）
     import psycopg2.extras
-    with psycopg2.connect(
-        host=settings.DB_HOST, port=settings.DB_PORT,
-        user=settings.DB_USER, password=settings.DB_PASSWORD,
-        database=settings.DB_NAME
-    ) as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO documents (doc_id, filename, file_size, file_type, status, metadata)
-                VALUES (%s, %s, %s, %s, 'processing', %s)
-            """, (
-                str(doc_id), file.filename, len(content),
-                ext[1:], psycopg2.extras.Json({"original_path": str(save_path)})
-            ))
-            conn.commit()
+    try:
+        with psycopg2.connect(
+            host=settings.DB_HOST, port=settings.DB_PORT,
+            user=settings.DB_USER, password=settings.DB_PASSWORD,
+            database=settings.DB_NAME
+        ) as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO documents (doc_id, filename, file_size, file_type, status, metadata)
+                    VALUES (%s, %s, %s, %s, 'processing', %s)
+                """, (
+                    str(doc_id), file.filename, len(content),
+                    ext[1:], psycopg2.extras.Json({"original_path": str(save_path)})
+                ))
+                conn.commit()
+    except Exception as e:
+        save_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=503, detail=f"数据库不可用或写入失败: {e}")
 
     # 估算 token 数（用于成本记录）
     try:

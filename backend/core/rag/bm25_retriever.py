@@ -5,10 +5,17 @@ psycopg2 直连（Windows Python 3.13 兼容）
 """
 
 from typing import List, Optional
-from rank_bm25 import BM25Okapi
-import jieba
 
 from backend.config import settings
+
+
+def _get_bm25():
+    try:
+        from rank_bm25 import BM25Okapi
+        import jieba
+        return BM25Okapi, jieba
+    except Exception:
+        return None, None
 
 
 def _sync_bm25(query: str, top_k: int, doc_ids: Optional[List[str]]) -> List[dict]:
@@ -26,7 +33,7 @@ def _sync_bm25(query: str, top_k: int, doc_ids: Optional[List[str]]) -> List[dic
                     SELECT dc.chunk_id::text, dc.doc_id::text, dc.page_num, dc.text, d.filename
                     FROM document_chunks dc
                     JOIN documents d ON d.doc_id = dc.doc_id
-                    WHERE d.status = 'active' AND dc.doc_id = ANY(%s)
+                    WHERE d.status = 'active' AND dc.doc_id = ANY(%s::uuid[])
                 """, (doc_ids,))
             else:
                 cur.execute("""
@@ -38,6 +45,10 @@ def _sync_bm25(query: str, top_k: int, doc_ids: Optional[List[str]]) -> List[dic
             rows = cur.fetchall()
 
     if not rows:
+        return []
+
+    BM25Okapi, jieba = _get_bm25()
+    if BM25Okapi is None or jieba is None:
         return []
 
     texts = [row[3] for row in rows]

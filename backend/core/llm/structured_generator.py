@@ -268,7 +268,15 @@ async def generate_fault_tree(req: GenerateRequest) -> tuple[FaultTree, list]:
     """
     # Step 1: RAG 检索
     top_k = req.rag_top_k or 5
-    chunks = await retrieve(req.top_event, top_k=top_k, doc_ids=req.doc_ids)
+    # 支持手册权重：0.0~1.0，控制向量检索占比（BM25占比为1-该值）
+    mw = req.manual_weight
+    try:
+        mw = float(mw) if mw is not None else None
+    except Exception:
+        mw = None
+    if mw is None or mw < 0.0 or mw > 1.0:
+        mw = 0.5
+    chunks = await retrieve_hybrid(req.top_event, top_k=top_k, doc_ids=req.doc_ids, vector_weight=mw)
     context = "\n\n".join(
         f"[{c['ref_id']}] (来源:{c['source']} 第{c['page']}页, 相似度:{c['score']})\n{c['text']}"
         for c in chunks

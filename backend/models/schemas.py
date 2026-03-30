@@ -34,6 +34,7 @@ class GenerateRequest(BaseModel):
     rag_top_k: Optional[int] = 5          # RAG 检索的 Top K
     provider: Optional[str] = None        # 指定调用的 LLM Provider（如 'minimax' / 'ollama'）
     use_fallback: Optional[bool] = True   # 失败时是否允许自动回退
+    manual_weight: Optional[float] = None # 文档权重(0.0~1.0)，用于混合检索时的向量占比
 
 class GenerateResponse(BaseModel):
     tree_id: Optional[str] = None

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, Suspense, lazy } from 'react'
-import { Card, Typography, Button, Space, message, Tag, Divider, Alert, Steps, Progress, Modal, Select, Row, Col, Upload, Progress as ProgressBar, Badge } from 'antd'
+import { Card, Typography, Button, Space, message, Tag, Divider, Alert, Steps, Progress, Modal, Select, Row, Col, Upload, Progress as ProgressBar, Badge, Slider, Tooltip } from 'antd'
 import { ThunderboltOutlined, SaveOutlined, CheckCircleOutlined, WarningOutlined, RocketOutlined, BookOutlined, ApiOutlined, FileTextOutlined, EditOutlined, EyeOutlined, UndoOutlined, AppstoreOutlined, UploadOutlined, InboxOutlined, FilePdfOutlined, FileWordOutlined, DeleteOutlined } from '@ant-design/icons'
 import api from '../services/api.js'
 import MCSView from '../components/MCSView.jsx'
@@ -32,6 +32,7 @@ export default function Generate() {
   const [loadingDocs, setLoadingDocs] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
+  const [manualWeight, setManualWeight] = useState(50) // 0~100，控制文档权重（向量占比）
   
   // LLM Provider 状态
   const [providers, setProviders] = useState([])
@@ -175,6 +176,7 @@ export default function Generate() {
         doc_ids: selectedDoc ? [selectedDoc] : undefined,
         provider: selectedProvider || undefined,
         use_fallback: true,
+        manual_weight: Math.max(0, Math.min(100, manualWeight)) / 100.0,
       })
       
       // 步骤3: 计算完成
@@ -191,6 +193,7 @@ export default function Generate() {
         mcs: data.mcs,
         importance: data.importance,
         validation_issues: data.validation_issues,
+        provider: data.provider,
       })
       message.success('故障树生成成功！')
     } catch (err) {
@@ -423,7 +426,7 @@ export default function Generate() {
 
           {/* 第二行：文档选择（与模板等宽） */}
           <Row gutter={[16, 8]}>
-            <Col xs={24} md={12}>
+            <Col xs={24} md={24}>
               <Text strong style={{ fontSize: 15, display: 'block', marginBottom: 8 }}>
                 <BookOutlined style={{ marginRight: 8 }} />
                 选择操作手册（可选）
@@ -501,6 +504,30 @@ export default function Generate() {
                   <Tag color="blue">已选择: {docs.find(d => d.doc_id === selectedDoc)?.filename}</Tag>
                 </div>
               )}
+              {/* 文档权重调节 */}
+              <div style={{ marginTop: 12 }}>
+                <Text strong style={{ fontSize: 14, display: 'block', marginBottom: 6 }}>
+                  文档权重（向量检索占比）
+                </Text>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, width: '100%' }}>
+                  <div style={{ flex: 1, minWidth: 600 }}>
+                    <Slider
+                      style={{ width: '100%' }}
+                      value={manualWeight}
+                      onChange={setManualWeight}
+                      min={0}
+                      max={100}
+                      step={1}
+                      marks={{0:'0%',25:'25%',50:'50%',75:'75%',100:'100%'}}
+                      tooltip={{ formatter: (v) => `${v}%` }}
+                    />
+                  </div>
+                  <Tag color="geekblue" style={{ minWidth: 64, textAlign: 'center' }}>{manualWeight}%</Tag>
+                </div>
+                <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 6 }}>
+                  0% 使用纯 BM25；100% 使用纯向量；默认 50% 混合
+                </Text>
+              </div>
             </Col>
           </Row>
 
@@ -607,6 +634,11 @@ export default function Generate() {
                 <Text style={{ fontSize: 16, color: '#1890ff' }}>{result.top_event}</Text>
                 {viewMode === 'edit' && (
                   <Tag color="orange"><EditOutlined /> 编辑模式</Tag>
+                )}
+                {result.provider && (
+                  <Tag color="purple">
+                    使用模型: {String(result.provider).toUpperCase()}
+                  </Tag>
                 )}
               </Space>
               <Space>
