@@ -89,6 +89,23 @@ async def generate_ft(req: GenerateRequest):
                 tree_id = UUID(str(returned[0]))
             conn.commit()
 
+    # 记录一次简易会话到 sessions（便于历史查看）
+    try:
+        messages = json.dumps([
+            {"role": "user", "text": req.top_event},
+            {"role": "assistant", "text": fault_tree.analysis_summary or "已生成故障树"}
+        ], ensure_ascii=False)
+        with _pg() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO sessions (tree_id, messages) VALUES (%s, %s)",
+                    (str(tree_id), messages)
+                )
+                conn.commit()
+    except Exception:
+        # 非关键路径，忽略会话写入失败
+        pass
+
     return GenerateResponse(
         tree_id=str(tree_id),
         fault_tree=fault_tree,
@@ -169,3 +186,33 @@ async def get_tree(tree_id: str):
         importance=importance,
         validation_issues=[],
     )
+
+
+@router.get("/{tree_id}/session", response_model=dict)
+async def get_tree_session(tree_id: str):
+    """获取与该故障树关联的最近一次会话消息"""
+    try:
+        _ = UUID(tree_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="无效的故障树ID")
+
+    with _pg() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT messages
+                FROM sessions
+                WHERE tree_id = %s
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (tree_id,),
+            )
+            row = cur.fetchone()
+    msgs = []
+    if row and row[0]:
+        try:
+            msgs = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+        except Exception:
+            msgs = []
+    return {"tree_id": tree_id, "messages": msgs}

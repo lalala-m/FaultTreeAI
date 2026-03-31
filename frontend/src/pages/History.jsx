@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect, Suspense, lazy } from 'react'
 import { Card, Table, Tag, Typography, Button, Space, Empty, Modal, message } from 'antd'
-import { EyeOutlined, DeleteOutlined, FileWordOutlined } from '@ant-design/icons'
+import { EyeOutlined, FileWordOutlined } from '@ant-design/icons'
 import api from '../services/api.js'
 
 const FaultTreeViewer = lazy(() => import('../components/FaultTreeViewer.jsx'))
@@ -16,6 +16,12 @@ export default function History() {
   const [mode, setMode] = useState('view')
   const [saving, setSaving] = useState(false)
   const editorRef = useRef(null)
+  const [sessionMsgs, setSessionMsgs] = useState([])
+  const [fsOpen, setFsOpen] = useState(false)
+  const [fsMode, setFsMode] = useState('view')
+  const [fsTree, setFsTree] = useState(null)
+  const [fsSaving, setFsSaving] = useState(false)
+  const fsEditorRef = useRef(null)
 
   const loadTrees = async () => {
     setLoading(true)
@@ -49,6 +55,7 @@ export default function History() {
     setDetailLoading(true)
     try {
       const detail = await api.getFaultTree(row.tree_id)
+      const sess = await api.getSessionByTree(row.tree_id).catch(()=>({messages: []}))
       setMode('view')
       setSelected({
         tree_id: detail.tree_id || row.tree_id,
@@ -62,6 +69,7 @@ export default function History() {
         importance: detail.importance,
         validation_issues: detail.validation_issues,
       })
+      setSessionMsgs(Array.isArray(sess?.messages) ? sess.messages : [])
     } catch (e) {
       message.error(e.response?.data?.detail || '加载详情失败')
     }
@@ -160,6 +168,15 @@ export default function History() {
           mode === 'view'
             ? [
                 <Button key="close" onClick={() => setSelected(null)}>关闭</Button>,
+                <Button key="fsview" onClick={() => { setFsTree(selected); setFsMode('view'); setFsOpen(true) }}>全屏查看</Button>,
+                <Button key="fsedit" type="dashed" onClick={() => { setFsTree(selected); setFsMode('edit'); setFsOpen(true) }}>全屏编辑</Button>,
+              <Button key="loadchat" onClick={() => {
+                try {
+                  sessionStorage.setItem('dashboard_chat_inject', JSON.stringify({ messages: sessionMsgs, ts: Date.now() }))
+                  window.dispatchEvent(new Event('dashboard-inject'))
+                  message.success('已加载到主页对话');
+                } catch {}
+              }}>加载到主页继续对话</Button>,
                 <Button key="edit" type="primary" onClick={() => setMode('edit')}>编辑</Button>,
               ]
             : [
@@ -169,6 +186,25 @@ export default function History() {
         }
         width={900}
       >
+        {mode === 'view' && (
+          <Card size="small" title="对话内容" style={{ marginBottom: 12 }}>
+            <Space direction="vertical" style={{ width: '100%' }}>
+              {sessionMsgs && sessionMsgs.length > 0 ? sessionMsgs.map((m, i) => (
+                <div key={i} style={{ display: 'flex', justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start' }}>
+                  <div style={{
+                    maxWidth: '80%',
+                    padding: 8,
+                    borderRadius: 8,
+                    background: m.role === 'user' ? '#e6f7ff' : '#fafafa',
+                    border: '1px solid #f0f0f0'
+                  }}>
+                    <div style={{ whiteSpace: 'pre-wrap' }}>{String(m.text || '')}</div>
+                  </div>
+                </div>
+              )) : <Empty description="暂无对话记录" />}
+            </Space>
+          </Card>
+        )}
         <Suspense fallback={null}>
           {selected && mode === 'view' && <FaultTreeViewer tree={selected} />}
           {selected && mode === 'edit' && (
@@ -177,6 +213,56 @@ export default function History() {
               initialTree={selected}
               onSave={handleSaveEdited}
               onCancel={() => setMode('view')}
+            />
+          )}
+        </Suspense>
+      </Modal>
+      <Modal
+        open={fsOpen}
+        title={fsTree?.top_event || '故障树'}
+        onCancel={() => setFsOpen(false)}
+        width="96vw"
+        style={{ top: 8 }}
+        bodyStyle={{ height: '78vh', overflow: 'auto' }}
+        footer={
+          fsMode === 'view'
+            ? [
+                <Button key="close" onClick={() => setFsOpen(false)}>关闭</Button>,
+                <Button key="edit" type="primary" onClick={() => setFsMode('edit')}>专家编辑</Button>,
+              ]
+            : [
+                <Button key="cancel" onClick={() => setFsMode('view')}>取消</Button>,
+                <Button key="save" type="primary" loading={fsSaving} onClick={async () => {
+                  if (!fsTree?.tree_id || !fsEditorRef.current) return
+                  setFsSaving(true)
+                  try {
+                    const edited = await fsEditorRef.current.save()
+                    await api.saveFaultTree(fsTree.tree_id, {
+                      nodes: edited.nodes,
+                      gates: edited.gates,
+                      fault_tree: edited.fault_tree,
+                      mcs: fsTree.mcs,
+                      importance: fsTree.importance,
+                      validation_issues: fsTree.validation_issues,
+                    })
+                    message.success('已保存到数据库')
+                    setFsMode('view')
+                  } catch (e) {
+                    message.error(e?.message || '保存失败')
+                  }
+                  setFsSaving(false)
+                }}>保存</Button>,
+              ]
+        }
+      >
+        <Suspense fallback={null}>
+          {fsTree && fsMode === 'view' && <FaultTreeViewer tree={fsTree} />}
+          {fsTree && fsMode === 'edit' && (
+            <TreeEditor
+              ref={fsEditorRef}
+              initialTree={fsTree}
+              onSave={() => {}}
+              onCancel={() => setFsMode('view')}
             />
           )}
         </Suspense>

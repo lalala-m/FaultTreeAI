@@ -1,507 +1,283 @@
-import React, { useEffect, useMemo, useRef, useState, Suspense, lazy } from 'react'
-import { Row, Col, Card, Typography, Button, List, Tag, Space, Steps, Divider, Modal, Table, Popconfirm, message } from 'antd'
-import { 
-  FileTextOutlined, 
-  ApartmentOutlined, 
-  CheckCircleOutlined, 
-  ThunderboltOutlined,
-  ArrowRightOutlined,
-  BookOutlined,
-  ToolOutlined,
-  RocketOutlined,
-  SmileOutlined
-} from '@ant-design/icons'
+import React, { useEffect, useState, Suspense, lazy, useRef } from 'react'
+import { Typography, Card, Input, Button, Space, Select, Badge, Slider, Tag, Modal, message } from 'antd'
+import { ThunderboltOutlined } from '@ant-design/icons'
 import api from '../services/api.js'
 
+const { Title, Text } = Typography
 const FaultTreeViewer = lazy(() => import('../components/FaultTreeViewer.jsx'))
 const TreeEditor = lazy(() => import('../components/TreeEditor.jsx'))
 
-const { Title, Text, Paragraph } = Typography
-
 export default function Dashboard({ onNavigate }) {
-  const [stats, setStats] = useState({ total_docs: 0, total_chunks: 0, total_trees: 0, valid_rate: 0 })
-  const [recentTrees, setRecentTrees] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [isFirstTime, setIsFirstTime] = useState(false)
-  const [docsOpen, setDocsOpen] = useState(false)
-  const [docsLoading, setDocsLoading] = useState(false)
+  const [messages, setMessages] = useState([])
+  const [input, setInput] = useState('')
+  const [loading, setLoading] = useState(false)
   const [docs, setDocs] = useState([])
-  const [selectedTree, setSelectedTree] = useState(null)
-  const [treeModalMode, setTreeModalMode] = useState('view')
-  const [treeDetailLoading, setTreeDetailLoading] = useState(false)
-  const [treeSaving, setTreeSaving] = useState(false)
+  const [selectedDoc, setSelectedDoc] = useState(null)
+  const [providers, setProviders] = useState([])
+  const [selectedProvider, setSelectedProvider] = useState(null)
+  const [manualWeight, setManualWeight] = useState(50)
+  const [fsOpen, setFsOpen] = useState(false)
+  const [fsMode, setFsMode] = useState('view') // view | edit
+  const [fsTree, setFsTree] = useState(null)
+  const [fsSaving, setFsSaving] = useState(false)
   const editorRef = useRef(null)
 
-  const loadStatsAndTrees = async () => {
-    const [statsData, trees] = await Promise.all([api.getKnowledgeStats(), api.listFaultTrees()])
-    setStats(prev => ({
-      ...prev,
-      total_docs: statsData.total_docs || 0,
-      total_chunks: statsData.total_chunks || 0,
-    }))
-    setRecentTrees((trees || []).slice(0, 5))
-    
-    const totalTrees = trees?.length || 0
-    const validTrees = trees?.filter(t => t.is_valid === true).length || 0
-    const validRate = totalTrees > 0 ? Math.round((validTrees / totalTrees) * 100) : 0
-    
-    setIsFirstTime(totalTrees === 0 && (statsData.total_docs || 0) === 0)
-    
-    setStats(prev => ({
-      ...prev,
-      total_trees: totalTrees,
-      valid_rate: validRate,
-    }))
-  }
-
   useEffect(() => {
-    const loadData = async () => {
+    const loadDocs = async () => {
       try {
-        await loadStatsAndTrees()
-      } catch (e) {
-        console.error('Dashboard load failed:', e)
-      } finally {
-        setLoading(false)
+        const data = await api.listDocuments()
+        setDocs(Array.isArray(data) ? data : [])
+      } catch {
+        setDocs([])
       }
     }
-    loadData()
+    const loadProviders = async () => {
+      try {
+        const data = await api.getProviders()
+        setProviders(data.providers || [])
+        const first = (data.providers || []).find(p => p.available)
+        setSelectedProvider(first?.name || data.primary || 'minimax')
+      } catch {
+        setProviders([])
+        setSelectedProvider('minimax')
+      }
+    }
+    loadDocs()
+    loadProviders()
   }, [])
 
-  const loadDocs = async () => {
-    setDocsLoading(true)
+  useEffect(() => {
     try {
-      const data = await api.listDocuments()
-      setDocs(Array.isArray(data) ? data : [])
-    } catch (e) {
-      setDocs([])
-      message.error('加载文档失败')
-    } finally {
-      setDocsLoading(false)
-    }
-  }
-
-  const openDocs = async () => {
-    setDocsOpen(true)
-    await loadDocs()
-  }
-
-  const handleDeleteDoc = async (docId) => {
+      const raw = sessionStorage.getItem('dashboard_chat_inject')
+      if (raw) {
+        const obj = JSON.parse(raw)
+        if (Array.isArray(obj?.messages) && obj.messages.length) {
+          setMessages(prev => [...prev, ...obj.messages.map(m => ({ role: m.role, text: String(m.text || '') }))])
+        }
+        sessionStorage.removeItem('dashboard_chat_inject')
+      }
+    } catch {}
+  }, [])
+  const send = async () => {
+    const text = input.trim()
+    if (!text) return
+    setMessages(prev => [...prev, { role: 'user', text }])
+    setInput('')
+    setLoading(true)
     try {
-      await api.deleteDocument(docId)
-      message.success('文档已删除')
-      await Promise.all([loadDocs(), loadStatsAndTrees()])
-    } catch (e) {
-      message.error(e.response?.data?.detail || '删除失败')
-    }
-  }
-
-  const openTree = async (treeId) => {
-    setTreeDetailLoading(true)
-    try {
-      const detail = await api.getFaultTree(treeId)
-      setTreeModalMode('view')
-      setSelectedTree({
-        tree_id: detail.tree_id || treeId,
-        fault_tree: detail.fault_tree,
-        top_event: detail.fault_tree?.top_event,
-        nodes_json: detail.fault_tree?.nodes,
-        gates_json: detail.fault_tree?.gates,
-        confidence: detail.fault_tree?.confidence,
-        analysis_summary: detail.fault_tree?.analysis_summary,
-        mcs: detail.mcs,
-        importance: detail.importance,
-        validation_issues: detail.validation_issues,
+      const data = await api.generateFaultTree({
+        top_event: text,
+        user_prompt: '',
+        rag_top_k: 5,
+        use_fallback: true,
+        provider: selectedProvider || undefined,
+        doc_ids: selectedDoc ? [selectedDoc] : undefined,
+        manual_weight: Math.max(0, Math.min(100, manualWeight)) / 100.0,
       })
+      setMessages(prev => [...prev, { role: 'assistant', text: data.fault_tree?.analysis_summary || '已生成故障树。', result: data }])
     } catch (e) {
-      message.error(e.response?.data?.detail || '加载故障树失败')
+      setMessages(prev => [...prev, { role: 'assistant', text: '生成失败：' + (e.response?.data?.detail || e.message) }])
     }
-    setTreeDetailLoading(false)
+    setLoading(false)
   }
 
-  const handleSaveEditedTree = async (editedData) => {
-    if (!selectedTree?.tree_id) return
-    setTreeSaving(true)
+  const loadToGenerate = (data) => {
     try {
-      await api.saveFaultTree(selectedTree.tree_id, {
-        nodes: editedData.nodes,
-        gates: editedData.gates,
-        fault_tree: editedData.fault_tree,
-        mcs: selectedTree.mcs,
-        importance: selectedTree.importance,
-        validation_issues: selectedTree.validation_issues,
-      })
-      setSelectedTree(prev => ({
+      const payload = {
+        topEvent: data?.fault_tree?.top_event || '',
+        systemName: '',
+        selectedDoc,
+        selectedProvider,
+        result: {
+          tree_id: data.tree_id,
+          fault_tree: data.fault_tree,
+          nodes_json: data.fault_tree?.nodes,
+          gates_json: data.fault_tree?.gates,
+          mcs: data.mcs,
+          importance: data.importance,
+          validation_issues: data.validation_issues,
+          provider: data.provider,
+        },
+        viewMode: 'view',
+        savedAt: Date.now(),
+      }
+      sessionStorage.setItem('faulttreeai_generate_state_v1', JSON.stringify(payload))
+    } catch {}
+    onNavigate?.('generate')
+  }
+
+  const openFullScreen = (data, mode = 'view') => {
+    const tree = {
+      tree_id: data.tree_id,
+      fault_tree: data.fault_tree,
+      top_event: data.fault_tree?.top_event,
+      nodes_json: data.fault_tree?.nodes,
+      gates_json: data.fault_tree?.gates,
+      mcs: data.mcs,
+      importance: data.importance,
+      validation_issues: data.validation_issues,
+      provider: data.provider
+    }
+    setFsTree(tree)
+    setFsMode(mode)
+    setFsOpen(true)
+  }
+
+  const saveFullScreen = async () => {
+    if (!fsTree?.tree_id || !editorRef.current) return
+    setFsSaving(true)
+    try {
+      const edited = await editorRef.current.save()
+      const payload = {
+        nodes: edited.nodes,
+        gates: edited.gates,
+        fault_tree: edited.fault_tree,
+        mcs: fsTree.mcs,
+        importance: fsTree.importance,
+        validation_issues: fsTree.validation_issues,
+      }
+      await api.saveFaultTree(fsTree.tree_id, payload)
+      setFsTree(prev => ({
         ...prev,
-        fault_tree: editedData.fault_tree,
-        nodes_json: editedData.nodes,
-        gates_json: editedData.gates,
+        fault_tree: edited.fault_tree,
+        nodes_json: edited.nodes,
+        gates_json: edited.gates
       }))
       message.success('已保存到数据库')
-      setTreeModalMode('view')
-      await loadStatsAndTrees()
+      setFsMode('view')
     } catch (e) {
-      message.error(e.response?.data?.detail || '保存失败')
+      message.error(e?.message || '保存失败')
     }
-    setTreeSaving(false)
+    setFsSaving(false)
   }
 
-  // 操作步骤
-  const guideSteps = [
-    { 
-      icon: <BookOutlined />, 
-      title: '上传知识', 
-      desc: '上传设备手册、维修记录',
-      action: () => onNavigate('knowledge'),
-      buttonText: '去上传'
-    },
-    { 
-      icon: <ThunderboltOutlined />, 
-      title: '生成故障树', 
-      desc: '描述故障现象，AI自动生成',
-      action: () => onNavigate('generate'),
-      buttonText: '去生成'
-    },
-    { 
-      icon: <ToolOutlined />, 
-      title: '专家编辑', 
-      desc: '手动调整优化故障树',
-      action: () => onNavigate('generate'),
-      buttonText: '去编辑'
-    },
-    { 
-      icon: <CheckCircleOutlined />, 
-      title: '导出报告', 
-      desc: '生成分析报告',
-      action: () => onNavigate('generate'),
-      buttonText: '去导出'
-    },
-  ]
-
-  // 快速输入示例
-  const quickExamples = [
-    '电机无法启动',
-    '液压系统无压力',
-    '控制系统通讯中断',
-  ]
-
-  const statItems = [
-    { title: '文档总数', value: stats.total_docs, icon: <FileTextOutlined />, color: '#1890ff', desc: '已上传的设备手册', onClick: openDocs },
-    { title: '知识分块', value: stats.total_chunks, icon: <ApartmentOutlined />, color: '#36cfc9', desc: '已向量化的知识' },
-    { title: '故障树', value: stats.total_trees, icon: <ThunderboltOutlined />, color: '#faad14', desc: '已生成的故障树' },
-    { title: '有效率', value: stats.valid_rate, suffix: '%', icon: <CheckCircleOutlined />, color: '#52c41a', desc: '校验通过率' },
-  ]
-
-  const docColumns = useMemo(() => ([
-    {
-      title: '文件名',
-      dataIndex: 'filename',
-      key: 'filename',
-      ellipsis: true,
-    },
-    {
-      title: '类型',
-      dataIndex: 'file_type',
-      key: 'file_type',
-      width: 90,
-    },
-    {
-      title: '大小',
-      dataIndex: 'file_size',
-      key: 'file_size',
-      width: 110,
-      render: (v) => {
-        const n = Number(v || 0)
-        if (!n) return '-'
-        if (n < 1024) return `${n} B`
-        if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
-        return `${(n / 1024 / 1024).toFixed(2)} MB`
-      }
-    },
-    {
-      title: '状态',
-      dataIndex: 'status',
-      key: 'status',
-      width: 110,
-      render: (s) => {
-        if (s === 'active') return <Tag color="green">可用</Tag>
-        if (s === 'processing') return <Tag color="blue">处理中</Tag>
-        if (s === 'failed') return <Tag color="red">失败</Tag>
-        if (s === 'deleted') return <Tag>已删除</Tag>
-        return <Tag>{s || '-'}</Tag>
-      }
-    },
-    {
-      title: '上传时间',
-      dataIndex: 'upload_time',
-      key: 'upload_time',
-      width: 180,
-      render: (t) => t ? new Date(t).toLocaleString('zh-CN') : '-',
-    },
-    {
-      title: '操作',
-      key: 'action',
-      width: 90,
-      render: (_, row) => (
-        <Popconfirm
-          title="删除文档"
-          description="确定要删除该文档吗？"
-          okText="删除"
-          cancelText="取消"
-          onConfirm={() => handleDeleteDoc(row.doc_id)}
-        >
-          <Button danger size="small">删除</Button>
-        </Popconfirm>
-      ),
-    }
-  ]), [docs])
-
-  const listData = recentTrees.map(t => ({
-    id: t.tree_id,
-    name: t.top_event,
-    time: t.created_at ? new Date(t.created_at).toLocaleString('zh-CN') : '-',
-    valid: t.is_valid === true,
-    confidence: t.confidence || 0,
-  }))
-
   return (
-    <div className="page-container">
-      {/* 页面标题 */}
-      <div style={{ marginBottom: 24 }}>
-        <Title level={3} className="page-title">
-          <SmileOutlined style={{ marginRight: 12, color: '#1890ff' }} />
-          欢迎使用故障树智能分析系统
-        </Title>
-        <Text type="secondary" style={{ fontSize: 15 }}>
-          基于 MiniMax 大模型，自动生成工业设备故障树
-        </Text>
+    <div className="page-container" style={{ paddingBottom: 96 }}>
+      <div style={{ marginBottom: 16 }}>
+        <Title level={3} className="page-title">对话</Title>
       </div>
-
-      {/* 首次使用引导 */}
-      {isFirstTime && !loading && (
-        <Card className="glass-card" style={{ marginBottom: 24, border: '1px solid rgba(24,144,255,0.3)' }}>
-          <div style={{ textAlign: 'center', padding: '16px 0' }}>
-            <RocketOutlined style={{ fontSize: 48, color: '#1890ff', marginBottom: 16 }} />
-            <Title level={4} style={{ marginBottom: 8 }}>第一次使用？跟着步骤来</Title>
-            <Text type="secondary" style={{ fontSize: 14 }}>
-              只需3步，就能完成故障树分析
-            </Text>
-          </div>
-          
-          <Steps 
-            current={0} 
-            size="small" 
-            style={{ marginTop: 24 }}
-            items={guideSteps.map(s => ({
-              title: s.title,
-              description: s.desc,
-              icon: s.icon,
+      <Card className="glass-card" style={{ minHeight: '60vh' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {messages.length === 0 && <Text type="secondary">在下方输入框与 AI 对话，这里会显示双方对话内容。</Text>}
+          {messages.map((m, i) => (
+            <div key={i} style={{ display: 'flex', justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start' }}>
+              <div style={{
+                maxWidth: '80%',
+                padding: 12,
+                borderRadius: 8,
+                background: m.role === 'user' ? '#e6f7ff' : '#fafafa',
+                border: '1px solid #f0f0f0'
+              }}>
+                <Text style={{ whiteSpace: 'pre-wrap' }}>{m.text}</Text>
+                {m.result && (
+                  <div style={{ marginTop: 12 }}>
+                    <Space wrap>
+                      {m.result.provider && <Tag color="purple">模型: {String(m.result.provider).toUpperCase()}</Tag>}
+                      <Tag>权重: {manualWeight}%</Tag>
+                      <Tag>TopK: 5</Tag>
+                    </Space>
+                    <div style={{ marginTop: 12 }}>
+                      <Suspense fallback={null}>
+                        <FaultTreeViewer tree={{
+                          tree_id: m.result.tree_id,
+                          fault_tree: m.result.fault_tree,
+                          nodes_json: m.result.fault_tree?.nodes,
+                          gates_json: m.result.fault_tree?.gates,
+                          mcs: m.result.mcs,
+                          importance: m.result.importance,
+                          validation_issues: m.result.validation_issues
+                        }} />
+                      </Suspense>
+                    </div>
+                    <div style={{ marginTop: 8 }}>
+                      <Button size="small" onClick={() => loadToGenerate(m.result)}>
+                        载入到生成页并编辑
+                      </Button>
+                    </div>
+                    <div style={{ marginTop: 8 }}>
+                      <Space wrap>
+                        <Button size="small" onClick={() => openFullScreen(m.result, 'view')}>全屏查看</Button>
+                        <Button size="small" type="primary" onClick={() => openFullScreen(m.result, 'edit')}>主页专家编辑</Button>
+                        <Button size="small" onClick={() => loadToGenerate(m.result)}>载入到生成页并编辑</Button>
+                      </Space>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </Card>
+      <div style={{ position: 'fixed', left: 280, right: 0, bottom: 0, background: '#fff', borderTop: '1px solid #f0f0f0', padding: '12px 16px' }}>
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 8 }}>
+          <Select
+            style={{ width: 420 }}
+            placeholder="选择已上传的操作手册..."
+            value={selectedDoc}
+            onChange={setSelectedDoc}
+            allowClear
+            options={docs.filter(d=>d.status==='active').map(d=>({value:d.doc_id,label:d.filename}))}
+          />
+          <Select
+            style={{ width: 180 }}
+            value={selectedProvider}
+            onChange={setSelectedProvider}
+            options={providers.map(p => ({
+              value: p.name,
+              disabled: !p.available,
+              label: (
+                <Space>
+                  <span style={{ textTransform: 'capitalize' }}>{p.name}</span>
+                  <Badge status={p.available ? 'success' : 'error'} text={p.available ? '可用' : (p.reason || '不可用')} />
+                </Space>
+              )
             }))}
           />
-          
-          <div style={{ textAlign: 'center', marginTop: 24 }}>
-            <Button type="primary" size="large" icon={<BookOutlined />} onClick={() => onNavigate('knowledge')}>
-              开始第一步：上传设备手册
-            </Button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1 }}>
+            <span style={{ whiteSpace: 'nowrap', fontSize: 12 }}>文档权重</span>
+            <Slider style={{ flex: 1, minWidth: 300 }} value={manualWeight} onChange={setManualWeight} min={0} max={100} step={1} marks={{0:'0%',50:'50%',100:'100%'}} />
+            <Tag color="geekblue" style={{ minWidth: 48, textAlign: 'center' }}>{manualWeight}%</Tag>
           </div>
-        </Card>
-      )}
-
-      {/* 统计数据 */}
-      <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
-        {statItems.map((s) => (
-          <Col xs={12} sm={12} md={6} key={s.title}>
-            <Card className="glass-card" size="small" hoverable onClick={s.onClick}>
-              <div style={{ textAlign: 'center' }}>
-                <div style={{ fontSize: 28, color: s.color, marginBottom: 8 }}>
-                  {s.icon}
-                </div>
-                <div style={{ fontSize: 24, fontWeight: 600, color: '#1a1a1a' }}>
-                  {loading ? '-' : s.value}{s.suffix || ''}
-                </div>
-                <div style={{ fontSize: 12, color: '#595959', marginTop: 4 }}>{s.title}</div>
-                <div style={{ fontSize: 11, color: '#8c8c8c' }}>{s.desc}</div>
-              </div>
-            </Card>
-          </Col>
-        ))}
-      </Row>
-
+        </div>
+        <div style={{ display: 'flex', gap: 12 }}>
+          <Input.TextArea
+            value={input}
+            onChange={e=>setInput(e.target.value)}
+            onPressEnter={(e)=>{ if(!e.shiftKey){ e.preventDefault(); send(); } }}
+            placeholder="有问题，尽管问，shift+enter 换行"
+            autoSize={{ minRows: 2, maxRows: 4 }}
+            disabled={loading}
+          />
+          <Button type="primary" icon={<ThunderboltOutlined />} onClick={send} loading={loading}>发送</Button>
+        </div>
+      </div>
       <Modal
-        title="全部文档"
-        open={docsOpen}
-        onCancel={() => setDocsOpen(false)}
-        footer={[
-          <Button key="refresh" onClick={loadDocs} loading={docsLoading}>刷新</Button>,
-          <Button key="goto" type="primary" onClick={() => { setDocsOpen(false); onNavigate('knowledge') }}>前往知识库</Button>,
-        ]}
-        width={980}
-      >
-        <Table
-          rowKey="doc_id"
-          loading={docsLoading}
-          columns={docColumns}
-          dataSource={docs}
-          pagination={{ pageSize: 8, showTotal: (t) => `共 ${t} 个文档` }}
-        />
-      </Modal>
-
-      <Row gutter={[16, 16]}>
-        {/* 最近故障树 */}
-        <Col xs={24} lg={14}>
-          <Card 
-            className="glass-card"
-            title={<Space><ApartmentOutlined />最近生成的故障树</Space>}
-            extra={<Button type="link" onClick={() => onNavigate('history')} style={{ color: '#1890ff' }}>查看全部</Button>}
-          >
-            {listData.length > 0 ? (
-              <List
-                size="small"
-                dataSource={listData}
-                renderItem={(item) => (
-                  <List.Item
-                    style={{ borderBottom: '1px solid rgba(24,144,255,0.1)' }}
-                    actions={[
-                      <Button 
-                        key="view" 
-                        size="small" 
-                        type="link"
-                        loading={treeDetailLoading && selectedTree?.tree_id === item.id}
-                        onClick={() => openTree(item.id)}
-                        style={{ color: '#1890ff' }}
-                      >
-                        查看 <ArrowRightOutlined />
-                      </Button>
-                    ]}
-                  >
-                    <List.Item.Meta
-                      title={<Text style={{ color: '#1a1a1a' }}>{item.name}</Text>}
-                      description={
-                        <Space>
-                          <Text type="secondary" style={{ fontSize: 12 }}>
-                            {item.time}
-                          </Text>
-                          <Tag color={item.valid ? 'green' : 'orange'}>
-                            {item.valid ? '有效' : '待校验'}
-                          </Tag>
-                        </Space>
-                      }
-                    />
-                  </List.Item>
-                )}
-              />
-            ) : (
-              <div style={{ textAlign: 'center', padding: 32 }}>
-                <ThunderboltOutlined style={{ fontSize: 40, color: '#8c8c8c', marginBottom: 12 }} />
-                <div>
-                  <Text type="secondary">还没有故障树</Text>
-                  <Button 
-                    type="link" 
-                    onClick={() => onNavigate('generate')}
-                    style={{ color: '#1890ff', padding: '0 4px' }}
-                  >
-                    立即生成
-                  </Button>
-                </div>
-              </div>
-            )}
-          </Card>
-        </Col>
-
-        {/* 快速操作 */}
-        <Col xs={24} lg={10}>
-          <Card className="glass-card" title={<Space><ToolOutlined />快速开始</Space>}>
-            <Space direction="vertical" style={{ width: '100%' }} size="middle">
-              {/* 步骤1 */}
-              <div className="flex-between" style={{ padding: '12px 16px', background: 'rgba(24,144,255,0.08)', borderRadius: 8 }}>
-                <Space>
-                  <div style={{ width: 28, height: 28, borderRadius: '50%', background: '#1890ff', color: '#fff', textAlign: 'center', lineHeight: '28px', fontSize: 14 }}>1</div>
-                  <div>
-                    <div style={{ color: '#1a1a1a', fontWeight: 500 }}>上传设备手册</div>
-                    <div style={{ color: '#8c8c8c', fontSize: 12 }}>支持 PDF/Word/TXT</div>
-                  </div>
-                </Space>
-                <Button size="small" type="primary" onClick={() => onNavigate('knowledge')}>
-                  上传
-                </Button>
-              </div>
-
-              {/* 步骤2 */}
-              <div className="flex-between" style={{ padding: '12px 16px', background: 'rgba(24,144,255,0.08)', borderRadius: 8 }}>
-                <Space>
-                  <div style={{ width: 28, height: 28, borderRadius: '50%', background: '#36cfc9', color: '#fff', textAlign: 'center', lineHeight: '28px', fontSize: 14 }}>2</div>
-                  <div>
-                    <div style={{ color: '#1a1a1a', fontWeight: 500 }}>描述故障现象</div>
-                    <div style={{ color: '#8c8c8c', fontSize: 12 }}>AI 自动生成故障树</div>
-                  </div>
-                </Space>
-                <Button size="small" type="primary" onClick={() => onNavigate('generate')}>
-                  生成
-                </Button>
-              </div>
-
-              {/* 步骤3 */}
-              <div className="flex-between" style={{ padding: '12px 16px', background: 'rgba(24,144,255,0.08)', borderRadius: 8 }}>
-                <Space>
-                  <div style={{ width: 28, height: 28, borderRadius: '50%', background: '#faad14', color: '#fff', textAlign: 'center', lineHeight: '28px', fontSize: 14 }}>3</div>
-                  <div>
-                    <div style={{ color: '#1a1a1a', fontWeight: 500 }}>专家编辑优化</div>
-                    <div style={{ color: '#8c8c8c', fontSize: 12 }}>手动调整，导出报告</div>
-                  </div>
-                </Space>
-                <Button size="small" onClick={() => onNavigate('generate')}>
-                  编辑
-                </Button>
-              </div>
-
-              <Divider style={{ margin: '8px 0', borderColor: 'rgba(24,144,255,0.1)' }} />
-
-              {/* 快速示例 */}
-              <div>
-                <Text type="secondary" style={{ fontSize: 13 }}>试试这样说：</Text>
-                <div className="flex-wrap" style={{ marginTop: 8, gap: 8 }}>
-                  {quickExamples.map((ex, i) => (
-                    <Button 
-                      key={i} 
-                      size="small" 
-                      className="btn-secondary"
-                      onClick={() => onNavigate('generate')}
-                    >
-                      {ex}
-                    </Button>
-                  ))}
-                </div>
-              </div>
-            </Space>
-          </Card>
-        </Col>
-      </Row>
-
-      <Modal
-        open={!!selectedTree}
-        title={selectedTree?.top_event}
-        onCancel={() => { setSelectedTree(null); setTreeModalMode('view') }}
+        open={fsOpen}
+        title={fsTree?.top_event || '故障树'}
+        onCancel={() => setFsOpen(false)}
+        width="96vw"
+        style={{ top: 8 }}
+        bodyStyle={{ height: '78vh', overflow: 'auto' }}
         footer={
-          treeModalMode === 'view'
+          fsMode === 'view'
             ? [
-                <Button key="close" onClick={() => setSelectedTree(null)}>关闭</Button>,
-                <Button key="history" onClick={() => { setSelectedTree(null); onNavigate('history') }}>查看全部</Button>,
-                <Button key="edit" type="primary" onClick={() => setTreeModalMode('edit')}>编辑</Button>,
+                <Button key="close" onClick={() => setFsOpen(false)}>关闭</Button>,
+                <Button key="edit" type="primary" onClick={() => setFsMode('edit')}>专家编辑</Button>,
               ]
             : [
-                <Button key="cancel" onClick={() => setTreeModalMode('view')}>取消</Button>,
-                <Button key="save" type="primary" loading={treeSaving} onClick={() => editorRef.current?.save?.()}>保存</Button>,
+                <Button key="cancel" onClick={() => setFsMode('view')}>取消</Button>,
+                <Button key="save" type="primary" loading={fsSaving} onClick={saveFullScreen}>保存</Button>,
               ]
         }
-        width={980}
       >
         <Suspense fallback={null}>
-          {selectedTree && treeModalMode === 'view' && <FaultTreeViewer tree={selectedTree} />}
-          {selectedTree && treeModalMode === 'edit' && (
+          {fsTree && fsMode === 'view' && <FaultTreeViewer tree={fsTree} />}
+          {fsTree && fsMode === 'edit' && (
             <TreeEditor
               ref={editorRef}
-              initialTree={selectedTree}
-              onSave={handleSaveEditedTree}
-              onCancel={() => setTreeModalMode('view')}
+              initialTree={fsTree}
+              onSave={() => {}}
+              onCancel={() => setFsMode('view')}
             />
           )}
         </Suspense>

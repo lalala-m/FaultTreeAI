@@ -107,6 +107,10 @@ export const getFaultTree = async (treeId) => {
   return data
 }
 
+export const getSessionByTree = async (treeId) => {
+  const { data } = await api.get(`/generate/${treeId}/session`)
+  return data
+}
 export const listFaultTrees = async () => {
   return _cached('faultTrees', 15_000, async () => {
     const { data } = await api.get('/generate/')
@@ -201,6 +205,7 @@ api.searchKnowledge = searchKnowledge
 api.getKnowledgeStats = getKnowledgeStats
 api.generateFaultTree = generateFaultTree
 api.getFaultTree = getFaultTree
+api.getSessionByTree = getSessionByTree
 api.listFaultTrees = listFaultTrees
 api.saveFaultTree = saveFaultTree
 api.validateFaultTree = validateFaultTree

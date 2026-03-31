@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, Suspense, lazy } from 'react'
-import { Card, Typography, Button, Space, message, Tag, Divider, Alert, Steps, Progress, Modal, Select, Row, Col, Upload, Progress as ProgressBar, Badge, Slider, Tooltip } from 'antd'
+import { Card, Typography, Button, Space, message, Tag, Divider, Alert, Steps, Progress, Modal, Select, Row, Col, Upload, Progress as ProgressBar, Badge, Slider, Tooltip, Layout, Input, Collapse } from 'antd'
 import { ThunderboltOutlined, SaveOutlined, CheckCircleOutlined, WarningOutlined, RocketOutlined, BookOutlined, ApiOutlined, FileTextOutlined, EditOutlined, EyeOutlined, UndoOutlined, AppstoreOutlined, UploadOutlined, InboxOutlined, FilePdfOutlined, FileWordOutlined, DeleteOutlined } from '@ant-design/icons'
 import api from '../services/api.js'
 import DiagnosisPanel from '../components/DiagnosisPanel.jsx'
@@ -18,6 +18,8 @@ export default function Generate() {
   const [currentStep, setCurrentStep] = useState(0)
   const [viewMode, setViewMode] = useState('view') // 'view' | 'edit'
   const [saving, setSaving] = useState(false)
+  const [histories, setHistories] = useState([])
+  const [loadingHistories, setLoadingHistories] = useState(false)
   
   // 模板相关状态
   const [templates, setTemplates] = useState([])
@@ -164,6 +166,22 @@ export default function Generate() {
       }
     }
     loadDocs()
+  }, [])
+  
+  // 加载历史记录
+  useEffect(() => {
+    const loadHist = async () => {
+      try {
+        setLoadingHistories(true)
+        const data = await api.listFaultTrees()
+        setHistories(Array.isArray(data) ? data : [])
+      } catch {
+        setHistories([])
+      } finally {
+        setLoadingHistories(false)
+      }
+    }
+    loadHist()
   }, [])
   
   // 当选择模板时，加载预设顶事件
@@ -393,7 +411,61 @@ export default function Generate() {
   }
 
   return (
-    <div className="page-container">
+    <Layout style={{ minHeight: 'calc(100vh - 0px)' }}>
+      <Layout.Sider width={300} theme="light" style={{ padding: 12, borderRight: '1px solid #f0f0f0' }}>
+        <Card size="small" title="目录" bordered={false} className="glass-card" bodyStyle={{ padding: 12, maxHeight: '35vh', overflow: 'auto' }}>
+          <Space direction="vertical" style={{ width: '100%' }}>
+            <Button type="text">总览</Button>
+            <Button type="text">知识库</Button>
+            <Button type="text" type="primary">生成故障树</Button>
+            <Button type="text">历史记录</Button>
+          </Space>
+        </Card>
+        <Card size="small" title="历史记录" bordered={false} className="glass-card" style={{ marginTop: 12 }} bodyStyle={{ padding: 12, maxHeight: '45vh', overflow: 'auto' }}>
+          <Collapse accordion ghost>
+            {(histories || []).map(h => (
+              <Collapse.Panel header={
+                <Space>
+                  <Text strong ellipsis style={{ maxWidth: 180 }}>{h.top_event}</Text>
+                  <Tag color={h.is_valid ? 'green' : 'orange'}>{h.is_valid ? '已校验' : '待校验'}</Tag>
+                </Space>
+              } key={h.tree_id}>
+                <Space direction="vertical" style={{ width: '100%' }}>
+                  <Text type="secondary" style={{ fontSize: 12 }}>{(h.created_at || '').slice(0, 19)}</Text>
+                  <Button size="small" onClick={async () => {
+                    try {
+                      const data = await api.getFaultTree(h.tree_id)
+                      setResult({
+                        tree_id: data.tree_id,
+                        fault_tree: data.fault_tree,
+                        top_event: data.fault_tree?.top_event,
+                        nodes_json: data.fault_tree?.nodes,
+                        gates_json: data.fault_tree?.gates,
+                        confidence: data.fault_tree?.confidence,
+                        analysis_summary: data.analysis_summary || data.fault_tree?.analysis_summary,
+                        mcs: data.mcs,
+                        importance: data.importance,
+                        validation_issues: data.validation_issues || [],
+                        provider: data.provider,
+                      })
+                      message.success('已载入历史记录')
+                    } catch {
+                      message.error('载入失败')
+                    }
+                  }}>载入查看</Button>
+                </Space>
+              </Collapse.Panel>
+            ))}
+          </Collapse>
+        </Card>
+        <Card size="small" title="视觉识别" bordered={false} className="glass-card" style={{ marginTop: 12 }} bodyStyle={{ padding: 12 }}>
+          <Upload accept=".jpg,.jpeg,.png,.webp" showUploadList={false} beforeUpload={() => false} onChange={() => message.info('视觉识别功能保持不变')}>
+            <Button block>上传设备图片（占位）</Button>
+          </Upload>
+        </Card>
+      </Layout.Sider>
+      <Layout.Content style={{ padding: '16px 16px 96px 16px' }}>
+        <div className="page-container">
       {/* 页面标题 */}
       <div style={{ marginBottom: 24 }}>
         <Title level={3} className="page-title" style={{ marginBottom: 4 }}>
@@ -421,84 +493,10 @@ export default function Generate() {
         </Card>
       )}
 
-      {/* 输入区域 */}
+      {/* 输入区域（删除设备类型选择） */}
       <Card className="glass-card" style={{ marginBottom: 24 }}>
         <Space direction="vertical" style={{ width: '100%' }} size="large">
-          {/* 第一行：模板选择 + 模型选择 */}
-          <Row gutter={[16, 8]}>
-            {/* 模板选择 */}
-            <Col xs={24} md={12}>
-              <Text strong style={{ fontSize: 15, display: 'block', marginBottom: 8 }}>
-                <AppstoreOutlined style={{ marginRight: 8 }} />
-                选择设备类型模板（可选）
-              </Text>
-              <Select
-                style={{ width: '100%' }}
-                placeholder="选择设备模板..."
-                value={selectedTemplate}
-                onChange={handleTemplateChange}
-                loading={loadingTemplates}
-                allowClear
-                options={templates.map(t => ({
-                  value: t.template_id,
-                  label: <span>{t.icon} {t.name}</span>,
-                }))}
-              />
-              <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 6 }}>
-                可选项，用于快速贴合设备类型的常见模式
-              </Text>
-              {templateTopEvents.length > 0 && (
-                <div style={{ marginTop: 12 }}>
-                  <Text type="secondary" style={{ fontSize: 12, marginRight: 8 }}>常见故障：</Text>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
-                    {templateTopEvents.slice(0, 5).map((event, idx) => (
-                      <Button
-                        key={idx}
-                        size="small"
-                        type={topEvent === event ? 'primary' : 'default'}
-                        onClick={() => handleTopEventSelect(event)}
-                        disabled={loading}
-                      >
-                        {event}
-                      </Button>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </Col>
-
-            {/* 模型选择 */}
-            <Col xs={24} md={12}>
-              <Text strong style={{ fontSize: 15, display: 'block', marginBottom: 8 }}>
-                <ApiOutlined style={{ marginRight: 8 }} />
-                选择调用模型
-              </Text>
-              <Select
-                style={{ width: '100%' }}
-                value={selectedProvider}
-                onChange={setSelectedProvider}
-                options={providers.map(p => {
-                  const unavailableText = p.reason || '不可用'
-                  return {
-                    value: p.name,
-                    disabled: !p.available,
-                    label: (
-                      <Space>
-                        <span style={{ textTransform: 'capitalize' }}>{p.name}</span>
-                        <Badge status={p.available ? 'success' : 'error'} text={p.available ? '可用' : unavailableText} />
-                      </Space>
-                    )
-                  }
-                })}
-              />
-              <div style={{ marginTop: 6 }}>
-                <Space wrap>
-                  {providerInfo.primary ? <Tag color="blue">主: {providerInfo.primary}</Tag> : null}
-                  {providerInfo.fallback ? <Tag color="purple">备: {providerInfo.fallback}</Tag> : null}
-                </Space>
-              </div>
-            </Col>
-          </Row>
+          {/* 模型选择移动到底部输入区，此处不再显示 */}
 
           {/* 第二行：文档选择（与模板等宽） */}
           <Row gutter={[16, 8]}>
@@ -657,7 +655,6 @@ export default function Generate() {
             <Text type="secondary" style={{ fontSize: 13 }}>
               {topEvent.length > 0 && `已输入 ${topEvent.length} 个字符`}
               {selectedDoc && <span style={{ marginLeft: 16 }}>📚 已选择操作手册</span>}
-              {selectedTemplate && <span style={{ marginLeft: 16 }}>⚙️ 已选择模板</span>}
             </Text>
             <Space wrap>
               <Button
@@ -862,6 +859,56 @@ export default function Generate() {
           </Text>
         </Card>
       )}
-    </div>
+      
+      {/* 底部：对话框（模型+手册+权重+输入+发送） */}
+      <div style={{ position: 'fixed', left: 300, right: 0, bottom: 0, background: '#fff', borderTop: '1px solid #f0f0f0', padding: '12px 16px' }}>
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 8 }}>
+          <Select
+            style={{ width: 420 }}
+            placeholder="选择已上传的操作手册..."
+            value={selectedDoc}
+            onChange={setSelectedDoc}
+            loading={loadingDocs}
+            allowClear
+            options={docs.filter(d=>d.status==='active').map(d=>({value:d.doc_id,label:d.filename}))}
+          />
+          <Select
+            style={{ width: 180 }}
+            value={selectedProvider}
+            onChange={setSelectedProvider}
+            options={providers.map(p => {
+              const unavailableText = p.reason || '不可用'
+              return {
+                value: p.name,
+                disabled: !p.available,
+                label: (
+                  <Space>
+                    <span style={{ textTransform: 'capitalize' }}>{p.name}</span>
+                    <Badge status={p.available ? 'success' : 'error'} text={p.available ? '可用' : unavailableText} />
+                  </Space>
+                )
+              }
+            })}
+          />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1 }}>
+            <span style={{ whiteSpace: 'nowrap', fontSize: 12 }}>文档权重</span>
+            <Slider style={{ flex: 1, minWidth: 300 }} value={manualWeight} onChange={setManualWeight} min={0} max={100} step={1} marks={{0:'0%',50:'50%',100:'100%'}} />
+            <Tag color="geekblue" style={{ minWidth: 48, textAlign: 'center' }}>{manualWeight}%</Tag>
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 12 }}>
+          <Input.TextArea
+            value={topEvent}
+            onChange={e=>setTopEvent(e.target.value)}
+            placeholder="请描述设备故障现象（例如：电机接通电源后无法启动，伴随异响）"
+            autoSize={{ minRows: 2, maxRows: 4 }}
+            disabled={loading}
+          />
+          <Button type="primary" icon={<ThunderboltOutlined />} onClick={handleGenerate} loading={loading}>生成故障树</Button>
+        </div>
+      </div>
+      </div>
+      </Layout.Content>
+    </Layout>
   )
 }
