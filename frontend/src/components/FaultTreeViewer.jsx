@@ -93,7 +93,7 @@ const nodeTypes = { gate: GateNode, basic: BasicNode, top: TopEventNode }
 
 // ── 主组件 ─────────────────────────────────────────────
 
-export default function FaultTreeViewer({ tree }) {
+export default function FaultTreeViewer({ tree, height }) {
   const layouted = useMemo(() => {
     const nodesData = tree.fault_tree?.nodes || tree.nodes_json || []
     const gatesData = tree.fault_tree?.gates || tree.gates_json || []
@@ -231,6 +231,8 @@ export default function FaultTreeViewer({ tree }) {
     )
   }
 
+  const containerHeight = (typeof height === 'number' ? `${height}px` : (height || '500px'))
+
   return (
     <Card
       title="故障树结构图"
@@ -245,9 +247,10 @@ export default function FaultTreeViewer({ tree }) {
           <Tag color={NODE_COLORS.top}>顶事件</Tag>
         </Space>
       }
-      styles={{ body: { padding: 0 } }}
+      style={{ height: containerHeight }}
+      styles={{ body: { padding: 0, height: '100%' } }}
     >
-      <div style={{ height: 500, background: '#fafafa' }}>
+      <div style={{ height: '100%', background: '#fafafa' }}>
         <ReactFlow
           nodes={nodes}
           edges={edges}

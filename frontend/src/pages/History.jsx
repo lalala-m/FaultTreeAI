@@ -22,6 +22,22 @@ export default function History() {
   const [fsTree, setFsTree] = useState(null)
   const [fsSaving, setFsSaving] = useState(false)
   const fsEditorRef = useRef(null)
+  const fsWrapRef = useRef(null)
+  const [fsNativeOpen, setFsNativeOpen] = useState(false)
+  const fsLayerRef = useRef(null)
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (fsNativeOpen && e.key === 'Escape') {
+        try { document.fullscreenElement && document.exitFullscreen() } catch {}
+        setFsNativeOpen(false)
+      }
+    }
+    if (fsNativeOpen) {
+      window.addEventListener('keydown', onKey)
+    }
+    return () => window.removeEventListener('keydown', onKey)
+  }, [fsNativeOpen])
 
   const loadTrees = async () => {
     setLoading(true)
@@ -170,6 +186,7 @@ export default function History() {
                 <Button key="close" onClick={() => setSelected(null)}>关闭</Button>,
                 <Button key="fsview" onClick={() => { setFsTree(selected); setFsMode('view'); setFsOpen(true) }}>全屏查看</Button>,
                 <Button key="fsedit" type="dashed" onClick={() => { setFsTree(selected); setFsMode('edit'); setFsOpen(true) }}>全屏编辑</Button>,
+              <Button key="nativefs" type="primary" onClick={() => { setFsTree(selected); setFsMode('view'); setFsNativeOpen(true); setTimeout(()=>{ try{ fsLayerRef.current?.requestFullscreen?.() }catch{} },50) }}>系统全屏</Button>,
               <Button key="loadchat" onClick={() => {
                 try {
                   sessionStorage.setItem('dashboard_chat_inject', JSON.stringify({ messages: sessionMsgs, ts: Date.now() }))
@@ -227,10 +244,12 @@ export default function History() {
         footer={
           fsMode === 'view'
             ? [
+                <Button key="exitfs" onClick={() => { try { document.fullscreenElement && document.exitFullscreen() } catch {} setFsOpen(false) }}>退出全屏</Button>,
                 <Button key="close" onClick={() => setFsOpen(false)}>关闭</Button>,
                 <Button key="edit" type="primary" onClick={() => setFsMode('edit')}>专家编辑</Button>,
               ]
             : [
+                <Button key="exitfs" onClick={() => { try { document.fullscreenElement && document.exitFullscreen() } catch {} setFsOpen(false) }}>退出全屏</Button>,
                 <Button key="cancel" onClick={() => setFsMode('view')}>取消</Button>,
                 <Button key="save" type="primary" loading={fsSaving} onClick={async () => {
                   if (!fsTree?.tree_id || !fsEditorRef.current) return
@@ -256,17 +275,72 @@ export default function History() {
         }
       >
         <Suspense fallback={null}>
-          {fsTree && fsMode === 'view' && <FaultTreeViewer tree={fsTree} />}
-          {fsTree && fsMode === 'edit' && (
-            <TreeEditor
-              ref={fsEditorRef}
-              initialTree={fsTree}
-              onSave={() => {}}
-              onCancel={() => setFsMode('view')}
-            />
-          )}
+          <div ref={fsWrapRef} style={{ width: '100%', height: '100%', background: '#fff' }}>
+            {fsTree && fsMode === 'view' && <FaultTreeViewer tree={fsTree} />}
+            {fsTree && fsMode === 'edit' && (
+              <TreeEditor
+                ref={fsEditorRef}
+                initialTree={fsTree}
+                onSave={() => {}}
+                onCancel={() => setFsMode('view')}
+              />
+            )}
+          </div>
         </Suspense>
       </Modal>
+      {fsNativeOpen && (
+        <div 
+          ref={fsLayerRef}
+          style={{
+            position: 'fixed', inset: 0, background: '#fff', zIndex: 9999,
+            display: 'flex', flexDirection: 'column'
+          }}
+        >
+          <div style={{ padding: '8px 12px', borderBottom: '1px solid #f0f0f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ fontWeight: 600 }}>{fsTree?.top_event || '故障树'}</div>
+            <Space>
+              {fsMode === 'view' ? (
+                <Button type="primary" onClick={() => setFsMode('edit')}>专家编辑</Button>
+              ) : (
+                <Button type="primary" loading={fsSaving} onClick={async () => {
+                  if (!fsTree?.tree_id || !fsEditorRef.current) return
+                  setFsSaving(true)
+                  try {
+                    const edited = await fsEditorRef.current.save()
+                    await api.saveFaultTree(fsTree.tree_id, {
+                      nodes: edited.nodes,
+                      gates: edited.gates,
+                      fault_tree: edited.fault_tree,
+                      mcs: fsTree.mcs,
+                      importance: fsTree.importance,
+                      validation_issues: fsTree.validation_issues,
+                    })
+                    message.success('已保存到数据库')
+                    setFsMode('view')
+                  } catch (e) {
+                    message.error(e?.message || '保存失败')
+                  }
+                  setFsSaving(false)
+                }}>保存</Button>
+              )}
+              <Button onClick={() => { try { document.fullscreenElement && document.exitFullscreen() } catch {} setFsNativeOpen(false) }}>退出全屏</Button>
+            </Space>
+          </div>
+          <div style={{ flex: 1, overflow: 'auto' }}>
+            <Suspense fallback={null}>
+              {fsTree && fsMode === 'view' && <FaultTreeViewer tree={fsTree} height="calc(100vh - 56px)" />}
+              {fsTree && fsMode === 'edit' && (
+                <TreeEditor
+                  ref={fsEditorRef}
+                  initialTree={fsTree}
+                  onSave={() => {}}
+                  onCancel={() => setFsMode('view')}
+                />
+              )}
+            </Suspense>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

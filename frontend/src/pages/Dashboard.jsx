@@ -21,6 +21,9 @@ export default function Dashboard({ onNavigate }) {
   const [fsTree, setFsTree] = useState(null)
   const [fsSaving, setFsSaving] = useState(false)
   const editorRef = useRef(null)
+  const fsWrapRef = useRef(null)
+  const [fsNativeOpen, setFsNativeOpen] = useState(false)
+  const fsLayerRef = useRef(null)
 
   useEffect(() => {
     const loadDocs = async () => {
@@ -123,6 +126,54 @@ export default function Dashboard({ onNavigate }) {
     setFsOpen(true)
   }
 
+  const openNativeFullScreen = (data, mode = 'view') => {
+    const tree = {
+      tree_id: data.tree_id,
+      fault_tree: data.fault_tree,
+      top_event: data.fault_tree?.top_event,
+      nodes_json: data.fault_tree?.nodes,
+      gates_json: data.fault_tree?.gates,
+      mcs: data.mcs,
+      importance: data.importance,
+      validation_issues: data.validation_issues,
+      provider: data.provider
+    }
+    setFsTree(tree)
+    setFsMode(mode)
+    setFsNativeOpen(true)
+    setTimeout(() => {
+      try { fsLayerRef.current?.requestFullscreen?.() } catch {}
+    }, 50)
+  }
+
+  const exitNativeFullScreen = () => {
+    try { document.fullscreenElement && document.exitFullscreen() } catch {}
+    setFsNativeOpen(false)
+  }
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (fsNativeOpen && e.key === 'Escape') {
+        try { document.fullscreenElement && document.exitFullscreen() } catch {}
+        setFsNativeOpen(false)
+      }
+    }
+    if (fsNativeOpen) {
+      window.addEventListener('keydown', onKey)
+    }
+    return () => window.removeEventListener('keydown', onKey)
+  }, [fsNativeOpen])
+
+  useEffect(() => {
+    if (fsOpen) {
+      setTimeout(() => {
+        try { fsWrapRef.current?.requestFullscreen?.() } catch {}
+      }, 50)
+    } else {
+      try { document.fullscreenElement && document.exitFullscreen() } catch {}
+    }
+  }, [fsOpen, fsMode])
+
   const saveFullScreen = async () => {
     if (!fsTree?.tree_id || !editorRef.current) return
     setFsSaving(true)
@@ -196,7 +247,7 @@ export default function Dashboard({ onNavigate }) {
                     </div>
                     <div style={{ marginTop: 8 }}>
                       <Space wrap>
-                        <Button size="small" onClick={() => openFullScreen(m.result, 'view')}>全屏查看</Button>
+                        <Button size="small" onClick={() => openNativeFullScreen(m.result, 'view')}>系统全屏查看</Button>
                         <Button size="small" type="primary" onClick={() => openFullScreen(m.result, 'edit')}>主页专家编辑</Button>
                         <Button size="small" onClick={() => loadToGenerate(m.result)}>载入到生成页并编辑</Button>
                       </Space>
@@ -251,6 +302,40 @@ export default function Dashboard({ onNavigate }) {
           <Button type="primary" icon={<ThunderboltOutlined />} onClick={send} loading={loading}>发送</Button>
         </div>
       </div>
+      {fsNativeOpen && (
+        <div 
+          ref={fsLayerRef}
+          style={{
+            position: 'fixed', inset: 0, background: '#fff', zIndex: 9999,
+            display: 'flex', flexDirection: 'column'
+          }}
+        >
+          <div style={{ padding: '8px 12px', borderBottom: '1px solid #f0f0f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ fontWeight: 600 }}>{fsTree?.top_event || '故障树'}</div>
+            <Space>
+              {fsMode === 'view' ? (
+                <Button type="primary" onClick={() => setFsMode('edit')}>专家编辑</Button>
+              ) : (
+                <Button type="primary" loading={fsSaving} onClick={saveFullScreen}>保存</Button>
+              )}
+              <Button onClick={exitNativeFullScreen}>退出全屏</Button>
+            </Space>
+          </div>
+          <div style={{ flex: 1, overflow: 'auto' }}>
+            <Suspense fallback={null}>
+              {fsTree && fsMode === 'view' && <FaultTreeViewer tree={fsTree} height="calc(100vh - 56px)" />}
+              {fsTree && fsMode === 'edit' && (
+                <TreeEditor
+                  ref={editorRef}
+                  initialTree={fsTree}
+                  onSave={() => {}}
+                  onCancel={() => setFsMode('view')}
+                />
+              )}
+            </Suspense>
+          </div>
+        </div>
+      )}
       <Modal
         open={fsOpen}
         title={fsTree?.top_event || '故障树'}
@@ -261,25 +346,29 @@ export default function Dashboard({ onNavigate }) {
         footer={
           fsMode === 'view'
             ? [
+                <Button key="exitfs" onClick={() => { try { document.fullscreenElement && document.exitFullscreen() } catch {} setFsOpen(false) }}>退出全屏</Button>,
                 <Button key="close" onClick={() => setFsOpen(false)}>关闭</Button>,
                 <Button key="edit" type="primary" onClick={() => setFsMode('edit')}>专家编辑</Button>,
               ]
             : [
+                <Button key="exitfs" onClick={() => { try { document.fullscreenElement && document.exitFullscreen() } catch {} setFsOpen(false) }}>退出全屏</Button>,
                 <Button key="cancel" onClick={() => setFsMode('view')}>取消</Button>,
                 <Button key="save" type="primary" loading={fsSaving} onClick={saveFullScreen}>保存</Button>,
               ]
         }
       >
         <Suspense fallback={null}>
-          {fsTree && fsMode === 'view' && <FaultTreeViewer tree={fsTree} />}
-          {fsTree && fsMode === 'edit' && (
-            <TreeEditor
-              ref={editorRef}
-              initialTree={fsTree}
-              onSave={() => {}}
-              onCancel={() => setFsMode('view')}
-            />
-          )}
+          <div ref={fsWrapRef} style={{ width: '100%', height: '100%', background: '#fff' }}>
+            {fsTree && fsMode === 'view' && <FaultTreeViewer tree={fsTree} />}
+            {fsTree && fsMode === 'edit' && (
+              <TreeEditor
+                ref={editorRef}
+                initialTree={fsTree}
+                onSave={() => {}}
+                onCancel={() => setFsMode('view')}
+              />
+            )}
+          </div>
         </Suspense>
       </Modal>
     </div>
