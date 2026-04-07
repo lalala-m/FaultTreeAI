@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import {
-  Card, Upload, Table, Button, Space, Tag, Typography, message, Progress, Empty, Popconfirm, Steps, Alert
+  Card, Upload, Table, Button, Space, Tag, Typography, message, Progress, Empty, Popconfirm, Steps, Alert, Select, AutoComplete
 } from 'antd'
 import { 
   UploadOutlined, 
@@ -24,6 +24,8 @@ export default function KnowledgeBase() {
   const [progress, setProgress] = useState(0)
   const [loading, setLoading] = useState(true)
   const [uploadStep, setUploadStep] = useState(0)
+  const [uploadPipeline, setUploadPipeline] = useState('流水线1')
+  const [pipelines, setPipelines] = useState(['流水线1'])
 
   const loadDocs = async () => {
     try {
@@ -35,7 +37,20 @@ export default function KnowledgeBase() {
     setLoading(false)
   }
 
-  useEffect(() => { loadDocs() }, [])
+  const loadPipelines = async () => {
+    try {
+      const vals = await api.listPipelines()
+      const uniq = Array.from(new Set(['流水线1', ...vals.filter(Boolean)]))
+      setPipelines(uniq)
+    } catch {
+      setPipelines(['流水线1'])
+    }
+  }
+
+  useEffect(() => {
+    loadDocs()
+    loadPipelines()
+  }, [])
 
   const handleUpload = async ({ file }) => {
     setUploading(true)
@@ -56,13 +71,15 @@ export default function KnowledgeBase() {
       setUploadStep(3)
       setProgress(60)
       
-      await api.uploadDocument(file, setProgress)
+      const p = (uploadPipeline || '').trim() || '流水线1'
+      await api.uploadDocument(file, setProgress, p)
       
       // 步骤4: 完成
       setUploadStep(4)
       setProgress(100)
       message.success('文档上传并处理完成！')
       await loadDocs()
+      await loadPipelines()
     } catch (err) {
       message.error('上传失败: ' + (err.response?.data?.detail || err.message))
       setUploadStep(0)
@@ -79,6 +96,17 @@ export default function KnowledgeBase() {
       await loadDocs()
     } catch (err) {
       message.error('删除失败')
+    }
+  }
+
+  const handlePipelineChange = async (docId, pipeline) => {
+    try {
+      await api.updateDocumentPipeline(docId, pipeline)
+      message.success('流水线分组已更新')
+      await loadDocs()
+      await loadPipelines()
+    } catch (err) {
+      message.error('更新失败: ' + (err.response?.data?.detail || err.message))
     }
   }
 
@@ -115,6 +143,20 @@ export default function KnowledgeBase() {
         <Tag color={s === 'active' ? 'success' : 'default'}>
           {s === 'active' ? '已处理' : '处理中'}
         </Tag>
+      ),
+    },
+    {
+      title: '流水线',
+      dataIndex: 'pipeline',
+      key: 'pipeline',
+      render: (p, row) => (
+        <Select
+          size="small"
+          style={{ width: 120 }}
+          value={p || '流水线1'}
+          onChange={(v) => handlePipelineChange(row.doc_id, v)}
+          options={pipelines.map(v => ({ value: v, label: v }))}
+        />
       ),
     },
     {
@@ -205,6 +247,19 @@ export default function KnowledgeBase() {
             <Progress percent={progress} status="active" strokeColor="#1890ff" />
           </div>
         )}
+
+        <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 12 }}>
+          <Text strong>上传到流水线：</Text>
+          <AutoComplete
+            style={{ width: 160 }}
+            value={uploadPipeline}
+            onChange={setUploadPipeline}
+            options={pipelines.map(v => ({ value: v }))}
+            filterOption={(inputValue, option) => (option?.value || '').toLowerCase().includes(inputValue.toLowerCase())}
+            disabled={uploading}
+          />
+          <Text type="secondary" style={{ fontSize: 12 }}>已上传旧文档自动归为流水线1</Text>
+        </div>
 
         {/* 上传组件 */}
         <Dragger

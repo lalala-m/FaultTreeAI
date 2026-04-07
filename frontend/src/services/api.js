@@ -56,9 +56,10 @@ const _cached = async (key, ttlMs, fetcher) => {
 
 // ── 知识库 ──────────────────────────────────────────
 
-export const uploadDocument = async (file, onProgress) => {
+export const uploadDocument = async (file, onProgress, pipeline = '流水线1') => {
   const form = new FormData()
   form.append('file', file)
+  form.append('pipeline', pipeline)
   const { data } = await api.post('/knowledge/upload', form, {
     headers: { 'Content-Type': 'multipart/form-data' },
     onUploadProgress: (e) => onProgress?.(Math.round((e.loaded * 100) / (e.total || 1))),
@@ -80,6 +81,12 @@ export const deleteDocument = async (docId) => {
   return data
 }
 
+export const updateDocumentPipeline = async (docId, pipeline) => {
+  const { data } = await api.put(`/knowledge/${docId}/pipeline`, null, { params: { pipeline } })
+  invalidateCache(['documents'])
+  return data
+}
+
 export const searchKnowledge = async (query, topK = 5) => {
   const { data } = await api.post('/knowledge/search', null, {
     params: { query, top_k: topK }
@@ -92,6 +99,24 @@ export const getKnowledgeStats = async () => {
     const { data } = await api.get('/knowledge/stats')
     return data
   })
+}
+
+export const getKnowledgeGraph = async (pipeline = '流水线1') => {
+  const { data } = await api.get('/knowledge/graph', { params: { pipeline } })
+  return data
+}
+
+export const listPipelines = async () => {
+  return _cached('pipelines', 30_000, async () => {
+    const { data } = await api.get('/knowledge/pipelines')
+    return Array.isArray(data?.pipelines) ? data.pipelines : []
+  })
+}
+
+export const rebuildKnowledgeGraph = async (pipeline = '流水线1') => {
+  const { data } = await api.post('/knowledge/graph/rebuild', null, { params: { pipeline } })
+  invalidateCache(['documents'])
+  return data
 }
 
 // ── 故障树生成 ──────────────────────────────────────
@@ -201,8 +226,12 @@ export const prefetchBootstrap = async () => {
 api.uploadDocument = uploadDocument
 api.listDocuments = listDocuments
 api.deleteDocument = deleteDocument
+api.updateDocumentPipeline = updateDocumentPipeline
 api.searchKnowledge = searchKnowledge
 api.getKnowledgeStats = getKnowledgeStats
+api.getKnowledgeGraph = getKnowledgeGraph
+api.listPipelines = listPipelines
+api.rebuildKnowledgeGraph = rebuildKnowledgeGraph
 api.generateFaultTree = generateFaultTree
 api.getFaultTree = getFaultTree
 api.getSessionByTree = getSessionByTree

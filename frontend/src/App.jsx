@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState, Suspense, lazy } from 'react'
 import { Layout, Menu, Typography, Collapse, Space, Tag, Button } from 'antd'
-import { UploadOutlined, ApiOutlined, HistoryOutlined, DashboardOutlined, ThunderboltOutlined } from '@ant-design/icons'
+import { UploadOutlined, ApiOutlined, HistoryOutlined, DashboardOutlined, ThunderboltOutlined, ApartmentOutlined } from '@ant-design/icons'
 import api from './services/api.js'
 
 const KnowledgeBase = lazy(() => import('./pages/KnowledgeBase.jsx'))
@@ -8,6 +8,7 @@ const Generate = lazy(() => import('./pages/Generate.jsx'))
 const History = lazy(() => import('./pages/History.jsx'))
 const Dashboard = lazy(() => import('./pages/Dashboard.jsx'))
 const VisionDetect = lazy(() => import('./pages/vision/VisionDetect.jsx'))
+const KnowledgeGraph = lazy(() => import('./pages/KnowledgeGraph.jsx'))
 
 const { Header, Sider, Content } = Layout
 const { Title } = Typography
@@ -41,6 +42,7 @@ export default function App() {
   const items = useMemo(() => ([
     { key: 'dashboard', icon: <DashboardOutlined />, label: '总览' },
     { key: 'knowledge', icon: <UploadOutlined />, label: '知识库' },
+    { key: 'graph', icon: <ApartmentOutlined />, label: '知识图谱' },
     { key: 'generate', icon: <ApiOutlined />, label: '生成故障树' },
     { key: 'vision', icon: <ThunderboltOutlined />, label: '视觉识别' },
     { key: 'history', icon: <HistoryOutlined />, label: '历史记录' },
@@ -115,6 +117,7 @@ export default function App() {
           <Suspense fallback={null}>
             {active === 'dashboard' && <Dashboard onNavigate={setActive} />}
             {active === 'knowledge' && <KnowledgeBase />}
+            {active === 'graph' && <KnowledgeGraph />}
             {active === 'generate' && <Generate />}
             {active === 'vision' && <VisionDetect />}
             {active === 'history' && <History />}

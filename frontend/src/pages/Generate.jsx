@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, Suspense, lazy } from 'react'
-import { Card, Typography, Button, Space, message, Tag, Divider, Alert, Steps, Progress, Modal, Select, Row, Col, Upload, Progress as ProgressBar, Badge, Slider, Tooltip, Layout, Input, Collapse } from 'antd'
+import { Card, Typography, Button, Space, message, Tag, Divider, Alert, Steps, Progress, Modal, Select, Row, Col, Upload, Progress as ProgressBar, Badge, Slider, Tooltip, Layout, Input, Collapse, AutoComplete } from 'antd'
 import { ThunderboltOutlined, SaveOutlined, CheckCircleOutlined, WarningOutlined, RocketOutlined, BookOutlined, ApiOutlined, FileTextOutlined, EditOutlined, EyeOutlined, UndoOutlined, AppstoreOutlined, UploadOutlined, InboxOutlined, FilePdfOutlined, FileWordOutlined, DeleteOutlined } from '@ant-design/icons'
 import api from '../services/api.js'
 import DiagnosisPanel from '../components/DiagnosisPanel.jsx'
@@ -33,11 +33,13 @@ export default function Generate() {
   const [loadingDocs, setLoadingDocs] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
+  const [uploadPipeline, setUploadPipeline] = useState('流水线1')
+  const [pipelines, setPipelines] = useState(['流水线1'])
   const [manualWeight, setManualWeight] = useState(50) // 0~100，控制文档权重（向量占比）
   
   // LLM Provider 状态
   const [providers, setProviders] = useState([])
-  const [selectedProvider, setSelectedProvider] = useState(null)
+  const [selectedProvider, setSelectedProvider] = useState('minimax')
   const [providerInfo, setProviderInfo] = useState({ primary: '', fallback: '' })
   const [savingResult, setSavingResult] = useState(false)
   const editorRef = useRef(null)
@@ -140,12 +142,15 @@ export default function Generate() {
     const loadProviders = async () => {
       try {
         const data = await api.getProviders()
-        setProviders(data.providers || [])
+        const items = data.providers || []
+        setProviders(items)
         setProviderInfo({ primary: data.primary, fallback: data.fallback })
-        const firstAvailable = (data.providers || []).find(p => p.available)
-        setSelectedProvider(firstAvailable?.name || data.primary || 'minimax')
+        const minimax = items.find(p => p.name === 'minimax' && p.available)
+        const firstAvailable = items.find(p => p.available)
+        setSelectedProvider(minimax?.name || firstAvailable?.name || data.primary || 'minimax')
       } catch (e) {
         console.error('加载模型列表失败', e)
+        setSelectedProvider('minimax')
       }
     }
     loadProviders()
@@ -166,6 +171,18 @@ export default function Generate() {
       }
     }
     loadDocs()
+  }, [])
+
+  useEffect(() => {
+    const loadPipelines = async () => {
+      try {
+        const vals = await api.listPipelines()
+        setPipelines(Array.from(new Set(['流水线1', ...vals.filter(Boolean)])))
+      } catch {
+        setPipelines(['流水线1'])
+      }
+    }
+    loadPipelines()
   }, [])
   
   // 加载历史记录
@@ -211,11 +228,16 @@ export default function Generate() {
     setUploadProgress(0)
     
     try {
-      await api.uploadDocument(file, setUploadProgress)
+      const p = (uploadPipeline || '').trim() || '流水线1'
+      await api.uploadDocument(file, setUploadProgress, p)
       message.success('文档上传成功！')
       // 刷新文档列表
       const data = await api.listDocuments()
       setDocs(Array.isArray(data) ? data : [])
+      try {
+        const vals = await api.listPipelines()
+        setPipelines(Array.from(new Set(['流水线1', ...vals.filter(Boolean)])))
+      } catch {}
     } catch (err) {
       message.error('上传失败: ' + (err.response?.data?.detail || err.message))
     }
@@ -417,7 +439,7 @@ export default function Generate() {
           <Space direction="vertical" style={{ width: '100%' }}>
             <Button type="text">总览</Button>
             <Button type="text">知识库</Button>
-            <Button type="text" type="primary">生成故障树</Button>
+            <Button type="primary">生成故障树</Button>
             <Button type="text">历史记录</Button>
           </Space>
         </Card>
@@ -529,6 +551,14 @@ export default function Generate() {
                     {menu}
                     <Divider style={{ margin: '8px 0' }} />
                     <div style={{ padding: '8px' }}>
+                      <AutoComplete
+                        style={{ width: '100%', marginBottom: 8 }}
+                        value={uploadPipeline}
+                        onChange={setUploadPipeline}
+                        options={pipelines.map(v => ({ value: v }))}
+                        filterOption={(inputValue, option) => (option?.value || '').toLowerCase().includes(inputValue.toLowerCase())}
+                        disabled={uploading}
+                      />
                       <Upload
                         accept=".pdf,.docx,.doc,.txt"
                         showUploadList={false}
