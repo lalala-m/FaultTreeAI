@@ -31,7 +31,7 @@ class Settings(BaseSettings):
 
     # ??? LLM Provider ???
     LLM_PROVIDER: str = "minimax"
-    LLM_FALLBACK_PROVIDER: str = "ollama"
+    LLM_FALLBACK_PROVIDER: str = "minimax"
 
     # ??? MiniMax ???
     MINIMAX_API_KEY: str = ""

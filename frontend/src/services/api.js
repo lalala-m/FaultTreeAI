@@ -94,12 +94,6 @@ export const getKnowledgeStats = async () => {
   })
 }
 
-export const feedbackKnowledgeWeight = async (payload) => {
-  const { data } = await api.post('/knowledge/feedback-weight', payload)
-  invalidateCache(['documents', 'knowledgeStats'])
-  return data
-}
-
 // ── 故障树生成 ──────────────────────────────────────
 
 export const generateFaultTree = async (params) => {
@@ -161,19 +155,8 @@ export const exportPDF = async (faultTree, mcs) => {
 // ── LLM Provider 管理 ─────────────────────────────────
 export const getProviders = async () => {
   return _cached('providers', 60_000, async () => {
-    try {
-      const { data } = await api.get('/llm/providers', { timeout: 10_000 })
-      return data
-    } catch {
-      return {
-        primary: 'minimax',
-        fallback: 'ollama',
-        providers: [
-          { name: 'minimax', available: true, reason: null },
-          { name: 'ollama', available: false, reason: '检测失败' },
-        ],
-      }
-    }
+    const { data } = await api.get('/llm/providers')
+    return data
   })
 }
 
@@ -220,7 +203,6 @@ api.listDocuments = listDocuments
 api.deleteDocument = deleteDocument
 api.searchKnowledge = searchKnowledge
 api.getKnowledgeStats = getKnowledgeStats
-api.feedbackKnowledgeWeight = feedbackKnowledgeWeight
 api.generateFaultTree = generateFaultTree
 api.getFaultTree = getFaultTree
 api.getSessionByTree = getSessionByTree

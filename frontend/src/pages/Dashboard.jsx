@@ -183,7 +183,7 @@ export default function Dashboard({ onNavigate }) {
   const [docs, setDocs] = useState([])
   const [selectedDoc, setSelectedDoc] = useState(null)
   const [providers, setProviders] = useState([])
-  const [selectedProvider, setSelectedProvider] = useState(null)
+  const [selectedProvider, setSelectedProvider] = useState('minimax')
   const [manualWeight, setManualWeight] = useState(50)
   const [fsOpen, setFsOpen] = useState(false)
   const [fsMode, setFsMode] = useState('view') // view | edit
@@ -215,9 +215,11 @@ export default function Dashboard({ onNavigate }) {
     const loadProviders = async () => {
       try {
         const data = await api.getProviders()
-        setProviders(data.providers || [])
-        const first = (data.providers || []).find(p => p.available)
-        setSelectedProvider(first?.name || data.primary || 'minimax')
+        const items = data.providers || []
+        setProviders(items)
+        const minimax = items.find(p => p.name === 'minimax' && p.available)
+        const first = items.find(p => p.available)
+        setSelectedProvider(minimax?.name || first?.name || data.primary || 'minimax')
       } catch {
         setProviders([])
         setSelectedProvider('minimax')

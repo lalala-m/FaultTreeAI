@@ -9,23 +9,6 @@ const TreeEditor = lazy(() => import('../components/TreeEditor.jsx'))
 
 const { Title, Text, Paragraph } = Typography
 
-const formatGenerateError = (err) => {
-  const status = err?.response?.status
-  const detail = String(err?.response?.data?.detail || err?.message || '').trim()
-
-  if (status === 503) {
-    if (detail.includes('当前没有可用的故障树生成模型服务')) {
-      return detail
-    }
-    if (detail.includes('MiniMax 请求失败') || detail.includes('Ollama 服务不可达')) {
-      return `当前没有可用的故障树生成模型服务。${detail}`
-    }
-    return detail || '当前生成服务暂不可用，请稍后重试'
-  }
-
-  return detail || '生成失败，请稍后重试'
-}
-
 export default function Generate() {
   const [topEvent, setTopEvent] = useState('')
   const [systemName, setSystemName] = useState('')
@@ -62,7 +45,6 @@ export default function Generate() {
 
   // 视觉识别传入的数据
   const [visionData, setVisionData] = useState(null)
-  const [pendingVisionGenerate, setPendingVisionGenerate] = useState(null)
   
   // 从 URL 参数初始化（支持视觉识别传入的数据）
   useEffect(() => {
@@ -103,41 +85,6 @@ export default function Generate() {
       }
       
       window.history.replaceState({}, document.title, window.location.pathname)
-    }
-  }, [])
-
-  useEffect(() => {
-    const onVision = (e) => {
-      const detail = e?.detail || {}
-      const visionId = detail.vision_id
-      let parsed = null
-      if (visionId) {
-        try {
-          const raw = sessionStorage.getItem(`faulttreeai_vision_result:${visionId}`)
-          if (raw) parsed = JSON.parse(raw)
-        } catch {
-        }
-      } else if (detail.vision_result) {
-        parsed = detail.vision_result
-      }
-      setPendingVisionGenerate({
-        visionResult: parsed,
-        faultDescription: detail.fault_description || '',
-        equipmentType: detail.equipment_type || 'other',
-      })
-    }
-    window.addEventListener('faulttreeai:vision-to-generate', onVision)
-    return () => window.removeEventListener('faulttreeai:vision-to-generate', onVision)
-  }, [])
-
-  useEffect(() => {
-    try {
-      const raw = sessionStorage.getItem('faulttreeai_pending_vision_to_generate')
-      if (!raw) return
-      const detail = JSON.parse(raw)
-      sessionStorage.removeItem('faulttreeai_pending_vision_to_generate')
-      window.dispatchEvent(new CustomEvent('faulttreeai:vision-to-generate', { detail }))
-    } catch {
     }
   }, [])
 
@@ -294,80 +241,8 @@ export default function Generate() {
     }
   }
 
-  const _visionSummary = (v) => {
-    if (!v) return ''
-    const batch = Array.isArray(v.batch_results) ? v.batch_results : null
-    const dets = batch
-      ? batch.flatMap((r, idx) => (r.detections || []).map(d => ({ ...d, _frame: idx + 1 })))
-      : (Array.isArray(v.detections) ? v.detections : [])
-    const anomalies = batch
-      ? batch.reduce((sum, r) => sum + Number(r.anomaly_count || 0), 0)
-      : Number(v.anomaly_count || 0)
-    const total = batch
-      ? batch.reduce((sum, r) => sum + Number(r.total_detections || 0), 0)
-      : Number(v.total_detections || dets.length || 0)
-    const frames = batch ? batch.length : 1
-
-    const cableMap = {
-      bent_wire: '导线弯折',
-      cable_swap: '线缆错位',
-      combined: '复合损伤',
-      cut_inner_insulation: '内层绝缘破损',
-      cut_outer_insulation: '外层绝缘破损',
-      missing_cable: '线缆缺失',
-      missing_wire: '导线缺失',
-      poke_insulation: '绝缘层刺穿',
-      good: '正常',
-    }
-
-    const toCableDefectKey = (d) => {
-      const cn = String(d?.class_name || '')
-      if (cn.startsWith('cable_')) return cn.slice(6)
-      const desc = String(d?.description || '')
-      const m = desc.match(/线缆异常类型:\s*([a-z_]+)\b/i)
-      if (m?.[1]) return m[1].toLowerCase()
-      return cn
-    }
-
-    const isCable = dets.some(d => String(d?.class_name || '').startsWith('cable_')) || String(v?.model_name || '').includes('mvtec_cable')
-    if (isCable) {
-      const groups = new Map()
-      dets.forEach((d) => {
-        const k = toCableDefectKey(d)
-        if (!k || k === 'good') return
-        const prev = groups.get(k) || 0
-        groups.set(k, Math.max(prev, Number(d.confidence || 0)))
-      })
-      const list = [...groups.entries()]
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 6)
-        .map(([k, c]) => `${cableMap[k] || k}(${Math.round(c * 100)}%)`)
-        .join('；')
-      return `线缆视觉识别：帧数${frames}，异常${anomalies}；结论：${list || '未检测到明确异常'}`
-    }
-
-    const topList = dets
-      .filter(d => d && d.class_name)
-      .sort((a, b) => Number(b.confidence || 0) - Number(a.confidence || 0))
-      .slice(0, batch ? 12 : 6)
-      .map(d => {
-        const prefix = batch ? `帧${d._frame}:` : ''
-        return `${prefix}${d.class_name}(${Math.round((d.confidence || 0) * 100)}%)`
-      })
-      .join('；')
-    return `视觉识别：帧数${frames}，总数${total}，异常${anomalies}；结果：${topList}`
-  }
-
-  const handleGenerate = async (override = {}) => {
-    const nextTopEvent = (override.top_event ?? topEvent) || ''
-    const nextSystemName = override.system_name ?? systemName
-    const nextTemplate = override.template_id ?? selectedTemplate
-    const nextDoc = override.doc_ids ?? (selectedDoc ? [selectedDoc] : undefined)
-    const nextProvider = override.provider ?? (selectedProvider || undefined)
-    const nextManualWeight = override.manual_weight ?? (Math.max(0, Math.min(100, manualWeight)) / 100.0)
-    const nextUserPrompt = override.user_prompt ?? (visionData ? _visionSummary(visionData.result || visionData) : '')
-
-    if (!nextTopEvent.trim()) {
+  const handleGenerate = async () => {
+    if (!topEvent.trim()) {
       message.warning('请输入顶事件描述')
       return
     }
@@ -378,29 +253,6 @@ export default function Generate() {
     setViewMode('view')
     
     try {
-      const providerState = await api.getProviders().catch(() => null)
-      if (providerState) {
-        const nextProviders = providerState.providers || []
-        setProviders(nextProviders)
-        setProviderInfo({ primary: providerState.primary, fallback: providerState.fallback })
-        const availableProviders = nextProviders.filter(item => item?.available)
-        const requestedProvider = availableProviders.find(item => item.name === nextProvider)
-        const activeProvider = requestedProvider?.name || availableProviders[0]?.name || nextProvider
-        if (activeProvider && activeProvider !== selectedProvider) {
-          setSelectedProvider(activeProvider)
-        }
-        if (availableProviders.length === 0) {
-          const reasons = nextProviders
-            .map(item => `${String(item.name || '').toUpperCase()}: ${item.reason || '不可用'}`)
-            .join('；')
-          const detail = `当前没有可用的故障树生成模型服务。${reasons}`
-          setError(`生成失败: ${detail}`)
-          message.error('生成服务不可用')
-          setLoading(false)
-          return
-        }
-      }
-
       // 步骤1: 知识检索
       setCurrentStep(1)
       await new Promise(r => setTimeout(r, 500))
@@ -410,15 +262,15 @@ export default function Generate() {
       
       // 传递选中的文档ID
       const data = await api.generateFaultTree({
-        top_event: nextTopEvent,
-        system_name: nextSystemName,
-        user_prompt: nextUserPrompt || '',
+        top_event: topEvent,
+        system_name: systemName,
+        user_prompt: '',
         rag_top_k: 5,
-        template_id: nextTemplate || undefined,
-        doc_ids: nextDoc,
-        provider: nextProvider,
+        template_id: selectedTemplate || undefined,
+        doc_ids: selectedDoc ? [selectedDoc] : undefined,
+        provider: selectedProvider || undefined,
         use_fallback: true,
-        manual_weight: nextManualWeight,
+        manual_weight: Math.max(0, Math.min(100, manualWeight)) / 100.0,
       })
       
       // 步骤3: 计算完成
@@ -439,32 +291,12 @@ export default function Generate() {
       })
       message.success('故障树生成成功！')
     } catch (err) {
-      const detail = formatGenerateError(err)
+      const detail = err.response?.data?.detail || err.message
       setError('生成失败: ' + detail)
-      message.error(detail)
+      message.error('生成失败')
     }
     setLoading(false)
   }
-
-  useEffect(() => {
-    if (!pendingVisionGenerate) return
-    const fd = pendingVisionGenerate.faultDescription || ''
-    const et = pendingVisionGenerate.equipmentType || 'other'
-    const vr = pendingVisionGenerate.visionResult
-    setVisionData({
-      result: vr,
-      faultDescription: fd,
-      equipmentType: et,
-    })
-    if (fd) setTopEvent(fd)
-    if (et) setSystemName(et)
-    setPendingVisionGenerate(null)
-    handleGenerate({
-      top_event: fd || topEvent,
-      system_name: et || systemName,
-      user_prompt: vr ? _visionSummary(vr) : '',
-    })
-  }, [pendingVisionGenerate])
 
   const handleValidate = async () => {
     if (!result?.fault_tree) return
@@ -580,27 +412,24 @@ export default function Generate() {
 
   return (
     <Layout style={{ minHeight: 'calc(100vh - 0px)' }}>
-      <Layout.Sider width={300} theme="light" style={{ padding: 12, borderRight: '1px solid #f0f0f0', display: 'flex', flexDirection: 'column' }}>
-        <Card
-          size="small"
-          title="历史记录"
-          variant="borderless"
-          className="glass-card"
-          style={{ flex: 1, minHeight: 0 }}
-          styles={{ body: { padding: 12, overflow: 'auto', flex: 1, minHeight: 0 } }}
-        >
-          <Collapse
-            accordion
-            ghost
-            items={(histories || []).map(h => ({
-              key: h.tree_id,
-              label: (
+      <Layout.Sider width={300} theme="light" style={{ padding: 12, borderRight: '1px solid #f0f0f0' }}>
+        <Card size="small" title="目录" bordered={false} className="glass-card" bodyStyle={{ padding: 12, maxHeight: '35vh', overflow: 'auto' }}>
+          <Space direction="vertical" style={{ width: '100%' }}>
+            <Button type="text">总览</Button>
+            <Button type="text">知识库</Button>
+            <Button type="text" type="primary">生成故障树</Button>
+            <Button type="text">历史记录</Button>
+          </Space>
+        </Card>
+        <Card size="small" title="历史记录" bordered={false} className="glass-card" style={{ marginTop: 12 }} bodyStyle={{ padding: 12, maxHeight: '45vh', overflow: 'auto' }}>
+          <Collapse accordion ghost>
+            {(histories || []).map(h => (
+              <Collapse.Panel header={
                 <Space>
                   <Text strong ellipsis style={{ maxWidth: 180 }}>{h.top_event}</Text>
                   <Tag color={h.is_valid ? 'green' : 'orange'}>{h.is_valid ? '已校验' : '待校验'}</Tag>
                 </Space>
-              ),
-              children: (
+              } key={h.tree_id}>
                 <Space direction="vertical" style={{ width: '100%' }}>
                   <Text type="secondary" style={{ fontSize: 12 }}>{(h.created_at || '').slice(0, 19)}</Text>
                   <Button size="small" onClick={async () => {
@@ -625,12 +454,17 @@ export default function Generate() {
                     }
                   }}>载入查看</Button>
                 </Space>
-              ),
-            }))}
-          />
+              </Collapse.Panel>
+            ))}
+          </Collapse>
+        </Card>
+        <Card size="small" title="视觉识别" bordered={false} className="glass-card" style={{ marginTop: 12 }} bodyStyle={{ padding: 12 }}>
+          <Upload accept=".jpg,.jpeg,.png,.webp" showUploadList={false} beforeUpload={() => false} onChange={() => message.info('视觉识别功能保持不变')}>
+            <Button block>上传设备图片（占位）</Button>
+          </Upload>
         </Card>
       </Layout.Sider>
-      <Layout.Content style={{ padding: '16px 16px 16px 16px' }}>
+      <Layout.Content style={{ padding: '16px 16px 96px 16px' }}>
         <div className="page-container">
       {/* 页面标题 */}
       <div style={{ marginBottom: 24 }}>
@@ -662,37 +496,7 @@ export default function Generate() {
       {/* 输入区域（删除设备类型选择） */}
       <Card className="glass-card" style={{ marginBottom: 24 }}>
         <Space direction="vertical" style={{ width: '100%' }} size="large">
-          <Row gutter={[16, 8]}>
-            <Col xs={24} md={24}>
-              <Text strong style={{ fontSize: 15, display: 'block', marginBottom: 8 }}>
-                <AppstoreOutlined style={{ marginRight: 8 }} />
-                选择模型
-              </Text>
-              <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>
-                选择要使用的大模型，默认使用系统可用的首选模型
-              </Text>
-              <Select
-                style={{ width: '100%' }}
-                value={selectedProvider}
-                onChange={setSelectedProvider}
-                allowClear
-                placeholder="选择模型..."
-                options={providers.map(p => {
-                  const unavailableText = p.reason || '不可用'
-                  return {
-                    value: p.name,
-                    disabled: !p.available,
-                    label: (
-                      <Space>
-                        <span style={{ textTransform: 'capitalize' }}>{p.name}</span>
-                        <Badge status={p.available ? 'success' : 'error'} text={p.available ? '可用' : unavailableText} />
-                      </Space>
-                    )
-                  }
-                })}
-              />
-            </Col>
-          </Row>
+          {/* 模型选择移动到底部输入区，此处不再显示 */}
 
           {/* 第二行：文档选择（与模板等宽） */}
           <Row gutter={[16, 8]}>
@@ -1055,6 +859,54 @@ export default function Generate() {
           </Text>
         </Card>
       )}
+      
+      {/* 底部：对话框（模型+手册+权重+输入+发送） */}
+      <div style={{ position: 'fixed', left: 300, right: 0, bottom: 0, background: '#fff', borderTop: '1px solid #f0f0f0', padding: '12px 16px' }}>
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 8 }}>
+          <Select
+            style={{ width: 420 }}
+            placeholder="选择已上传的操作手册..."
+            value={selectedDoc}
+            onChange={setSelectedDoc}
+            loading={loadingDocs}
+            allowClear
+            options={docs.filter(d=>d.status==='active').map(d=>({value:d.doc_id,label:d.filename}))}
+          />
+          <Select
+            style={{ width: 180 }}
+            value={selectedProvider}
+            onChange={setSelectedProvider}
+            options={providers.map(p => {
+              const unavailableText = p.reason || '不可用'
+              return {
+                value: p.name,
+                disabled: !p.available,
+                label: (
+                  <Space>
+                    <span style={{ textTransform: 'capitalize' }}>{p.name}</span>
+                    <Badge status={p.available ? 'success' : 'error'} text={p.available ? '可用' : unavailableText} />
+                  </Space>
+                )
+              }
+            })}
+          />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1 }}>
+            <span style={{ whiteSpace: 'nowrap', fontSize: 12 }}>文档权重</span>
+            <Slider style={{ flex: 1, minWidth: 300 }} value={manualWeight} onChange={setManualWeight} min={0} max={100} step={1} marks={{0:'0%',50:'50%',100:'100%'}} />
+            <Tag color="geekblue" style={{ minWidth: 48, textAlign: 'center' }}>{manualWeight}%</Tag>
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 12 }}>
+          <Input.TextArea
+            value={topEvent}
+            onChange={e=>setTopEvent(e.target.value)}
+            placeholder="请描述设备故障现象（例如：电机接通电源后无法启动，伴随异响）"
+            autoSize={{ minRows: 2, maxRows: 4 }}
+            disabled={loading}
+          />
+          <Button type="primary" icon={<ThunderboltOutlined />} onClick={handleGenerate} loading={loading}>生成故障树</Button>
+        </div>
+      </div>
       </div>
       </Layout.Content>
     </Layout>

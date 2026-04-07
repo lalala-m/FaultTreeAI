@@ -20,7 +20,6 @@ const { Dragger } = Upload
 
 export default function KnowledgeBase() {
   const [docs, setDocs] = useState([])
-  const [stats, setStats] = useState(null)
   const [uploading, setUploading] = useState(false)
   const [progress, setProgress] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -28,15 +27,10 @@ export default function KnowledgeBase() {
 
   const loadDocs = async () => {
     try {
-      const [data, statsData] = await Promise.all([
-        api.listDocuments(),
-        api.getKnowledgeStats(),
-      ])
+      const data = await api.listDocuments()
       setDocs(Array.isArray(data) ? data : [])
-      setStats(statsData || null)
     } catch {
       setDocs([])
-      setStats(null)
     }
     setLoading(false)
   }
@@ -88,20 +82,6 @@ export default function KnowledgeBase() {
     }
   }
 
-  const handleWeightFeedback = async (docId, feedbackType) => {
-    try {
-      await api.feedbackKnowledgeWeight({
-        doc_id: docId,
-        feedback_type: feedbackType,
-        amount: 1,
-      })
-      message.success(feedbackType === 'helpful' ? '已提升知识权重' : '已记录误导反馈')
-      await loadDocs()
-    } catch (err) {
-      message.error(err.response?.data?.detail || '权重反馈失败')
-    }
-  }
-
   // 获取文件图标 - 使用 FileTextOutlined 代替不存在的 FileTxtOutlined
   const getFileIcon = (type) => {
     if (type === 'pdf') return <FilePdfOutlined style={{ color: '#ff4d4f' }} />
@@ -138,37 +118,6 @@ export default function KnowledgeBase() {
       ),
     },
     {
-      title: '知识权重',
-      dataIndex: 'current_weight',
-      key: 'current_weight',
-      width: 180,
-      render: (_, row) => {
-        const percent = Math.round((Number(row.current_weight || 0.5)) * 100)
-        const color = percent >= 70 ? '#52c41a' : percent >= 50 ? '#1890ff' : '#faad14'
-        return (
-          <Space direction="vertical" size={4} style={{ width: '100%' }}>
-            <Progress percent={percent} size="small" strokeColor={color} showInfo={false} />
-            <Space size={6} wrap>
-              <Tag color={percent >= 70 ? 'success' : percent >= 50 ? 'processing' : 'warning'}>{percent}%</Tag>
-              <Text type="secondary">正向 {Number(row.helpful_weight || 0)}</Text>
-              <Text type="secondary">误导 {Number(row.misleading_weight || 0)}</Text>
-            </Space>
-          </Space>
-        )
-      },
-    },
-    {
-      title: '分块/反馈',
-      key: 'weight_meta',
-      width: 140,
-      render: (_, row) => (
-        <Space direction="vertical" size={2}>
-          <Text type="secondary">{row.chunk_count || 0} 个分块</Text>
-          <Text type="secondary">{row.feedback_count || 0} 次反馈</Text>
-        </Space>
-      ),
-    },
-    {
       title: '上传时间', 
       dataIndex: 'upload_time', 
       key: 'upload_time',
@@ -177,23 +126,15 @@ export default function KnowledgeBase() {
     {
       title: '操作', 
       key: 'action',
-      width: 220,
+      width: 100,
       render: (_, row) => (
-        <Space wrap>
-          <Button size="small" onClick={() => handleWeightFeedback(row.doc_id, 'helpful')}>
-            有效 +1
-          </Button>
-          <Button size="small" danger onClick={() => handleWeightFeedback(row.doc_id, 'misleading')}>
-            误导 +1
-          </Button>
-          <Popconfirm 
-            title="确认删除此文档？" 
-            description="删除后相关知识将从知识库中移除"
-            onConfirm={() => handleDelete(row.doc_id)}
-          >
-            <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
-          </Popconfirm>
-        </Space>
+        <Popconfirm 
+          title="确认删除此文档？" 
+          description="删除后相关知识将从知识库中移除"
+          onConfirm={() => handleDelete(row.doc_id)}
+        >
+          <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
+        </Popconfirm>
       ),
     },
   ]
@@ -235,37 +176,7 @@ export default function KnowledgeBase() {
               <li>将知识向量化存储到知识库</li>
               <li>生成故障树时自动检索相关知识</li>
               <li>提高故障树生成的准确性</li>
-              <li>根据排障反馈持续调整知识权重</li>
             </ul>
-          </div>
-        </Space>
-      </Card>
-
-      <Card className="glass-card" style={{ marginBottom: 24 }}>
-        <Space size={24} wrap>
-          <div>
-            <Text type="secondary">文档总数</Text>
-            <div>
-              <Text strong style={{ fontSize: 24 }}>{stats?.total_docs || 0}</Text>
-            </div>
-          </div>
-          <div>
-            <Text type="secondary">分块总数</Text>
-            <div>
-              <Text strong style={{ fontSize: 24 }}>{stats?.total_chunks || 0}</Text>
-            </div>
-          </div>
-          <div>
-            <Text type="secondary">平均知识权重</Text>
-            <div>
-              <Text strong style={{ fontSize: 24 }}>{Math.round(((stats?.avg_doc_weight ?? 0.5) * 100))}%</Text>
-            </div>
-          </div>
-          <div>
-            <Text type="secondary">累计反馈</Text>
-            <div>
-              <Text strong style={{ fontSize: 24 }}>{stats?.feedback_count || 0}</Text>
-            </div>
           </div>
         </Space>
       </Card>
