@@ -8,7 +8,6 @@ import json
 import re
 from pathlib import Path
 from typing import Optional
-from tenacity import retry, stop_after_attempt, wait_exponential
 
 from backend.config import settings
 from backend.core.llm.manager import get_llm_manager
@@ -231,11 +230,6 @@ def extract_json(text: str) -> dict:
 # 带重试的生成函数
 # ─────────────────────────────────────────────
 
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=4, max=20),
-    reraise=True,
-)
 async def _call_llm_with_retry(
     full_prompt: str,
     attempt: int,
@@ -246,7 +240,8 @@ async def _call_llm_with_retry(
         resp, provider = await manager.generate_with_fallback(full_prompt)
         return resp.content, provider
     except Exception as e:
-        raise RuntimeError(f"第{attempt}次尝试失败: {str(e)}") from e
+        detail = str(e).strip() or e.__class__.__name__
+        raise RuntimeError(f"第{attempt}次尝试失败: {detail}") from e
 
 
 # ─────────────────────────────────────────────

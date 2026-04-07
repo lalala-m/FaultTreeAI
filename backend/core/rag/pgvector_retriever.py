@@ -32,35 +32,50 @@ def _sync_retrieve(query_vector: list[float], top_k: int, doc_ids: Optional[list
     """同步向量检索实现（在线程池中执行）"""
     with _get_sync_conn() as conn:
         with conn.cursor() as cur:
+            cur.execute("""
+                SELECT
+                    to_regclass('public.knowledge_doc_weights') IS NOT NULL,
+                    to_regclass('public.knowledge_chunk_weights') IS NOT NULL
+            """)
+            row = cur.fetchone() or (False, False)
+            use_weights = bool(row[0]) and bool(row[1])
             if doc_ids:
-                cur.execute("""
+                cur.execute(f"""
                     SELECT
                         ce.doc_id::text,
                         dc.chunk_id::text,
                         dc.page_num,
                         dc.text,
                         d.filename,
+                        {"COALESCE(kdw.current_weight, 0.5)" if use_weights else "0.5"} AS doc_weight,
+                        {"COALESCE(kcw.current_weight, 0.5)" if use_weights else "0.5"} AS chunk_weight,
                         1 - (ce.embedding <=> %s::vector) AS cosine_sim
                     FROM chunk_embeddings ce
                     JOIN document_chunks dc ON dc.chunk_id = ce.chunk_id
                     JOIN documents d ON d.doc_id = ce.doc_id
+                    {"LEFT JOIN knowledge_doc_weights kdw ON kdw.doc_id = d.doc_id" if use_weights else ""}
+                    {"LEFT JOIN knowledge_chunk_weights kcw ON kcw.chunk_id = dc.chunk_id" if use_weights else ""}
                     WHERE d.status = 'active'
                       AND ce.doc_id = ANY(%s::uuid[])
                     ORDER BY ce.embedding <=> %s::vector
                     LIMIT %s
                 """, (query_vector, doc_ids, query_vector, top_k))
             else:
-                cur.execute("""
+                cur.execute(f"""
                     SELECT
                         ce.doc_id::text,
                         dc.chunk_id::text,
                         dc.page_num,
                         dc.text,
                         d.filename,
+                        {"COALESCE(kdw.current_weight, 0.5)" if use_weights else "0.5"} AS doc_weight,
+                        {"COALESCE(kcw.current_weight, 0.5)" if use_weights else "0.5"} AS chunk_weight,
                         1 - (ce.embedding <=> %s::vector) AS cosine_sim
                     FROM chunk_embeddings ce
                     JOIN document_chunks dc ON dc.chunk_id = ce.chunk_id
                     JOIN documents d ON d.doc_id = ce.doc_id
+                    {"LEFT JOIN knowledge_doc_weights kdw ON kdw.doc_id = d.doc_id" if use_weights else ""}
+                    {"LEFT JOIN knowledge_chunk_weights kcw ON kcw.chunk_id = dc.chunk_id" if use_weights else ""}
                     WHERE d.status = 'active'
                     ORDER BY ce.embedding <=> %s::vector
                     LIMIT %s
@@ -263,12 +278,18 @@ async def retrieve(
         sim = float(row[-1])
         if sim < threshold:
             continue
+        doc_weight = float(row[5] if row[5] is not None else 0.5)
+        chunk_weight = float(row[6] if row[6] is not None else 0.5)
         chunks.append({
             "ref_id": f"REF{i+1:03d}",
+            "doc_id": row[0],
+            "chunk_id": row[1],
             "text": row[3],
             "source": row[4] if len(row) > 4 else "unknown",
             "page": row[2] or 0,
             "score": round(sim, 4),
+            "doc_weight": round(doc_weight, 4),
+            "chunk_weight": round(chunk_weight, 4),
         })
 
     return chunks
@@ -307,8 +328,12 @@ async def retrieve_hybrid(
         for r in results:
             normalized_r = r.copy()
             normalized_score = (r["score"] - min_score) / score_range if score_range > 0 else 0.5
-            normalized_r["score"] = round(normalized_score * weight, 4)
-            normalized_r["retrieval_type"] = "vector"
+            doc_weight = float(r.get("doc_weight", 0.5) or 0.5)
+            chunk_weight = float(r.get("chunk_weight", 0.5) or 0.5)
+            weight_boost = 0.65 + 0.2 * doc_weight + 0.15 * chunk_weight
+            normalized_r["base_score"] = round(normalized_score, 4)
+            normalized_r["score"] = round(normalized_score * weight * weight_boost, 4)
+            normalized_r["retrieval_type"] = r.get("retrieval_type") or "vector"
             normalized.append(normalized_r)
         return normalized
     

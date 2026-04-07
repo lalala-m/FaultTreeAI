@@ -24,11 +24,13 @@ sys.modules.setdefault("core", sys.modules["backend.core"])
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 
 from backend.api import knowledge, generate, validate, export, edit, template, feedback
 from backend.api import llm
 from backend.api import vision  # 视觉识别 API
 from backend.core.database.connection import init_db, close_db
+from backend.core.database.psycopg_pool import init_pg_pool, close_pg_pool
 
 
 @asynccontextmanager
@@ -36,10 +38,12 @@ async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     # 启动时：初始化数据库（创建 pgvector 扩展和表结构）
     await init_db()
+    init_pg_pool()
     print("[OK] Database initialized (pgvector + schema)")
     yield
     # 退出时：关闭连接池
     await close_db()
+    close_pg_pool()
     print("[INFO] Database connections closed")
 
 
@@ -58,6 +62,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(GZipMiddleware, minimum_size=500)
 
 # 注册路由
 app.include_router(knowledge.router, prefix="/api/knowledge", tags=["knowledge"])
@@ -68,7 +73,7 @@ app.include_router(edit.router, prefix="/api/edit", tags=["edit"])
 app.include_router(template.router, prefix="/api/template", tags=["template"])
 app.include_router(feedback.router, prefix="/api/feedback", tags=["feedback"])
 app.include_router(llm.router, tags=["llm"])
-app.include_router(vision.router, prefix="/api/vision", tags=["vision"])
+app.include_router(vision.router, tags=["vision"])
 
 
 @app.get("/health")

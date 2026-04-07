@@ -56,6 +56,39 @@ async def init_db():
     try:
         async with engine.begin() as conn:
             await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+            await conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS knowledge_doc_weights (
+                    doc_id UUID PRIMARY KEY REFERENCES documents(doc_id) ON DELETE CASCADE,
+                    helpful_weight DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    misleading_weight DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    feedback_count INTEGER NOT NULL DEFAULT 0,
+                    current_weight DOUBLE PRECISION NOT NULL DEFAULT 0.5,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """))
+            await conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS knowledge_chunk_weights (
+                    chunk_id UUID PRIMARY KEY REFERENCES document_chunks(chunk_id) ON DELETE CASCADE,
+                    doc_id UUID NOT NULL REFERENCES documents(doc_id) ON DELETE CASCADE,
+                    helpful_weight DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    misleading_weight DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    feedback_count INTEGER NOT NULL DEFAULT 0,
+                    current_weight DOUBLE PRECISION NOT NULL DEFAULT 0.5,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """))
+            await conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_knowledge_chunk_weights_doc_id
+                ON knowledge_chunk_weights(doc_id)
+            """))
+            await conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_knowledge_doc_weights_weight
+                ON knowledge_doc_weights(current_weight DESC)
+            """))
+            await conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_knowledge_chunk_weights_weight
+                ON knowledge_chunk_weights(current_weight DESC)
+            """))
     except Exception as e:
         print(f"[WARN] init_db warning (non-critical): {e}")
 

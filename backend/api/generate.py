@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException
 from uuid import UUID
 
 from backend.core.database.models import FaultTree as DBFaultTree
+from backend.core.database.psycopg_pool import pg_conn
 from backend.core.llm.structured_generator import generate_fault_tree
 from backend.core.fta.builder import compute_mcs
 from backend.core.fta.importance import compute_importance
@@ -26,13 +27,47 @@ def _pg():
     )
 
 
+def _normalize_generation_error(detail: str) -> tuple[int, str]:
+    text = str(detail or "").strip()
+    status_code = 500
+
+    unavailable_markers = [
+        "Provider [",
+        "服务不可达",
+        "服务当前不可用",
+        "缺少 MINIMAX_API_KEY",
+        "MiniMax 请求失败",
+    ]
+    if any(marker in text for marker in unavailable_markers):
+        status_code = 503
+
+    parts: list[str] = []
+    if "MiniMax 请求失败" in text:
+        if "EndOfStream" in text:
+            parts.append("MiniMax 连接已建立但被远端中断，请检查当前网络、代理、证书环境或 MiniMax 服务连通性")
+        else:
+            parts.append("MiniMax 请求失败，请检查当前网络、代理或 API 服务状态")
+    elif "MiniMax 服务当前不可用" in text:
+        parts.append("MiniMax 当前不可用，请检查配置和网络连通性")
+
+    if "Ollama 服务不可达" in text:
+        parts.append("Ollama 未启动或未安装，请先启动本地 Ollama 服务并确认 http://localhost:11434 可访问")
+
+    if status_code == 503 and parts:
+        summary = "当前没有可用的故障树生成模型服务。"
+        return status_code, f"{summary}{'；'.join(parts)}。原始错误：{text}"
+
+    return status_code, text
+
+
 @router.post("/", response_model=GenerateResponse)
 async def generate_ft(req: GenerateRequest):
     """基于 RAG 知识库生成故障树"""
     try:
         fault_tree, validation_issues, provider = await generate_fault_tree(req)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        status_code, detail = _normalize_generation_error(str(e))
+        raise HTTPException(status_code=status_code, detail=detail)
 
     # 优化层级结构（增加多层分类）
     from backend.core.fta.builder import restructure_fault_tree
@@ -50,7 +85,7 @@ async def generate_ft(req: GenerateRequest):
             pass
 
     tree_id = uuid.uuid4()
-    with _pg() as conn:
+    with pg_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -119,10 +154,10 @@ async def generate_ft(req: GenerateRequest):
 @router.get("/", response_model=list)
 async def list_trees():
     """列出所有已生成的故障树"""
-    with _pg() as conn:
+    with pg_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT tree_id, top_event, confidence, is_valid, mcs_json, created_at
+                SELECT tree_id, top_event, confidence, is_valid, created_at
                 FROM fault_trees ORDER BY created_at DESC
             """)
             rows = cur.fetchall()
@@ -132,12 +167,7 @@ async def list_trees():
             "top_event": row[1],
             "confidence": float(row[2]) if row[2] is not None else None,
             "is_valid": row[3],
-            "mcs_json": (
-                json.loads(row[4])
-                if isinstance(row[4], str)
-                else (row[4] if isinstance(row[4], (list, dict)) else (row[4] or []))
-            ),
-            "created_at": row[5].isoformat() if row[5] else None,
+            "created_at": row[4].isoformat() if row[4] else None,
         }
         for row in rows
     ]
@@ -151,7 +181,7 @@ async def get_tree(tree_id: str):
     except ValueError:
         raise HTTPException(status_code=400, detail="无效的故障树ID")
 
-    with _pg() as conn:
+    with pg_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT tree_id, top_event, nodes_json, gates_json, confidence,

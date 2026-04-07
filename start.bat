@@ -71,9 +71,11 @@ echo [OK] .env file ready
 
 echo.
 echo ===========================================
-echo Starting Backend on http://localhost:8000
+set "BACKEND_HOST=127.0.0.1"
+if "%BACKEND_PORT%"=="" set "BACKEND_PORT=8000"
+echo Starting Backend on http://%BACKEND_HOST%:%BACKEND_PORT%
 echo ===========================================
-start "FaultTreeAI Backend" cmd /k "cd /d %BACKEND_DIR% && %VENV_DIR%\Scripts\python.exe -m uvicorn main:app --reload --host 0.0.0.0 --port 8000"
+start "FaultTreeAI Backend" cmd /k "cd /d %BACKEND_DIR% && %VENV_DIR%\Scripts\python.exe -m uvicorn main:app --reload --host %BACKEND_HOST% --port %BACKEND_PORT%"
 
 timeout /t 2 >nul
 
@@ -81,13 +83,13 @@ echo.
 echo ===========================================
 echo Starting Frontend on http://localhost:5173
 echo ===========================================
-start "FaultTreeAI Frontend" cmd /k "cd /d %FRONTEND_DIR% && npm run dev"
+start "FaultTreeAI Frontend" cmd /k "cd /d %FRONTEND_DIR% && set VITE_API_TARGET=http://%BACKEND_HOST%:%BACKEND_PORT% && npm run dev"
 
 echo.
 echo ===========================================
 echo Done! Check the new windows for status.
 echo Open: http://localhost:5173
-echo API Docs: http://localhost:8000/docs
+echo API Docs: http://%BACKEND_HOST%:%BACKEND_PORT%/docs
 echo ===========================================
 echo.
 pause

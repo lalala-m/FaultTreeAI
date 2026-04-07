@@ -77,7 +77,7 @@ class LLMManager:
 
     def get_provider(self, name: str | None = None) -> BaseLLMProvider:
         """按名称获取 Provider 实例（带缓存）"""
-        name = name or self.primary_name
+        name = (name or self.primary_name).lower()
         if name not in self._instances:
             cls = _PROVIDER_REGISTRY.get(name.lower())
             if cls is None:
@@ -102,7 +102,12 @@ class LLMManager:
         **kwargs,
     ) -> LLMResponse:
         """使用指定或默认 Provider 生成"""
-        p = self.get_provider(provider)
+        provider_name = (provider or self.primary_name).lower()
+        status = await self.get_provider_status(provider_name)
+        if not status["available"]:
+            reason = status["reason"] or "Provider 当前不可用"
+            raise RuntimeError(f"Provider [{provider_name}] 不可用: {reason}")
+        p = self.get_provider(provider_name)
         return await p.generate(prompt, **kwargs)
 
     async def generate_with_fallback(
@@ -114,22 +119,80 @@ class LLMManager:
         主 Provider 失败则自动回退到备用 Provider。
         返回 (响应, 实际使用的 provider 名)。
         """
-        try:
-            resp = await self.primary.generate(prompt, **kwargs)
-            self._record_metrics(self.primary_name, resp.latency_ms, success=True)
-            return resp, self.primary_name
-        except Exception as prim_err:
+        provider_order: list[str] = []
+        for name in [self.primary_name, self.fallback_name]:
+            normalized = (name or "").lower()
+            if normalized and normalized not in provider_order:
+                provider_order.append(normalized)
+
+        errors: list[str] = []
+        labels = {
+            self.primary_name.lower(): "主",
+            self.fallback_name.lower(): "备用",
+        }
+
+        for provider_name in provider_order:
+            status = await self.get_provider_status(provider_name)
+            if not status["available"]:
+                reason = status["reason"] or "可用性检测失败"
+                errors.append(f"{labels.get(provider_name, '候选')} Provider [{provider_name}] 不可用: {reason}")
+                self._record_metrics(provider_name, 0.0, success=False, error=reason)
+                continue
+
+            provider = self.get_provider(provider_name)
             try:
-                resp = await self.fallback.generate(prompt, **kwargs)
-                self._record_metrics(
-                    self.fallback_name, resp.latency_ms, success=True
+                resp = await provider.generate(prompt, **kwargs)
+                self._record_metrics(provider_name, resp.latency_ms, success=True)
+                return resp, provider_name
+            except Exception as exc:
+                reason = self._format_error(exc)
+                errors.append(f"{labels.get(provider_name, '候选')} Provider [{provider_name}] 失败: {reason}")
+                self._record_metrics(provider_name, 0.0, success=False, error=reason)
+
+        raise RuntimeError("；".join(errors))
+
+    async def get_provider_status(self, name: str) -> dict:
+        provider_name = (name or "").lower()
+        try:
+            provider = self.get_provider(provider_name)
+        except Exception as exc:
+            return {
+                "name": provider_name,
+                "available": False,
+                "reason": self._format_error(exc),
+            }
+
+        reason = None
+        checker = getattr(provider, "is_available", None)
+        available = True
+        if callable(checker):
+            try:
+                available = bool(
+                    await asyncio.wait_for(asyncio.to_thread(checker), timeout=3)
                 )
-                return resp, self.fallback_name
-            except Exception as fall_err:
-                raise RuntimeError(
-                    f"主 Provider [{self.primary_name}] 失败: {prim_err}；"
-                    f"备用 Provider [{self.fallback_name}] 也失败: {fall_err}"
-                ) from fall_err
+            except asyncio.TimeoutError:
+                available = False
+                reason = "可用性检测超时"
+            except Exception as exc:
+                available = False
+                reason = self._format_error(exc)
+
+        if provider_name == "minimax":
+            if not getattr(provider, "api_key", None) or not getattr(provider, "group_id", None):
+                available = False
+                reason = "缺少 MINIMAX_API_KEY 或 MINIMAX_GROUP_ID"
+            elif not available and not reason:
+                reason = "MiniMax 服务当前不可用"
+        elif provider_name == "ollama":
+            if not available and not reason:
+                base_url = getattr(provider, "base_url", "")
+                reason = f"Ollama 服务不可达: {base_url}" if base_url else "Ollama 服务不可达"
+
+        return {
+            "name": provider_name,
+            "available": available,
+            "reason": reason,
+        }
 
     # ── Embedding ──────────────────────────────────────────
 
@@ -276,7 +339,13 @@ class LLMManager:
             ),
         )
 
-    def _record_metrics(self, provider: str, latency_ms: float, success: bool):
+    def _record_metrics(
+        self,
+        provider: str,
+        latency_ms: float,
+        success: bool,
+        error: str = "",
+    ):
         self._metrics_history.append(
             GenerationMetrics(
                 provider=provider,
@@ -284,8 +353,27 @@ class LLMManager:
                 success=success,
                 parseable=success,
                 field_score=0.0,
+                error=error,
             )
         )
+
+    def _format_error(self, error: Exception) -> str:
+        message = ""
+        try:
+            message = str(error).strip()
+        except Exception:
+            message = ""
+
+        if not message and getattr(error, "args", None):
+            parts = [str(part).strip() for part in error.args if str(part).strip()]
+            message = "；".join(parts)
+
+        if not message:
+            message = error.__class__.__name__
+
+        if error.__class__.__name__ not in message:
+            return f"{error.__class__.__name__}: {message}"
+        return message
 
 
 # ──────────────────────────────────────────────────────────

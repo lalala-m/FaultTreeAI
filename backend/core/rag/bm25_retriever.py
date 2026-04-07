@@ -30,16 +30,34 @@ def _sync_bm25(query: str, top_k: int, doc_ids: Optional[List[str]]) -> List[dic
         with conn.cursor() as cur:
             if doc_ids:
                 cur.execute("""
-                    SELECT dc.chunk_id::text, dc.doc_id::text, dc.page_num, dc.text, d.filename
+                    SELECT
+                        dc.chunk_id::text,
+                        dc.doc_id::text,
+                        dc.page_num,
+                        dc.text,
+                        d.filename,
+                        COALESCE(kdw.current_weight, 0.5) AS doc_weight,
+                        COALESCE(kcw.current_weight, 0.5) AS chunk_weight
                     FROM document_chunks dc
                     JOIN documents d ON d.doc_id = dc.doc_id
+                    LEFT JOIN knowledge_doc_weights kdw ON kdw.doc_id = d.doc_id
+                    LEFT JOIN knowledge_chunk_weights kcw ON kcw.chunk_id = dc.chunk_id
                     WHERE d.status = 'active' AND dc.doc_id = ANY(%s::uuid[])
                 """, (doc_ids,))
             else:
                 cur.execute("""
-                    SELECT dc.chunk_id::text, dc.doc_id::text, dc.page_num, dc.text, d.filename
+                    SELECT
+                        dc.chunk_id::text,
+                        dc.doc_id::text,
+                        dc.page_num,
+                        dc.text,
+                        d.filename,
+                        COALESCE(kdw.current_weight, 0.5) AS doc_weight,
+                        COALESCE(kcw.current_weight, 0.5) AS chunk_weight
                     FROM document_chunks dc
                     JOIN documents d ON d.doc_id = dc.doc_id
+                    LEFT JOIN knowledge_doc_weights kdw ON kdw.doc_id = d.doc_id
+                    LEFT JOIN knowledge_chunk_weights kcw ON kcw.chunk_id = dc.chunk_id
                     WHERE d.status = 'active'
                 """)
             rows = cur.fetchall()
@@ -70,10 +88,15 @@ def _sync_bm25(query: str, top_k: int, doc_ids: Optional[List[str]]) -> List[dic
         row = rows[idx]
         results.append({
             "ref_id": f"BM25-{idx+1:03d}",
+            "chunk_id": row[0],
+            "doc_id": row[1],
             "text": row[3],
             "source": row[4] if len(row) > 4 else "unknown",
             "page": row[2] or 0,
             "score": round(score, 4),
+            "doc_weight": round(float(row[5] if row[5] is not None else 0.5), 4),
+            "chunk_weight": round(float(row[6] if row[6] is not None else 0.5), 4),
+            "retrieval_type": "bm25",
         })
     return results
 

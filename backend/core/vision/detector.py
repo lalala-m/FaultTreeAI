@@ -53,7 +53,11 @@ class DetectionResult:
     overall_status: str = "normal"  # normal, warning, critical
     
     # 异常类别定义（需要根据实际模型调整）
-    ANOMALY_CLASSES = {'abnormal', 'fault', 'damage', 'corrosion', 'crack', 'leakage', 'overheat', 'wear'}
+    ANOMALY_CLASSES = {
+        'abnormal', 'fault', 'damage', 'corrosion', 'crack', 'leakage', 'overheat', 'wear',
+        'scratch', 'bent', 'flip', 'missing', 'cut', 'poke', 'swap', 'combined', 'manipulated', 'thread', 'color',
+        'bent_wire', 'missing_wire', 'missing_cable', 'cut_inner_insulation', 'cut_outer_insulation', 'poke_insulation', 'cable_swap',
+    }
     
     def __post_init__(self):
         self.total_detections = len(self.detections)
@@ -71,6 +75,8 @@ class DetectionResult:
         """判断是否为异常"""
         # 检查类别名是否包含异常关键词
         name_lower = detection.class_name.lower()
+        if name_lower.startswith(('cable_', 'screw_', 'metal_nut_')):
+            return True
         for keyword in self.ANOMALY_CLASSES:
             if keyword in name_lower:
                 return True
@@ -131,6 +137,7 @@ class YOLODetector:
         self.model = None
         self.class_names = {}
         self._is_loaded = False
+        self._last_load_error: Optional[str] = None
         
         # 统计信息
         self.inference_count = 0
@@ -174,6 +181,7 @@ class YOLODetector:
             # 确定设备字符串
             device_str = self.device.value
             if self.device == DeviceType.CUDA:
+                import torch
                 device_str = "0" if torch.cuda.device_count() > 0 else "cpu"
             
             # 加载模型
@@ -188,6 +196,7 @@ class YOLODetector:
                 self.class_names = self.model.names
             
             self._is_loaded = True
+            self._last_load_error = None
             logger.info(f"Model loaded successfully: {self.model_path}")
             
             # 预热模型
@@ -196,6 +205,7 @@ class YOLODetector:
             return True
             
         except Exception as e:
+            self._last_load_error = str(e)
             logger.error(f"Failed to load model: {e}")
             self._is_loaded = False
             return False
@@ -238,7 +248,7 @@ class YOLODetector:
         
         # 加载模型
         if not self.load():
-            raise RuntimeError("Failed to load model")
+            raise RuntimeError(f"Failed to load model: {self._last_load_error or 'unknown error'}")
         
         # 读取图片
         img_array = self._read_image(image)
@@ -249,12 +259,21 @@ class YOLODetector:
         
         # 执行检测
         try:
-            results = self.model(
-                img_array,
+            device_str = self.device.value
+            if self.device == DeviceType.CUDA:
+                try:
+                    import torch
+                    device_str = "0" if torch.cuda.device_count() > 0 else "cpu"
+                except Exception:
+                    device_str = "cpu"
+
+            results = self.model.predict(
+                source=img_array,
                 verbose=self.verbose,
                 conf=self.conf_threshold,
                 iou=self.iou_threshold,
-                imgsz=self.img_size
+                imgsz=self.img_size,
+                device=device_str,
             )
             
             # 解析结果
@@ -262,21 +281,45 @@ class YOLODetector:
             if results and len(results) > 0:
                 result = results[0]
                 if result.boxes is not None:
-                    boxes = result.boxes.cpu().numpy()
-                    
+                    boxes = result.boxes
                     for box in boxes:
-                        class_id = int(box.cls)
-                        confidence = float(box.conf[0])
-                        bbox = box.xyxy[0].astype(int).tolist()  # x1, y1, x2, y2
-                        
+                        cls = getattr(box, "cls", None)
+                        conf = getattr(box, "conf", None)
+                        xyxy = getattr(box, "xyxy", None)
+                        if cls is None or conf is None or xyxy is None:
+                            continue
+
+                        try:
+                            class_id = int(cls.item()) if hasattr(cls, "item") else int(cls[0])
+                        except Exception:
+                            class_id = int(cls[0])
+
+                        try:
+                            confidence = float(conf.item()) if hasattr(conf, "item") else float(conf[0])
+                        except Exception:
+                            confidence = float(conf[0])
+
+                        coords = None
+                        try:
+                            coords = xyxy[0].tolist()
+                        except Exception:
+                            try:
+                                coords = xyxy.squeeze().tolist()
+                            except Exception:
+                                coords = None
+                        if not coords or len(coords) != 4:
+                            continue
+                        bbox = [int(v) for v in coords]
+
                         class_name = self.class_names.get(class_id, f"class_{class_id}")
-                        
-                        detections.append(DetectionBox(
-                            class_id=class_id,
-                            class_name=class_name,
-                            confidence=confidence,
-                            bbox=tuple(bbox)
-                        ))
+                        detections.append(
+                            DetectionBox(
+                                class_id=class_id,
+                                class_name=class_name,
+                                confidence=confidence,
+                                bbox=tuple(bbox),
+                            )
+                        )
             
             # 计算处理时间
             process_time = (time.time() - start_time) * 1000
@@ -492,9 +535,9 @@ except ImportError:
 
 import os
 
-# 项目根目录
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-DEFAULT_MODEL_PATH = os.path.join(PROJECT_ROOT, "data", "models", "yolo11m.pt")
+# 项目根目录（.../backend/core/vision/detector.py -> .../<project_root>）
+PROJECT_ROOT = str(Path(__file__).resolve().parents[3])
+DEFAULT_MODEL_PATH = str(Path(PROJECT_ROOT) / "data" / "models" / "yolo11m.pt")
 
 # 全局检测器实例（延迟加载）
 _detector_instance: Optional[YOLODetector] = None
@@ -521,21 +564,48 @@ def get_detector(
     
     # 使用默认模型路径
     if model_path is None:
-        model_path = DEFAULT_MODEL_PATH
+        model_path = os.environ.get("VISION_MODEL_PATH") or DEFAULT_MODEL_PATH
         # 如果默认路径不存在，尝试使用 yolo11m.pt（ultralytics会自动下载）
         if not os.path.exists(model_path):
             logger.warning(f"Model not found at {model_path}, will use default yolo11m.pt")
             model_path = "yolo11m.pt"
-    
+
+    desired_device = (device or "cpu").strip().lower()
+    if desired_device == "cuda":
+        try:
+            import torch
+            if not (torch.cuda.is_available() and torch.cuda.device_count() > 0):
+                desired_device = "cpu"
+        except Exception:
+            desired_device = "cpu"
+
+    desired_iou = kwargs.get("iou_threshold")
+
+    if _detector_instance is not None:
+        should_reset = False
+        if str(getattr(_detector_instance, "model_path", "")) != str(model_path):
+            should_reset = True
+        elif getattr(getattr(_detector_instance, "device", None), "value", "").lower() != desired_device:
+            should_reset = True
+        elif float(getattr(_detector_instance, "conf_threshold", conf_threshold)) != float(conf_threshold):
+            should_reset = True
+        elif desired_iou is not None and float(getattr(_detector_instance, "iou_threshold", desired_iou)) != float(desired_iou):
+            should_reset = True
+        elif not bool(getattr(_detector_instance, "_is_loaded", False)):
+            should_reset = True
+
+        if should_reset:
+            reset_detector()
+
     if _detector_instance is None:
         _detector_instance = YOLODetector(
             model_path=model_path,
-            device=device,
+            device=desired_device,
             conf_threshold=conf_threshold,
-            **kwargs
+            **kwargs,
         )
         _detector_instance.load()
-    
+
     return _detector_instance
 
 

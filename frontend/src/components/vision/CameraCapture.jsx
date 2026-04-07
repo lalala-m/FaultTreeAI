@@ -3,30 +3,54 @@
  * 支持本地摄像头实时预览、拍照
  */
 
-import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { Button, Card, Space, message, Spin } from 'antd';
+import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
+import { Button, Card, Space, message, Spin, Tag } from 'antd';
 import { CameraOutlined, StopOutlined, SaveOutlined, ReloadOutlined } from '@ant-design/icons';
 
-const CAMERA_CONFIG = { width: 640, height: 480, facingMode: 'environment' };
+const CAMERA_CONFIG = { width: 640, height: 480, frameRate: { ideal: 30, max: 30 }, facingMode: 'environment' };
 
-export default function CameraCapture({ onCapture, disabled = false }) {
+export default function CameraCapture({
+  active = true,
+  onCapture,
+  onResult,
+  disabled = false,
+  modelKey = 'wire_break_seg',
+  confThreshold = 0.25,
+  iouThreshold = 0.45,
+  returnAnnotated = true,
+  intervalMs = 900,
+}) {
   const [isStreaming, setIsStreaming] = useState(false);
   const [capturedImage, setCapturedImage] = useState(null);
   const [showPreview, setShowPreview] = useState(false);
   const [loading, setLoading] = useState(false);
   const [cameraError, setCameraError] = useState(null);
+  const [isDetecting, setIsDetecting] = useState(false)
+  const [lastInfo, setLastInfo] = useState(null)
+  const [pauseDetect, setPauseDetect] = useState(false)
+  const [overlayUrl, setOverlayUrl] = useState(null)
+  const [lastError, setLastError] = useState(null)
   
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const streamRef = useRef(null);
+  const detectTimerRef = useRef(null)
+  const inFlightRef = useRef(false)
+  const abortRef = useRef(null)
 
-  const startCamera = useCallback(async () => {
+  const startCamera = useCallback(async (options = {}) => {
+    const { silent = false } = options || {}
     try {
       setLoading(true);
       setCameraError(null);
       
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: CAMERA_CONFIG.width, height: CAMERA_CONFIG.height, facingMode: CAMERA_CONFIG.facingMode },
+        video: {
+          width: CAMERA_CONFIG.width,
+          height: CAMERA_CONFIG.height,
+          frameRate: CAMERA_CONFIG.frameRate,
+          facingMode: CAMERA_CONFIG.facingMode,
+        },
         audio: false
       });
       
@@ -38,7 +62,7 @@ export default function CameraCapture({ onCapture, disabled = false }) {
         setIsStreaming(true);
       }
       
-      message.success('摄像头已启动');
+      if (!silent) message.success('摄像头已启动');
     } catch (error) {
       console.error('摄像头启动失败:', error);
       let errorMsg = '无法访问摄像头';
@@ -51,14 +75,31 @@ export default function CameraCapture({ onCapture, disabled = false }) {
     }
   }, []);
 
-  const stopCamera = useCallback(() => {
+  const stopCamera = useCallback((options = {}) => {
+    const { silent = false } = options || {}
+    try {
+      if (detectTimerRef.current) {
+        clearInterval(detectTimerRef.current)
+        detectTimerRef.current = null
+      }
+      if (abortRef.current) {
+        abortRef.current.abort()
+        abortRef.current = null
+      }
+      inFlightRef.current = false
+      setIsDetecting(false)
+    } catch {
+    }
+    setOverlayUrl(null)
+    setLastError(null)
+    const hadStream = !!streamRef.current
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
       streamRef.current = null;
     }
     if (videoRef.current) videoRef.current.srcObject = null;
     setIsStreaming(false);
-    message.info('摄像头已关闭');
+    if (!silent && hadStream) message.info('摄像头已关闭');
   }, []);
 
   const capturePhoto = useCallback(() => {
@@ -94,12 +135,115 @@ export default function CameraCapture({ onCapture, disabled = false }) {
     message.success('图片已保存');
   }, [capturedImage]);
 
+  const doDetectOnce = useCallback(async () => {
+    if (disabled) return
+    if (pauseDetect) return
+    if (!isStreaming) return
+    if (!videoRef.current || !canvasRef.current) return
+    const video = videoRef.current
+    if (!video.videoWidth || !video.videoHeight) return
+    if (inFlightRef.current) return
+
+    const canvas = canvasRef.current
+    const vw = video.videoWidth
+    const vh = video.videoHeight
+    const maxSide = 640
+    const scale = Math.min(1, maxSide / Math.max(vw, vh))
+    const tw = Math.max(1, Math.round(vw * scale))
+    const th = Math.max(1, Math.round(vh * scale))
+    canvas.width = tw
+    canvas.height = th
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    ctx.drawImage(video, 0, 0, tw, th)
+    const frameDataUrl = canvas.toDataURL('image/jpeg', 0.75)
+    const base64Data = frameDataUrl.split(',')[1] || frameDataUrl
+
+    const API_URL = import.meta.env.VITE_API_URL || ''
+    const formData = new FormData()
+    formData.append('image_data', base64Data)
+    formData.append('conf_threshold', String(confThreshold))
+    formData.append('iou_threshold', String(iouThreshold))
+    formData.append('return_annotated', String(returnAnnotated))
+    formData.append('model_key', String(modelKey || 'wire_break_seg'))
+    formData.append('suppress_overlay', 'true')
+
+    try {
+      inFlightRef.current = true
+      setIsDetecting(true)
+      setLastError(null)
+      if (abortRef.current) abortRef.current.abort()
+      const ac = new AbortController()
+      abortRef.current = ac
+      const t0 = performance.now()
+      const resp = await fetch(`${API_URL}/api/vision/detect/base64`, { method: 'POST', body: formData, signal: ac.signal })
+      const ms = Math.round(performance.now() - t0)
+      if (!resp.ok) {
+        let detail = resp.statusText
+        try {
+          const err = await resp.json()
+          detail = err?.detail || err?.error || detail
+        } catch {
+        }
+        setLastError(String(detail || '识别失败'))
+        return
+      }
+      const data = await resp.json()
+      const result = { ...data, original_image_url: frameDataUrl }
+      setLastInfo({ ms, detections: result?.total_detections || 0, anomalies: result?.anomaly_count || 0 })
+      if (result?.annotated_image) {
+        setOverlayUrl(`data:image/jpeg;base64,${result.annotated_image}`)
+      } else {
+        setOverlayUrl(null)
+      }
+      if (typeof onResult === 'function') onResult(result)
+    } catch (e) {
+      if (e?.name === 'AbortError') return
+      setLastError('识别失败')
+    } finally {
+      inFlightRef.current = false
+      setIsDetecting(false)
+    }
+  }, [disabled, pauseDetect, isStreaming, confThreshold, iouThreshold, returnAnnotated, modelKey, onResult])
+
   useEffect(() => {
-    return () => stopCamera();
+    if (!active) {
+      stopCamera({ silent: true })
+      return
+    }
+    return undefined
+  }, [active, stopCamera])
+
+  useEffect(() => {
+    if (!active) return
+    if (!isStreaming) return
+    if (pauseDetect) return
+    if (disabled) return
+    if (detectTimerRef.current) clearInterval(detectTimerRef.current)
+    detectTimerRef.current = setInterval(() => {
+      doDetectOnce()
+    }, Math.max(350, Number(intervalMs) || 900))
+    return () => {
+      if (detectTimerRef.current) {
+        clearInterval(detectTimerRef.current)
+        detectTimerRef.current = null
+      }
+    }
+  }, [active, isStreaming, pauseDetect, disabled, intervalMs, doDetectOnce])
+
+  const statusTag = useMemo(() => {
+    if (!isStreaming) return null
+    if (pauseDetect) return <Tag>已暂停识别</Tag>
+    if (isDetecting) return <Tag color="processing">识别中</Tag>
+    return <Tag color="green">实时识别</Tag>
+  }, [isStreaming, pauseDetect, isDetecting])
+
+  useEffect(() => {
+    return () => stopCamera({ silent: true });
   }, [stopCamera]);
 
   return (
-    <Card size="small" title="摄像头捕获"
+    <Card size="small" title="摄像头实时识别"
       extra={
         <Space>
           {!isStreaming ? (
@@ -107,14 +251,19 @@ export default function CameraCapture({ onCapture, disabled = false }) {
               启动摄像头
             </Button>
           ) : (
-            <Button danger icon={<StopOutlined />} onClick={stopCamera} size="small">关闭</Button>
+            <>
+              <Button onClick={() => setPauseDetect(v => !v)} size="small" disabled={disabled}>
+                {pauseDetect ? '继续识别' : '暂停识别'}
+              </Button>
+              <Button danger icon={<StopOutlined />} onClick={stopCamera} size="small">关闭</Button>
+            </>
           )}
         </Space>
       }
     >
       <canvas ref={canvasRef} style={{ display: 'none' }} />
       
-      <div className="camera-container" style={{ position: 'relative', minHeight: 200, background: '#f0f0f0', borderRadius: 8, overflow: 'hidden' }}>
+      <div className="camera-container" style={{ position: 'relative', width: '100%', aspectRatio: '4 / 3', minHeight: 360, background: '#f0f0f0', borderRadius: 8, overflow: 'hidden' }}>
         {loading && (
           <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'rgba(255,255,255,0.9)' }}>
             <Spin size="large" />
@@ -136,18 +285,39 @@ export default function CameraCapture({ onCapture, disabled = false }) {
           </div>
         )}
         
-        <video ref={videoRef} style={{ display: isStreaming ? 'block' : 'none', width: '100%' }} playsInline muted />
+        <video ref={videoRef} style={{ display: isStreaming ? 'block' : 'none', position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain' }} playsInline muted />
+
+        {isStreaming && !showPreview && overlayUrl && (
+          <img
+            src={overlayUrl}
+            alt="overlay"
+            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain', pointerEvents: 'none' }}
+          />
+        )}
         
         {showPreview && capturedImage && (
           <div style={{ position: 'absolute', inset: 0, background: '#000' }}>
-            <img src={capturedImage} alt="Preview" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+            <img src={capturedImage} alt="Preview" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain' }} />
           </div>
         )}
       </div>
-      
-      {isStreaming && !showPreview && (
-        <div style={{ marginTop: 12, textAlign: 'center' }}>
-          <Button type="primary" icon={<CameraOutlined />} onClick={capturePhoto} size="large">拍照</Button>
+
+      {isStreaming && (
+        <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+          <Space>
+            {statusTag}
+            {lastInfo && (
+              <span style={{ color: '#666' }}>
+                {lastInfo.ms}ms / {lastInfo.detections} 结果 / {lastInfo.anomalies} 异常
+              </span>
+            )}
+            {lastError && (
+              <Tag color="red">{lastError}</Tag>
+            )}
+          </Space>
+          {!showPreview && (
+            <Button icon={<CameraOutlined />} onClick={capturePhoto} size="small" disabled={disabled}>截图</Button>
+          )}
         </div>
       )}
       
@@ -161,7 +331,7 @@ export default function CameraCapture({ onCapture, disabled = false }) {
       )}
       
       <div style={{ marginTop: 12 }}>
-        <small style={{ color: '#999' }}>提示：拍照后可上传进行识别，或直接使用图片生成故障树</small>
+        <small style={{ color: '#999' }}>提示：实时识别会定时上传当前帧进行推理；点击“截图”可保存当前画面</small>
       </div>
     </Card>
   );

@@ -37,8 +37,67 @@ class MiniMaxProvider(BaseLLMProvider):
     def is_available(self) -> bool:
         return bool(self.api_key and self.group_id)
 
+    def _extract_http_error(self, response: httpx.Response) -> str:
+        try:
+            data = response.json()
+            if isinstance(data, dict):
+                base_resp = data.get("base_resp") or {}
+                candidates = [
+                    base_resp.get("status_msg"),
+                    data.get("message"),
+                    data.get("detail"),
+                    data.get("error"),
+                ]
+                for item in candidates:
+                    if isinstance(item, str) and item.strip():
+                        return item.strip()
+        except Exception:
+            pass
+
+        text = (response.text or "").strip()
+        if text:
+            return text[:300]
+        return "响应体为空"
+
+    def _extract_request_error(self, error: httpx.RequestError) -> str:
+        parts: list[str] = []
+
+        message = str(error).strip()
+        if message:
+            parts.append(message)
+
+        cause = getattr(error, "__cause__", None) or getattr(error, "__context__", None)
+        if cause is not None:
+            cause_text = str(cause).strip()
+            if cause_text:
+                parts.append(cause_text)
+            elif getattr(cause, "args", None):
+                arg_text = "；".join(str(item).strip() for item in cause.args if str(item).strip())
+                if arg_text:
+                    parts.append(arg_text)
+                else:
+                    parts.append(repr(cause))
+            else:
+                parts.append(repr(cause))
+
+        combined = " | ".join(parts)
+        if "EndOfStream" in combined:
+            parts = ["连接流被远端中断（EndOfStream）"]
+
+        request = getattr(error, "request", None)
+        if request is not None and getattr(request, "url", None):
+            parts.append(f"请求地址: {request.url}")
+
+        if not parts:
+            parts.append(error.__class__.__name__)
+
+        return " | ".join(parts)
+
     async def generate(self, prompt: str, **kwargs) -> LLMResponse:
         """调用 MiniMax ChatCompletion V2 API"""
+        if not self.api_key or not self.group_id:
+            raise RuntimeError("缺少 MINIMAX_API_KEY 或 MINIMAX_GROUP_ID")
+
         start = time.perf_counter()
         temperature = kwargs.get("temperature", self.temperature)
         max_tokens = kwargs.get("max_tokens", self.max_tokens)
@@ -56,15 +115,27 @@ class MiniMaxProvider(BaseLLMProvider):
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
+            "GroupId": self.group_id,
         }
 
         async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.post(
-                f"{self.base_url}/v1/text/chatcompletion_v2",
-                json=payload,
-                headers=headers,
-            )
-            resp.raise_for_status()
+            try:
+                resp = await client.post(
+                    f"{self.base_url}/v1/text/chatcompletion_v2",
+                    json=payload,
+                    headers=headers,
+                )
+                resp.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                detail = self._extract_http_error(exc.response)
+                raise RuntimeError(
+                    f"MiniMax 接口异常 [{exc.response.status_code}]: {detail}"
+                ) from exc
+            except httpx.RequestError as exc:
+                raise RuntimeError(
+                    f"MiniMax 请求失败: {self._extract_request_error(exc)}"
+                ) from exc
+
             data = resp.json()
 
             if data.get("base_resp", {}).get("status_code", 0) != 0:
@@ -83,6 +154,7 @@ class MiniMaxProvider(BaseLLMProvider):
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
+            "GroupId": self.group_id,
         }
 
         async with httpx.AsyncClient(timeout=60) as client:
@@ -106,6 +178,7 @@ class MiniMaxProvider(BaseLLMProvider):
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
+            "GroupId": self.group_id,
         }
 
         async with httpx.AsyncClient(timeout=120) as client:

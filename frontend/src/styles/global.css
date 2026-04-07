@@ -153,6 +153,28 @@ body {
   background: var(--bg-input) !important;
   border: 2px dashed var(--border-color) !important;
   border-radius: 8px !important;
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+.upload-dragger:focus,
+.upload-dragger:focus-visible,
+.upload-dragger:focus-within,
+.upload-dragger .ant-upload,
+.upload-dragger .ant-upload:focus,
+.upload-dragger .ant-upload:focus-visible,
+.upload-dragger .ant-upload:focus-within,
+.upload-dragger .ant-upload-drag,
+.upload-dragger .ant-upload-drag:focus,
+.upload-dragger .ant-upload-drag:focus-visible,
+.upload-dragger .ant-upload-drag:focus-within,
+.upload-dragger .ant-upload-btn,
+.upload-dragger .ant-upload-btn:focus,
+.upload-dragger .ant-upload-btn:focus-visible,
+.upload-dragger input[type="file"]:focus,
+.upload-dragger input[type="file"]:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
 }
 
 .upload-dragger:hover {

@@ -3,7 +3,7 @@
  * 展示识别结果、标注图片、统计信息
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Card, Row, Col, Table, Tag, Button, Slider, Space, Divider, Empty, Tooltip, Progress } from 'antd';
 import { 
   DownloadOutlined, 
@@ -26,20 +26,80 @@ import './DetectionResult.css';
 export default function DetectionResult({ 
   result, 
   loading = false, 
-  onGenerateFaultTree 
+  onGenerateFaultTree,
+  hideImage = false,
 }) {
   const [showConfidence, setShowConfidence] = useState(0.3);
   const [selectedTab, setSelectedTab] = useState('annotated'); // annotated | original | list
+  const [selectedFrameIndex, setSelectedFrameIndex] = useState(0)
+  const canvasRef = useRef(null)
+  const imgRef = useRef(null)
+
+  const isBatch = Array.isArray(result?.batch_results) && result.batch_results.length > 0
+  const activeResult = isBatch ? (result.batch_results[selectedFrameIndex] || result.batch_results[0]) : result
+
+  useEffect(() => {
+    setSelectedFrameIndex(0)
+  }, [isBatch])
+
+  useEffect(() => {
+    if (selectedTab !== 'annotated') return
+    if (!activeResult) return
+    if (activeResult.annotated_image) return
+    if (!activeResult.original_image_url) return
+    const canvas = canvasRef.current
+    if (!canvas) return
+
+    const img = new Image()
+    img.onload = () => {
+      canvas.width = img.naturalWidth || img.width || 0
+      canvas.height = img.naturalHeight || img.height || 0
+      const ctx = canvas.getContext('2d')
+      if (!ctx || !canvas.width || !canvas.height) return
+      ctx.clearRect(0, 0, canvas.width, canvas.height)
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+
+      const dets = Array.isArray(activeResult.detections) ? activeResult.detections : []
+      dets.filter(d => (d.confidence || 0) >= showConfidence).forEach((d) => {
+        const box = Array.isArray(d.bbox) ? d.bbox : null
+        if (!box || box.length !== 4) return
+        const [x1, y1, x2, y2] = box.map(n => Number(n) || 0)
+        if (x2 <= x1 || y2 <= y1) return
+        const w = Math.max(1, x2 - x1)
+        const h = Math.max(1, y2 - y1)
+        const isAnomaly = !!d.is_anomaly
+        ctx.strokeStyle = isAnomaly ? '#ff4d4f' : '#52c41a'
+        ctx.lineWidth = Math.max(2, Math.round(canvas.width / 400))
+        ctx.strokeRect(x1, y1, w, h)
+
+        const label = `${d.class_name || ''} ${(d.confidence != null ? d.confidence : 0) * 100.0}`.trim()
+        if (!label) return
+        ctx.font = `${Math.max(12, Math.round(canvas.width / 60))}px sans-serif`
+        const pad = 4
+        const text = label.endsWith('%') ? label : `${d.class_name || ''} ${(Math.round(((d.confidence || 0) * 1000)) / 10).toFixed(1)}%`
+        const metrics = ctx.measureText(text)
+        const tw = metrics.width + pad * 2
+        const th = Math.max(14, Math.round(canvas.width / 55)) + pad * 2
+        const tx = Math.max(0, x1)
+        const ty = Math.max(0, y1 - th)
+        ctx.fillStyle = isAnomaly ? 'rgba(255,77,79,0.85)' : 'rgba(82,196,26,0.85)'
+        ctx.fillRect(tx, ty, tw, th)
+        ctx.fillStyle = '#fff'
+        ctx.fillText(text, tx + pad, ty + th - pad)
+      })
+    }
+    img.src = activeResult.original_image_url
+  }, [activeResult, selectedTab, showConfidence])
 
   // 过滤检测结果
   const filteredDetections = useMemo(() => {
-    if (!result?.detections) return [];
-    return result.detections.filter(d => d.confidence >= showConfidence);
-  }, [result, showConfidence]);
+    if (!activeResult?.detections) return [];
+    return activeResult.detections.filter(d => d.confidence >= showConfidence);
+  }, [activeResult, showConfidence]);
 
   // 统计信息
   const stats = useMemo(() => {
-    if (!result) return null;
+    if (!activeResult) return null;
     
     const normalCount = filteredDetections.filter(d => !d.is_anomaly).length;
     const anomalyCount = filteredDetections.filter(d => d.is_anomaly).length;
@@ -52,9 +112,15 @@ export default function DetectionResult({
       normal: normalCount,
       anomaly: anomalyCount,
       avgConfidence: avgConfidence,
-      processTime: result.process_time_ms
+      processTime: activeResult.process_time_ms
     };
-  }, [result, filteredDetections]);
+  }, [activeResult, filteredDetections]);
+
+  const hasAnomaly = useMemo(() => {
+    const ac = Number(activeResult?.anomaly_count || 0)
+    if (ac > 0) return true
+    return filteredDetections.some(d => d.is_anomaly)
+  }, [activeResult, filteredDetections])
 
   // 获取状态图标
   const getStatusIcon = (status) => {
@@ -141,7 +207,7 @@ export default function DetectionResult({
   ];
 
   // 无结果时显示空状态
-  if (!result || !result.detections || result.detections.length === 0) {
+  if (!activeResult) {
     return (
       <Card className="detection-result">
         <Empty 
@@ -162,11 +228,19 @@ export default function DetectionResult({
       loading={loading}
       title={
         <Space>
-          {getStatusIcon(result.overall_status)}
-          <span>识别结果 - {result.overall_status === 'normal' ? '正常' : result.overall_status === 'warning' ? '警告' : '危险'}</span>
+          {getStatusIcon(activeResult.overall_status)}
+          <span>识别结果 - {activeResult.overall_status === 'normal' ? '正常' : activeResult.overall_status === 'warning' ? '警告' : '危险'}</span>
+          {activeResult?.model_name && (
+            <Tag color="geekblue">{String(activeResult.model_name)}</Tag>
+          )}
         </Space>
       }
     >
+      {(!activeResult.detections || activeResult.detections.length === 0) && (
+        <div style={{ marginBottom: 12 }}>
+          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="已完成识别，但未检测到目标（0 个框）" />
+        </div>
+      )}
       {/* 统计概览 */}
       <Row gutter={16} className="stats-row">
         <Col span={6}>
@@ -213,56 +287,103 @@ export default function DetectionResult({
 
       <Divider />
 
-      {/* 图片展示区 */}
-      <Row gutter={16}>
-        {/* 左侧：图片 */}
-        <Col span={14}>
-          <Card 
-            size="small" 
-            title="标注图片" 
-            className="image-card"
-            tabList={[
-              { key: 'annotated', tab: '标注图' },
-              { key: 'original', tab: '原图' },
-            ]}
-            activeTabKey={selectedTab}
-            onTabChange={setSelectedTab}
-          >
-            <div className="image-container">
-              {result.annotated_image ? (
-                <img 
-                  src={`data:image/jpeg;base64,${selectedTab === 'annotated' ? result.annotated_image : ''}`}
-                  alt="检测结果"
-                  className="result-image"
-                  onError={(e) => {
-                    // 如果标注图片加载失败，尝试使用原图
-                    if (selectedTab === 'annotated') {
-                      e.target.src = result.annotated_image ? `data:image/jpeg;base64,${result.annotated_image}` : '';
-                    }
-                  }}
-                />
-              ) : (
-                <Empty description="暂无标注图片" />
-              )}
+      {!hideImage ? (
+        <Row gutter={16}>
+          <Col span={14}>
+            <Card 
+              size="small" 
+              title="标注图片" 
+              className="image-card"
+              tabList={[
+                { key: 'annotated', tab: '标注图' },
+                { key: 'original', tab: '原图' },
+              ]}
+              activeTabKey={selectedTab}
+              onTabChange={setSelectedTab}
+            >
+              <div className={`image-container ${hasAnomaly ? 'anomaly' : 'normal'}`}>
+                {selectedTab === 'original' ? (
+                  activeResult?.original_image_url ? (
+                    <img
+                      src={activeResult.original_image_url}
+                      alt="原图"
+                      className="result-image"
+                      ref={imgRef}
+                    />
+                  ) : (
+                    <Empty description="暂无原图" />
+                  )
+                ) : (
+                  activeResult?.annotated_image ? (
+                    <img
+                      src={`data:image/jpeg;base64,${activeResult.annotated_image}`}
+                      alt="标注图"
+                      className="result-image"
+                    />
+                  ) : activeResult?.original_image_url ? (
+                    <canvas ref={canvasRef} className="result-image" />
+                  ) : (
+                    <Empty description="暂无标注图片" />
+                  )
+                )}
+              </div>
+            </Card>
+          </Col>
+          <Col span={10}>
+            <Card size="small" title="检测详情" className="detail-card">
+              <Table
+                columns={columns}
+                dataSource={filteredDetections}
+                rowKey={(record) => {
+                  const box = Array.isArray(record.bbox) ? record.bbox.join(',') : ''
+                  const conf = typeof record.confidence === 'number' ? record.confidence.toFixed(6) : String(record.confidence || '')
+                  return `${record.class_id || record.class_name || 'cls'}-${box}-${conf}`
+                }}
+                size="small"
+                pagination={{ pageSize: 5, size: 'small' }}
+                scroll={{ y: 300 }}
+                rowClassName={(record) => record.is_anomaly ? 'anomaly-row' : ''}
+              />
+            </Card>
+          </Col>
+        </Row>
+      ) : (
+        <Card size="small" title="检测详情" className="detail-card">
+          <Table
+            columns={columns}
+            dataSource={filteredDetections}
+            rowKey={(record) => {
+              const box = Array.isArray(record.bbox) ? record.bbox.join(',') : ''
+              const conf = typeof record.confidence === 'number' ? record.confidence.toFixed(6) : String(record.confidence || '')
+              return `${record.class_id || record.class_name || 'cls'}-${box}-${conf}`
+            }}
+            size="small"
+            pagination={{ pageSize: 5, size: 'small' }}
+            scroll={{ y: 360 }}
+            rowClassName={(record) => record.is_anomaly ? 'anomaly-row' : ''}
+          />
+        </Card>
+      )}
+
+      {isBatch && (
+        <>
+          <Divider />
+          <Card size="small" title="视频帧" className="detail-card">
+            <div style={{ display: 'flex', gap: 8, overflow: 'auto' }}>
+              {result.batch_results.map((r, idx) => (
+                <Button
+                  key={idx}
+                  size="small"
+                  type={idx === selectedFrameIndex ? 'primary' : 'default'}
+                  onClick={() => setSelectedFrameIndex(idx)}
+                >
+                  帧 {idx + 1}
+                </Button>
+              ))}
             </div>
           </Card>
-        </Col>
-
-        {/* 右侧：详情 */}
-        <Col span={10}>
-          <Card size="small" title="检测详情" className="detail-card">
-            <Table
-              columns={columns}
-              dataSource={filteredDetections}
-              rowKey={(record, index) => `${record.class_id}-${index}`}
-              size="small"
-              pagination={{ pageSize: 5, size: 'small' }}
-              scroll={{ y: 300 }}
-              rowClassName={(record) => record.is_anomaly ? 'anomaly-row' : ''}
-            />
-          </Card>
-        </Col>
-      </Row>
+        </>
+      )}
 
       <Divider />
 
@@ -282,7 +403,6 @@ export default function DetectionResult({
             type="primary"
             icon={<RocketOutlined />}
             onClick={onGenerateFaultTree}
-            disabled={stats.anomaly === 0}
             danger={stats.anomaly > 0}
           >
             基于识别结果生成故障树

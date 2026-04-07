@@ -240,7 +240,7 @@ export default function History() {
         onCancel={() => setFsOpen(false)}
         width="96vw"
         style={{ top: 8 }}
-        bodyStyle={{ height: '78vh', overflow: 'auto' }}
+        styles={{ body: { height: '78vh', overflow: 'auto' } }}
         footer={
           fsMode === 'view'
             ? [

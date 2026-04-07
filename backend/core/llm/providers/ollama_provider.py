@@ -36,6 +36,26 @@ class OllamaProvider(BaseLLMProvider):
         except Exception:
             return False
 
+    def _extract_http_error(self, response: httpx.Response) -> str:
+        try:
+            data = response.json()
+            if isinstance(data, dict):
+                candidates = [
+                    data.get("error"),
+                    data.get("message"),
+                    data.get("detail"),
+                ]
+                for item in candidates:
+                    if isinstance(item, str) and item.strip():
+                        return item.strip()
+        except Exception:
+            pass
+
+        text = (response.text or "").strip()
+        if text:
+            return text[:300]
+        return "响应体为空"
+
     async def generate(self, prompt: str, **kwargs) -> LLMResponse:
         """调用 Ollama /api/generate"""
         start = time.perf_counter()
@@ -54,9 +74,21 @@ class OllamaProvider(BaseLLMProvider):
         }
 
         async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.post(f"{self.base_url}/api/generate", json=payload)
-            resp.raise_for_status()
+            try:
+                resp = await client.post(f"{self.base_url}/api/generate", json=payload)
+                resp.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                detail = self._extract_http_error(exc.response)
+                raise RuntimeError(
+                    f"Ollama generate 接口异常 [{exc.response.status_code}]: {detail}"
+                ) from exc
+            except httpx.RequestError as exc:
+                raise RuntimeError(f"Ollama 请求失败: {exc}") from exc
+
             data = resp.json()
+
+        if data.get("error"):
+            raise RuntimeError(f"Ollama 返回错误: {data['error']}")
 
         latency_ms = (time.perf_counter() - start) * 1000
         return LLMResponse(

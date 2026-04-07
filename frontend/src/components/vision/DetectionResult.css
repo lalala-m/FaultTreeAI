@@ -3,6 +3,38 @@
   min-height: 400px;
 }
 
+.image-container {
+  width: 100%;
+  background: #f5f5f5;
+  border-radius: 8px;
+  padding: 8px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.image-container.normal {
+  border: 2px solid rgba(82, 196, 26, 0.35);
+}
+
+.image-container.anomaly {
+  border: 2px solid rgba(255, 77, 79, 0.6);
+}
+
+.result-image {
+  width: 100%;
+  height: auto;
+  max-height: 62vh;
+  object-fit: contain;
+  border-radius: 6px;
+  display: block;
+}
+
+.result-image canvas {
+  width: 100%;
+  height: auto;
+}
+
 .detection-image-container {
   background: #f5f5f5;
   border-radius: 8px;
