@@ -33,6 +33,9 @@ services:
       PYTHONPATH: /app:/app/backend
       DATABASE_URL: postgresql+asyncpg://postgres:${DB_PASSWORD:-faulttree123}@db:5432/faulttree
       DB_HOST: db
+      DB_PASSWORD: ${DB_PASSWORD:-faulttree123}
+      DB_USER: postgres
+      DB_NAME: faulttree
       MINIMAX_API_KEY: ${MINIMAX_API_KEY}
       MINIMAX_GROUP_ID: ${MINIMAX_GROUP_ID}
       MINIMAX_M2_API_KEY: ${MINIMAX_M2_API_KEY}

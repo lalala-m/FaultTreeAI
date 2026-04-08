@@ -7,7 +7,7 @@ if str(_project_root) not in sys.path:
 
 import asyncio
 from backend.core.parser.document import parse_document
-from backend.core.rag.retriever import add_chunks, retrieve
+from backend.core.rag.pgvector_retriever import add_chunks_to_db, retrieve
 
 
 async def test():
@@ -15,7 +15,7 @@ async def test():
     print(f"解析完成，共 {len(chunks)} 个分块")
     print("第一块内容：", chunks[0]['text'][:100] if chunks else "无")
     print("开始向量化入库...")
-    await add_chunks(chunks, "test001")
+    await add_chunks_to_db(chunks, "test001")
     print("向量化完成！")
 
     results = await retrieve("驱动系统失效")
@@ -24,4 +24,5 @@ async def test():
         print(f"  [{r['ref_id']}] {r['text'][:60]}")
 
 
-asyncio.run(test())
+if __name__ == "__main__":
+    asyncio.run(test())

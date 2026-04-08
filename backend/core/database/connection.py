@@ -3,7 +3,8 @@ PostgreSQL + SQLAlchemy 异步连接管理
 支持 psycopg2（同步）和 asyncpg（异步）两种驱动
 """
 
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
+from typing import Optional
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.pool import NullPool
@@ -30,6 +31,29 @@ AsyncSessionLocal = async_sessionmaker(
     autoflush=False,
     autocommit=False,
 )
+
+
+# ─────────────────────────────────────────────
+# 同步 psycopg2 连接（用于绕过 asyncpg 问题）
+# ─────────────────────────────────────────────
+
+_pg_conn_cache: Optional[object] = None
+
+
+def pg_conn():
+    """
+    获取 psycopg2 连接（兼容旧代码）
+    返回一个 context manager
+    """
+    import psycopg2
+    return psycopg2.connect(
+        host=settings.DB_HOST,
+        port=settings.DB_PORT,
+        user=settings.DB_USER,
+        password=settings.DB_PASSWORD,
+        database=settings.DB_NAME,
+        connect_timeout=10,
+    )
 
 
 async def get_db() -> AsyncSession:

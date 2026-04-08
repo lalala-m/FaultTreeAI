@@ -1,5 +1,9 @@
 """
 故障树生成 API — psycopg2 直连（绕过 asyncpg Windows bug）
+
+支持两种生成方式：
+1. structured_generator: 现有方式（保持向后兼容）
+2. fault_tree_chain: 新的 LangChain LCEL Chain（推荐）
 """
 
 import uuid, json
@@ -8,8 +12,7 @@ from fastapi import APIRouter, HTTPException
 from uuid import UUID
 
 from backend.core.database.models import FaultTree as DBFaultTree
-from backend.core.database.psycopg_pool import pg_conn
-from backend.core.llm.structured_generator import generate_fault_tree
+from backend.core.database.connection import pg_conn
 from backend.core.fta.builder import compute_mcs
 from backend.core.fta.importance import compute_importance
 from backend.models.schemas import GenerateRequest, GenerateResponse, FaultTree, FTANode, FTAGate
@@ -28,6 +31,7 @@ def _pg():
 
 
 def _normalize_generation_error(detail: str) -> tuple[int, str]:
+    """规范化生成错误信息"""
     text = str(detail or "").strip()
     status_code = 500
 
@@ -60,11 +64,57 @@ def _normalize_generation_error(detail: str) -> tuple[int, str]:
     return status_code, text
 
 
+async def _generate_with_chain(req: GenerateRequest) -> tuple[FaultTree, list, str]:
+    """
+    使用新的 LangChain LCEL Chain 生成故障树
+    这是推荐的新方式，使用 ProviderFactory 和 LCEL Chain
+    """
+    from backend.core.langchain.chains.fault_tree_chain import generate_fault_tree_with_chain, get_fault_tree_chain
+    from backend.core.llm.manager import ProviderFactory
+
+    # 获取 ChatModel
+    chat_model = ProviderFactory.get_chat_model()
+    chain = get_fault_tree_chain()
+
+    # 执行生成
+    fault_tree, validation_issues = await generate_fault_tree_with_chain(
+        chain=chain,
+        top_event=req.top_event,
+        user_prompt=req.user_prompt,
+        top_k=req.rag_top_k or 5,
+        doc_ids=req.doc_ids,
+        max_retries=settings.MAX_RETRY,
+        vector_weight=req.manual_weight or 0.5,
+    )
+
+    # 获取 provider 名称
+    provider = getattr(chat_model, '_llm_type', str(settings.LLM_PROVIDER))
+    return fault_tree, validation_issues, provider
+
+
+async def _generate_with_structured(req: GenerateRequest) -> tuple[FaultTree, list, str]:
+    """
+    使用现有的 structured_generator 生成故障树（向后兼容）
+    """
+    from backend.core.llm.structured_generator import generate_fault_tree as _generate
+    return await _generate(req)
+
+
 @router.post("/", response_model=GenerateResponse)
 async def generate_ft(req: GenerateRequest):
-    """基于 RAG 知识库生成故障树"""
+    """基于 RAG 知识库生成故障树
+    
+    支持两种生成方式：
+    - 优先使用新的 LCEL Chain（推荐）
+    - 失败时回退到 structured_generator（向后兼容）
+    """
     try:
-        fault_tree, validation_issues, provider = await generate_fault_tree(req)
+        # 优先使用新的 LCEL Chain
+        try:
+            fault_tree, validation_issues, provider = await _generate_with_chain(req)
+        except Exception as chain_error:
+            # 回退到 structured_generator
+            fault_tree, validation_issues, provider = await _generate_with_structured(req)
     except Exception as e:
         status_code, detail = _normalize_generation_error(str(e))
         raise HTTPException(status_code=status_code, detail=detail)

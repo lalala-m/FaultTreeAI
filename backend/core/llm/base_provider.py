@@ -1,55 +1,30 @@
 """
-LLM Provider 抽象基类 — 所有 Provider 必须实现此接口
+基础数据模型 - 被 manager.py 和 providers/ 依赖
 """
 
-from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from typing import Optional
-import time
+from dataclasses import dataclass
+from typing import Optional, List, Any
 
 
 @dataclass
 class LLMResponse:
+    """LLM 生成响应"""
     content: str
     latency_ms: float
-    cost_tokens: Optional[int] = None
-    raw: Optional[dict] = None
+    raw: Optional[Any] = None
 
 
 @dataclass
 class EmbedResult:
-    embedding: list[float]
+    """Embedding 结果"""
+    embedding: List[float]
     latency_ms: float
-    model: str
-
-
-class BaseLLMProvider(ABC):
-    """LLM Provider 抽象基类"""
-
-    name: str = "base"
-
-    @abstractmethod
-    async def generate(self, prompt: str, **kwargs) -> LLMResponse:
-        """同步生成（非流式）"""
-        raise NotImplementedError
-
-    @abstractmethod
-    async def embed(self, text: str) -> EmbedResult:
-        """单条向量化"""
-        raise NotImplementedError
-
-    @abstractmethod
-    async def embed_batch(self, texts: list[str]) -> list[EmbedResult]:
-        """批量向量化"""
-        raise NotImplementedError
-
-    def is_available(self) -> bool:
-        """检查 Provider 是否可用（如 API Key 配置、连接正常）"""
-        return True
+    model: str = ""
 
 
 @dataclass
 class BenchmarkResult:
+    """Provider 性能基准测试结果"""
     provider: str
     total_requests: int
     success_count: int
@@ -57,5 +32,27 @@ class BenchmarkResult:
     avg_latency_ms: float
     min_latency_ms: float = 0.0
     max_latency_ms: float = 0.0
-    errors: list[str] = field(default_factory=list)
-    field_completeness: float = 0.0  # 业务字段完整度 0-1
+    errors: List[str] = None
+    field_completeness: float = 0.0
+
+
+class BaseLLMProvider:
+    """LLM Provider 基类（向后兼容）"""
+
+    name: str = ""
+
+    def is_available(self) -> bool:
+        """检查 Provider 是否可用"""
+        raise NotImplementedError
+
+    async def generate(self, prompt: str, **kwargs) -> LLMResponse:
+        """生成文本"""
+        raise NotImplementedError
+
+    async def embed(self, text: str) -> EmbedResult:
+        """单条向量化"""
+        raise NotImplementedError
+
+    async def embed_batch(self, texts: list) -> list[EmbedResult]:
+        """批量向量化"""
+        raise NotImplementedError

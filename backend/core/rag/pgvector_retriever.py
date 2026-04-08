@@ -1,13 +1,12 @@
 """
 PostgreSQL + pgvector RAG 检索层
 使用 psycopg2（同步）直连，asyncpg 在 Windows Python 3.13 上有兼容性问题
-支持混合检索（向量 + BM25）
 """
 
 from typing import Optional, List
 import psycopg2
 import psycopg2.extras
-import httpx
+
 from backend.config import settings
 
 
@@ -84,81 +83,13 @@ def _sync_retrieve(query_vector: list[float], top_k: int, doc_ids: Optional[list
 
 
 # ─────────────────────────────────────────────
-# MiniMax Embedding（与 llm_client.py 保持一致）
+# Embedding 服务（使用统一实现）
 # ─────────────────────────────────────────────
 
-class MiniMaxEmbeddingService:
-    """独立的 MiniMax Embedding 服务（避免与 llm_client 循环导入）"""
-
-    def __init__(self, api_key: str = None, group_id: str = None, model: str = None):
-        self.api_key = api_key or settings.MINIMAX_API_KEY
-        self.group_id = group_id or settings.MINIMAX_GROUP_ID
-        self.model = model or settings.MINIMAX_EMBED_MODEL
-        self.base_url = settings.MINIMAX_BASE_URL + "/v1/embeddings"
-        self.embedding_dim = settings.EMBED_DIM
-
-    def _headers(self):
-        if not self.api_key:
-            raise ValueError("缺少 MINIMAX_API_KEY，请在 .env 中配置后重启后端")
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-        if self.group_id:
-            headers["GroupId"] = self.group_id
-        return headers
-
-    async def aembed_query(self, text: str) -> list[float]:
-        """异步单条向量化"""
-        payload = {
-            "model": self.model,
-            "input": text,
-            "type": "float",
-        }
-        headers = self._headers()
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.post(self.base_url, json=payload, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
-            vectors = data.get("vectors", [])
-            return vectors[0] if vectors else data.get("vector", [])
-
-    async def aembed_documents(self, texts: list[str]) -> list[list[float]]:
-        """异步批量向量化"""
-        payload = {
-            "model": self.model,
-            "texts": texts,
-            "type": "float",
-        }
-        headers = self._headers()
-        async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.post(self.base_url, json=payload, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
-            # 兼容多种返回结构：{"vectors":[...]} 或 {"data":[{"vector":[...]}]}
-            vectors = None
-            if isinstance(data, dict):
-                if "vectors" in data:
-                    vectors = data["vectors"]
-                elif "data" in data:
-                    maybe = data["data"]
-                    if isinstance(maybe, list):
-                        vectors = [item.get("vector") if isinstance(item, dict) else item for item in maybe]
-            if not vectors or not isinstance(vectors, list):
-                raise ValueError(f"MiniMax embedding 返回无效：{data}")
-            # 确保每个元素都是浮点列表
-            clean = []
-            for v in vectors:
-                if isinstance(v, list):
-                    clean.append(v)
-                elif isinstance(v, dict) and "vector" in v and isinstance(v["vector"], list):
-                    clean.append(v["vector"])
-                else:
-                    clean.append([])
-            return clean
-
-
-_embed_service = MiniMaxEmbeddingService()
+def _get_embeddings():
+    """获取统一的 Embedding 服务（延迟导入避免循环依赖）"""
+    from backend.core.llm.embeddings import get_unified_embeddings
+    return get_unified_embeddings()
 
 
 # ─────────────────────────────────────────────
@@ -177,12 +108,15 @@ async def add_chunks_to_db(
     texts = [c["text"] for c in chunks]
     vectors = None
     embedded = False
+    embeddings = _get_embeddings()
+    
     try:
-        vectors = await _embed_service.aembed_documents(texts)
+        vectors = await embeddings.aembed_documents(texts)
         embedded = True
     except Exception as e:
         if settings.SKIP_EMBED_ON_FAIL:
             embedded = False
+            print(f"[WARN] Embedding failed, storing text only: {e}")
         else:
             raise
 
@@ -196,7 +130,7 @@ async def add_chunks_to_db(
             for i, chunk in enumerate(chunks):
                 if embedded:
                     if i >= len(vectors) or not vectors[i]:
-                        raise ValueError("MiniMax embedding 返回为空或数量不匹配")
+                        raise ValueError("Embedding 返回为空或数量不匹配")
                 # 插入 chunk 记录
                 cur.execute("""
                     INSERT INTO document_chunks (doc_id, chunk_index, page_num, text, token_count)
@@ -218,7 +152,7 @@ async def add_chunks_to_db(
                     """, (
                         chunk_id, doc_id,
                         _to_vector_literal(vectors[i]),
-                        settings.MINIMAX_EMBED_MODEL
+                        embeddings.model_name
                     ))
             conn.commit()
     return {"chunk_count": len(chunks), "embedded": embedded}
@@ -251,10 +185,11 @@ async def retrieve(
 
     k = top_k or settings.RAG_TOP_K
     threshold = settings.RAG_SIMILARITY_THRESHOLD
+    embeddings = _get_embeddings()
 
     # 查询向量（异步 HTTP），embedding 失败时返回空列表
     try:
-        query_vector = await _embed_service.aembed_query(query)
+        query_vector = await embeddings.aembed_query(query)
     except Exception as e:
         print(f"[WARN] Embedding failed, skipping RAG: {e}")
         return []
@@ -296,7 +231,7 @@ async def retrieve(
 
 
 # ─────────────────────────────────────────────
-# 混合检索（向量 + BM25）
+# 混合检索（已移至 rag/hybrid_retriever.py，此处保留用于兼容）
 # ─────────────────────────────────────────────
 
 async def retrieve_hybrid(
@@ -307,53 +242,9 @@ async def retrieve_hybrid(
 ) -> list[dict]:
     """
     混合检索：结合向量检索和 BM25 关键词检索
+    
+    注意：此函数已移至 backend.core.rag.hybrid_retriever.py
+    此处保留用于向后兼容
     """
-    from backend.core.rag.bm25_retriever import retrieve_bm25
-    
-    k = top_k or settings.RAG_TOP_K
-    
-    # 并行执行两种检索
-    vector_results = await retrieve(query, top_k=k, doc_ids=doc_ids)
-    bm25_results = await retrieve_bm25(query, top_k=k, doc_ids=doc_ids)
-    
-    # 归一化分数
-    def normalize_scores(results: list[dict], weight: float) -> list[dict]:
-        if not results:
-            return []
-        max_score = max(r["score"] for r in results)
-        min_score = min(r["score"] for r in results)
-        score_range = max_score - min_score if max_score > min_score else 1
-        
-        normalized = []
-        for r in results:
-            normalized_r = r.copy()
-            normalized_score = (r["score"] - min_score) / score_range if score_range > 0 else 0.5
-            doc_weight = float(r.get("doc_weight", 0.5) or 0.5)
-            chunk_weight = float(r.get("chunk_weight", 0.5) or 0.5)
-            weight_boost = 0.65 + 0.2 * doc_weight + 0.15 * chunk_weight
-            normalized_r["base_score"] = round(normalized_score, 4)
-            normalized_r["score"] = round(normalized_score * weight * weight_boost, 4)
-            normalized_r["retrieval_type"] = r.get("retrieval_type") or "vector"
-            normalized.append(normalized_r)
-        return normalized
-    
-    vector_norm = normalize_scores(vector_results, vector_weight)
-    bm25_norm = normalize_scores(bm25_results, 1 - vector_weight)
-    
-    # 合并结果
-    all_results = vector_norm + bm25_norm
-    
-    # 去重
-    seen = {}
-    for r in all_results:
-        text_key = r["text"][:100]
-        if text_key not in seen or r["score"] > seen[text_key]["score"]:
-            seen[text_key] = r
-    
-    # 排序并返回 top_k
-    sorted_results = sorted(seen.values(), key=lambda x: x["score"], reverse=True)[:k]
-    
-    for i, r in enumerate(sorted_results):
-        r["ref_id"] = f"Hybrid-{i+1:03d}"
-    
-    return sorted_results
+    from backend.core.rag.hybrid_retriever import retrieve_hybrid as _retrieve_hybrid
+    return await _retrieve_hybrid(query, top_k, doc_ids, vector_weight)

@@ -133,6 +133,120 @@ class MiniMaxChatModel(BaseChatModel):
             except Exception as e:
                 raise RuntimeError(f"MiniMax 异步调用异常: {str(e)}")
 
+    def is_available(self) -> bool:
+        """检查 MiniMax 服务是否可用"""
+        return bool(self.api_key and self.group_id)
+
+
+# ─────────────────────────────────────────────
+# Ollama ChatModel（LangChain 标准实现）
+# ─────────────────────────────────────────────
+
+class OllamaChatModel(BaseChatModel):
+    """Ollama 本地模型的自定义 LangChain 实现"""
+
+    model_name: str = Field(default=settings.OLLAMA_MODEL)
+    base_url: str = Field(default=settings.OLLAMA_BASE_URL)
+    temperature: float = Field(default=settings.LLM_TEMPERATURE)
+    max_tokens: int = Field(default=settings.LLM_MAX_TOKENS)
+
+    @property
+    def _llm_type(self) -> str:
+        return "ollama_chat"
+
+    def _convert_messages_to_prompt(self, messages: list[BaseMessage]) -> str:
+        """将消息列表转换为 Ollama 格式的 prompt"""
+        prompt_parts = []
+        for msg in messages:
+            role = msg.type if msg.type in ("user", "assistant", "system") else "user"
+            if role == "system":
+                prompt_parts.append(f"System: {msg.content}")
+            elif role == "user":
+                prompt_parts.append(f"User: {msg.content}")
+            else:
+                prompt_parts.append(f"Assistant: {msg.content}")
+        return "\n".join(prompt_parts)
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: Optional[list[str]] = None,
+        run_manager: Optional[CallbackManagerForLLMRun] = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        prompt = self._convert_messages_to_prompt(messages)
+        payload = {
+            "model": self.model_name,
+            "prompt": prompt,
+            "stream": False,
+            "options": {
+                "temperature": self.temperature,
+                "num_predict": self.max_tokens,
+            },
+        }
+        try:
+            response = httpx.post(
+                f"{self.base_url}/api/generate",
+                json=payload,
+                timeout=120,
+            )
+            response.raise_for_status()
+            data = response.json()
+            if data.get("error"):
+                raise RuntimeError(f"Ollama 返回错误: {data['error']}")
+            content = data.get("response", "")
+            ai_msg = AIMessage(content=content)
+            generation = ChatGeneration(message=ai_msg)
+            return ChatResult(generations=[generation])
+        except httpx.HTTPStatusError as e:
+            raise RuntimeError(f"Ollama HTTP 请求失败: {e.response.status_code}")
+        except Exception as e:
+            raise RuntimeError(f"Ollama 调用异常: {str(e)}")
+
+    async def _agenerate(
+        self,
+        messages: list[BaseMessage],
+        stop: Optional[list[str]] = None,
+        run_manager: Optional[CallbackManagerForLLMRun] = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        prompt = self._convert_messages_to_prompt(messages)
+        payload = {
+            "model": self.model_name,
+            "prompt": prompt,
+            "stream": False,
+            "options": {
+                "temperature": self.temperature,
+                "num_predict": self.max_tokens,
+            },
+        }
+        async with httpx.AsyncClient(timeout=120) as client:
+            try:
+                response = await client.post(
+                    f"{self.base_url}/api/generate",
+                    json=payload,
+                )
+                response.raise_for_status()
+                data = response.json()
+                if data.get("error"):
+                    raise RuntimeError(f"Ollama 返回错误: {data['error']}")
+                content = data.get("response", "")
+                ai_msg = AIMessage(content=content)
+                generation = ChatGeneration(message=ai_msg)
+                return ChatResult(generations=[generation])
+            except httpx.HTTPStatusError as e:
+                raise RuntimeError(f"Ollama HTTP 请求失败: {e.response.status_code}")
+            except Exception as e:
+                raise RuntimeError(f"Ollama 异步调用异常: {str(e)}")
+
+    def is_available(self) -> bool:
+        """检查 Ollama 服务是否可用"""
+        try:
+            resp = httpx.get(f"{self.base_url}/api/tags", timeout=5)
+            return resp.status_code == 200
+        except Exception:
+            return False
+
 
 class MiniMaxEmbeddings:
     """MiniMax Embedding 模型的自定义实现"""
