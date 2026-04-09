@@ -250,7 +250,7 @@ export default function FaultTreeViewer({ tree, height }) {
       style={{ height: containerHeight }}
       styles={{ body: { padding: 0, height: '100%' } }}
     >
-      <div style={{ height: '100%', background: '#fafafa' }}>
+      <div style={{ height: '100%', width: '100%', background: '#fafafa' }}>
         <ReactFlow
           nodes={nodes}
           edges={edges}
@@ -258,6 +258,7 @@ export default function FaultTreeViewer({ tree, height }) {
           fitView
           fitViewOptions={{ padding: 0.2 }}
           proOptions={{ hideAttribution: true }}
+          style={{ width: '100%', height: '100%' }}
         >
           <Background />
           <Controls />

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState, Suspense, lazy, useRef } from 'react'
-import { Typography, Card, Input, Button, Space, Select, Badge, Slider, Tag, Modal, message, Progress, Radio, Divider, List } from 'antd'
+import { Typography, Card, Input, Button, Space, Select, Badge, Slider, Tag, Modal, message } from 'antd'
 import { ThunderboltOutlined } from '@ant-design/icons'
 import api from '../services/api.js'
 
@@ -193,15 +193,13 @@ export default function Dashboard({ onNavigate }) {
   const fsWrapRef = useRef(null)
   const [fsNativeOpen, setFsNativeOpen] = useState(false)
   const fsLayerRef = useRef(null)
-  const [troubleshootingOpen, setTroubleshootingOpen] = useState(false)
-  const [feedbackOpen, setFeedbackOpen] = useState(false)
-  const [troubleshootingState, setTroubleshootingState] = useState(null)
-  const [currentAnswer, setCurrentAnswer] = useState('unknown')
-  const [feedbackSubmitting, setFeedbackSubmitting] = useState(false)
-  const [feedbackResolved, setFeedbackResolved] = useState(true)
-  const [feedbackRootCause, setFeedbackRootCause] = useState(undefined)
-  const [feedbackHelpfulQuestion, setFeedbackHelpfulQuestion] = useState(undefined)
-  const [feedbackNote, setFeedbackNote] = useState('')
+  const [troubleshootingSessions, setTroubleshootingSessions] = useState({})
+  const troubleshootingSessionsRef = useRef({})
+  const [feedbackSubmittingSession, setFeedbackSubmittingSession] = useState(null)
+
+  useEffect(() => {
+    troubleshootingSessionsRef.current = troubleshootingSessions
+  }, [troubleshootingSessions])
 
   useEffect(() => {
     const loadDocs = async () => {
@@ -275,74 +273,85 @@ export default function Dashboard({ onNavigate }) {
     setLoading(false)
   }
 
-  const openTroubleshooting = (messageItem) => {
-    const state = buildTroubleshootingState(messageItem?.result, messageItem?.meta?.doc_id, messageItem?.meta?.doc_weight ?? 0.5)
+  const createTroubleshootingMessage = (sessionId, state) => {
+    const question = state?.questions?.find(item => item.question_id === state?.currentQuestionId) || null
+    const candidate = state?.candidates?.find(item => item.node_id === question?.node_id) || null
+    const topCandidates = (Array.isArray(state?.candidates) ? state.candidates : []).slice(0, 3)
+    return {
+      role: 'assistant',
+      kind: state?.finished ? 'troubleshooting_done' : 'troubleshooting',
+      session_id: sessionId,
+      question_id: question?.question_id || null,
+      question,
+      candidate,
+      top_candidates: topCandidates,
+      meta: {
+        doc_id: state?.doc_id || null,
+        doc_weight: state?.doc_weight,
+      },
+    }
+  }
+
+  const startTroubleshooting = (messageItem) => {
+    const state = buildTroubleshootingState(
+      messageItem?.result,
+      messageItem?.meta?.doc_id,
+      messageItem?.meta?.doc_weight ?? 0.5
+    )
     if (!state.questions.length) {
       message.warning('当前故障树暂无可用的连续排查问题')
       return
     }
-    setTroubleshootingState(state)
-    setCurrentAnswer('unknown')
-    setFeedbackResolved(true)
-    setFeedbackRootCause(undefined)
-    setFeedbackHelpfulQuestion(undefined)
-    setFeedbackNote('')
-    setTroubleshootingOpen(true)
+    const sessionId = `TS_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`
+    setTroubleshootingSessions(prev => ({ ...prev, [sessionId]: state }))
+    setMessages(prev => [
+      ...prev,
+      { role: 'assistant', text: `开始排查：${state.top_event || '设备故障'}` },
+      createTroubleshootingMessage(sessionId, state),
+    ])
   }
 
-  const submitTroubleshootingAnswer = () => {
-    setTroubleshootingState(prev => applyTroubleshootingAnswer(prev, currentAnswer))
-    setCurrentAnswer('unknown')
+  const answerLabel = (value) => {
+    if (value === 'yes') return '是，存在异常'
+    if (value === 'no') return '否，检查正常'
+    return '暂不确定'
   }
 
-  const topCandidates = useMemo(() => {
-    const list = Array.isArray(troubleshootingState?.candidates) ? troubleshootingState.candidates : []
-    return list.slice(0, 3)
-  }, [troubleshootingState])
+  const submitTroubleshootingAnswer = (sessionId, answerValue) => {
+    const session = troubleshootingSessionsRef.current?.[sessionId]
+    if (!session || session.finished) return
+    const question = session.questions.find(item => item.question_id === session.currentQuestionId)
+    if (!question) return
+    const nextState = applyTroubleshootingAnswer(session, answerValue)
+    setTroubleshootingSessions(prev => ({ ...prev, [sessionId]: nextState }))
+    setMessages(prev => [
+      ...prev,
+      { role: 'user', text: answerLabel(answerValue) },
+      createTroubleshootingMessage(sessionId, nextState),
+    ])
+  }
 
-  const currentQuestion = useMemo(
-    () => troubleshootingState?.questions?.find(item => item.question_id === troubleshootingState?.currentQuestionId) || null,
-    [troubleshootingState]
-  )
-  const currentCandidate = useMemo(
-    () => troubleshootingState?.candidates?.find(item => item.node_id === currentQuestion?.node_id) || null,
-    [troubleshootingState, currentQuestion]
-  )
-
-  const submitTroubleshootingFeedback = async () => {
-    if (!troubleshootingState) return
-    setFeedbackSubmitting(true)
+  const submitTroubleshootingFinalFeedback = async (sessionId) => {
+    const session = troubleshootingSessionsRef.current?.[sessionId]
+    if (!session) return
+    if (!session.doc_id) {
+      message.warning('当前未绑定知识文档，无法反馈到知识库权重')
+      return
+    }
+    if (feedbackSubmittingSession) return
+    setFeedbackSubmittingSession(sessionId)
     try {
-      if (feedbackHelpfulQuestion) {
-        const question = troubleshootingState.questions.find(item => item.question_id === feedbackHelpfulQuestion)
-        if (question?.template_key) {
-          const memory = loadQuestionWeightMemory()
-          const nextValue = Math.min(1.5, Number(memory[question.template_key] ?? 0.5) + 0.12)
-          memory[question.template_key] = Number(nextValue.toFixed(4))
-          saveQuestionWeightMemory(memory)
-        }
-      }
-      if (troubleshootingState.doc_id) {
-        await api.feedbackKnowledgeWeight({
-          doc_id: troubleshootingState.doc_id,
-          feedback_type: feedbackResolved ? 'helpful' : 'misleading',
-          amount: feedbackResolved ? 1 : 1,
-        })
-      }
-      const chosen = troubleshootingState.candidates.find(item => item.node_id === feedbackRootCause)
-      setMessages(prev => [...prev, {
-        role: 'assistant',
-        text: feedbackResolved
-          ? `已记录本次排障反馈，知识库权重已更新。当前确认根因：${chosen?.name || '已解决'}。`
-          : '已记录本次未解决反馈，知识库权重已做负向修正。',
-      }])
-      message.success(troubleshootingState.doc_id ? '反馈成功，知识库权重已更新' : '反馈已记录')
-      setFeedbackOpen(false)
-      setTroubleshootingOpen(false)
+      await api.feedbackKnowledgeWeight({
+        doc_id: session.doc_id,
+        feedback_type: 'helpful',
+        amount: 1,
+      })
+      setMessages(prev => [...prev, { role: 'assistant', text: '已反馈最终结果，知识库权重已更新。' }])
+      message.success('反馈成功，知识库权重已更新')
     } catch (e) {
       message.error(e.response?.data?.detail || e.message || '反馈失败')
     }
-    setFeedbackSubmitting(false)
+    setFeedbackSubmittingSession(null)
   }
 
   const loadToGenerate = (data) => {
@@ -464,12 +473,16 @@ export default function Dashboard({ onNavigate }) {
   }
 
   return (
-    <div className="page-container" style={{ paddingBottom: 96 }}>
+    <div className="page-container" style={{ padding: 0, paddingBottom: 96, minHeight: 'auto', background: 'transparent' }}>
       <div style={{ marginBottom: 16 }}>
         <Title level={3} className="page-title">对话</Title>
       </div>
-      <Card className="glass-card" style={{ minHeight: '60vh' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <Card
+        className="glass-card"
+        style={{ height: 'calc(100vh - 260px)', overflow: 'hidden' }}
+        styles={{ body: { height: '100%', overflow: 'auto', padding: 16 } }}
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12, minHeight: '100%' }}>
           {messages.length === 0 && <Text type="secondary">在下方输入框与 AI 对话，这里会显示双方对话内容。</Text>}
           {messages.map((m, i) => (
             <div key={i} style={{ display: 'flex', justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start' }}>
@@ -480,7 +493,65 @@ export default function Dashboard({ onNavigate }) {
                 background: m.role === 'user' ? '#e6f7ff' : '#fafafa',
                 border: '1px solid #f0f0f0'
               }}>
-                <Text style={{ whiteSpace: 'pre-wrap' }}>{m.text}</Text>
+                {m.kind === 'troubleshooting' || m.kind === 'troubleshooting_done' ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    <div>
+                      <Text strong>帮你排查故障</Text>
+                      <div style={{ marginTop: 4 }}>
+                        <Text type="secondary" style={{ fontSize: 12 }}>
+                          {m.question ? `当前问题：${m.question.title}` : '排查已结束，可直接反馈结果'}
+                        </Text>
+                      </div>
+                    </div>
+                    {m.question && (
+                      <div>
+                        <Text style={{ display: 'block', whiteSpace: 'pre-wrap' }}>{m.question.description}</Text>
+                        <div style={{ marginTop: 8 }}>
+                          <Space wrap>
+                            {m.question.options.map(opt => (
+                              <Button
+                                key={opt.value}
+                                size="small"
+                                type={opt.value === 'yes' ? 'primary' : 'default'}
+                                onClick={() => submitTroubleshootingAnswer(m.session_id, opt.value)}
+                                disabled={troubleshootingSessionsRef.current?.[m.session_id]?.currentQuestionId !== m.question_id}
+                              >
+                                {opt.label}
+                              </Button>
+                            ))}
+                          </Space>
+                        </div>
+                      </div>
+                    )}
+                    {Array.isArray(m.top_candidates) && m.top_candidates.length > 0 && (
+                      <div>
+                        <Text type="secondary" style={{ fontSize: 12 }}>当前最可能根因：</Text>
+                        <div style={{ marginTop: 6 }}>
+                          <Space wrap>
+                            {m.top_candidates.slice(0, 3).map(item => (
+                              <Tag key={item.node_id} color="red">
+                                {item.name} {Math.round(Number(item.score || 0) * 100)}%
+                              </Tag>
+                            ))}
+                          </Space>
+                        </div>
+                      </div>
+                    )}
+                    <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                      <Button
+                        size="small"
+                        type="primary"
+                        ghost
+                        onClick={() => submitTroubleshootingFinalFeedback(m.session_id)}
+                        loading={feedbackSubmittingSession === m.session_id}
+                      >
+                        问题已解决，反馈结果
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <Text style={{ whiteSpace: 'pre-wrap' }}>{m.text}</Text>
+                )}
                 {m.result && (
                   <div style={{ marginTop: 12 }}>
                     <Space wrap>
@@ -509,7 +580,7 @@ export default function Dashboard({ onNavigate }) {
                     </div>
                     <div style={{ marginTop: 8 }}>
                       <Space wrap>
-                        <Button size="small" type="primary" onClick={() => openTroubleshooting(m)}>
+                        <Button size="small" type="primary" onClick={() => startTroubleshooting(m)}>
                           帮我排查故障
                         </Button>
                         <Button size="small" onClick={() => openNativeFullScreen(m.result, 'view')}>系统全屏查看</Button>
@@ -635,148 +706,6 @@ export default function Dashboard({ onNavigate }) {
             )}
           </div>
         </Suspense>
-      </Modal>
-      <Modal
-        open={troubleshootingOpen}
-        title={troubleshootingState?.top_event ? `连续排查：${troubleshootingState.top_event}` : '连续排查'}
-        onCancel={() => setTroubleshootingOpen(false)}
-        width={920}
-        footer={
-          <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%' }}>
-            <Button onClick={() => setTroubleshootingOpen(false)}>关闭</Button>
-            <Space>
-              <Button type="primary" ghost onClick={() => setFeedbackOpen(true)}>
-                问题已经解决，点击反馈结果
-              </Button>
-              <Button type="primary" onClick={submitTroubleshootingAnswer} disabled={!currentQuestion}>
-                {troubleshootingState?.finished ? '已完成' : '提交本题并继续'}
-              </Button>
-            </Space>
-          </div>
-        }
-      >
-        <Space direction="vertical" size={16} style={{ width: '100%' }}>
-          <Progress
-            percent={Math.round(((troubleshootingState?.answers?.length || 0) / Math.max(1, troubleshootingState?.questions?.length || 1)) * 100)}
-            status={troubleshootingState?.finished ? 'success' : 'active'}
-          />
-          <Card size="small" title={currentQuestion ? `第 ${(troubleshootingState?.answers?.length || 0) + 1} 题（按权重优先）` : '排查结果'}>
-            {currentQuestion ? (
-              <Space direction="vertical" size={12} style={{ width: '100%' }}>
-                <Space wrap>
-                  <Text strong>{currentQuestion.title}</Text>
-                  <Tag color="red">问题权重 {Math.round(Number((currentCandidate?.score ?? currentQuestion.priority_score) || 0) * 100)}%</Tag>
-                </Space>
-                <Text type="secondary">{currentQuestion.description}</Text>
-                <Radio.Group value={currentAnswer} onChange={(e) => setCurrentAnswer(e.target.value)}>
-                  <Space direction="vertical">
-                    {currentQuestion.options.map(option => (
-                      <Radio key={option.value} value={option.value}>{option.label}</Radio>
-                    ))}
-                  </Space>
-                </Radio.Group>
-              </Space>
-            ) : (
-              <Text type="secondary">当前没有更多问题，建议查看右侧候选根因并提交反馈。</Text>
-            )}
-          </Card>
-          <Divider style={{ margin: '4px 0' }} />
-          <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: 16 }}>
-            <Card size="small" title="当前最可能根因">
-              <List
-                dataSource={topCandidates}
-                locale={{ emptyText: '暂无候选根因' }}
-                renderItem={(item, index) => (
-                  <List.Item>
-                    <div style={{ width: '100%' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-                        <Text strong>{index + 1}. {item.name}</Text>
-                        <Tag color={item.eliminated ? 'default' : index === 0 ? 'red' : 'blue'}>
-                          {Math.round(item.score * 100)}%
-                        </Tag>
-                      </div>
-                      <Space size={6} wrap style={{ margin: '6px 0' }}>
-                        <Tag>重要度 {Math.round(item.importance_weight * 100)}%</Tag>
-                        <Tag>症状匹配 {Math.round(item.symptom_weight * 100)}%</Tag>
-                        <Tag>经验权重 {Math.round(item.memory_weight * 100)}%</Tag>
-                      </Space>
-                      <Text type="secondary">{item.description || '该节点暂无补充说明'}</Text>
-                    </div>
-                  </List.Item>
-                )}
-              />
-            </Card>
-            <Card size="small" title="排查轨迹">
-              <List
-                size="small"
-                dataSource={troubleshootingState?.answers || []}
-                locale={{ emptyText: '尚未回答问题' }}
-                renderItem={(item) => {
-                  const q = troubleshootingState?.questions?.find(v => v.question_id === item.question_id)
-                  const ansText = item.answer === 'yes' ? '存在异常' : item.answer === 'no' ? '检查正常' : '暂不确定'
-                  return <List.Item>{`${q?.title || item.question_id}：${ansText}`}</List.Item>
-                }}
-              />
-            </Card>
-          </div>
-        </Space>
-      </Modal>
-      <Modal
-        open={feedbackOpen}
-        title="排障反馈"
-        onCancel={() => setFeedbackOpen(false)}
-        onOk={submitTroubleshootingFeedback}
-        okText="提交反馈"
-        confirmLoading={feedbackSubmitting}
-      >
-        <Space direction="vertical" size={16} style={{ width: '100%' }}>
-          <div>
-            <Text strong style={{ display: 'block', marginBottom: 8 }}>本次问题是否已解决</Text>
-            <Radio.Group value={feedbackResolved} onChange={(e) => setFeedbackResolved(e.target.value)}>
-              <Space>
-                <Radio value>已解决</Radio>
-                <Radio value={false}>未解决</Radio>
-              </Space>
-            </Radio.Group>
-          </div>
-          <div>
-            <Text strong style={{ display: 'block', marginBottom: 8 }}>实际根因</Text>
-            <Select
-              style={{ width: '100%' }}
-              value={feedbackRootCause}
-              onChange={setFeedbackRootCause}
-              placeholder="选择最终确认的根因"
-              allowClear
-              options={(troubleshootingState?.candidates || []).map(item => ({
-                value: item.node_id,
-                label: item.name,
-              }))}
-            />
-          </div>
-          <div>
-            <Text strong style={{ display: 'block', marginBottom: 8 }}>最有帮助的问题</Text>
-            <Select
-              style={{ width: '100%' }}
-              value={feedbackHelpfulQuestion}
-              onChange={setFeedbackHelpfulQuestion}
-              placeholder="选择最有帮助的一题"
-              allowClear
-              options={(troubleshootingState?.questions || []).map(item => ({
-                value: item.question_id,
-                label: item.title,
-              }))}
-            />
-          </div>
-          <Input.TextArea
-            value={feedbackNote}
-            onChange={(e) => setFeedbackNote(e.target.value)}
-            placeholder="补充说明本次排障结果"
-            autoSize={{ minRows: 3, maxRows: 5 }}
-          />
-          <Text type="secondary">
-            {troubleshootingState?.doc_id ? '提交后将回写知识库权重。' : '当前未绑定知识文档，提交后仅记录结果提示，不回写文档权重。'}
-          </Text>
-        </Space>
       </Modal>
     </div>
   )

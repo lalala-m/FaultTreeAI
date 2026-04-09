@@ -11,6 +11,7 @@
 
 -- 启用 pgvector 扩展（如果尚未启用）
 CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 -- =============================================
 -- 1. 文档表（原始文件元数据）
@@ -174,3 +175,64 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_doc_weights_weight
     ON knowledge_doc_weights(current_weight DESC);
 CREATE INDEX IF NOT EXISTS idx_knowledge_chunk_weights_weight
     ON knowledge_chunk_weights(current_weight DESC);
+
+CREATE TABLE IF NOT EXISTS knowledge_graph_cache (
+    line          VARCHAR(120) PRIMARY KEY,
+    graph_json    JSONB NOT NULL,
+    doc_count     INTEGER NOT NULL DEFAULT 0,
+    device_count  INTEGER NOT NULL DEFAULT 0,
+    fault_count   INTEGER NOT NULL DEFAULT 0,
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_knowledge_graph_cache_updated_at
+    ON knowledge_graph_cache(updated_at DESC);
+
+-- =============================================
+-- 10. 结构化知识库（按流水线/设备/问题/原因组织）
+-- =============================================
+CREATE TABLE IF NOT EXISTS knowledge_items (
+    item_id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    pipeline         VARCHAR(64) NOT NULL DEFAULT '流水线1',
+    machine_category VARCHAR(120) NOT NULL DEFAULT '',
+    machine          VARCHAR(160) NOT NULL DEFAULT '',
+    problem_category VARCHAR(120) NOT NULL DEFAULT '',
+    problem          TEXT NOT NULL,
+    root_cause       TEXT NOT NULL DEFAULT '',
+    solution         TEXT NOT NULL DEFAULT '',
+    metadata         JSONB NOT NULL DEFAULT '{}'::jsonb,
+    status           VARCHAR(20) NOT NULL DEFAULT 'active',
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_knowledge_items_pipeline
+    ON knowledge_items(pipeline);
+CREATE INDEX IF NOT EXISTS idx_knowledge_items_machine
+    ON knowledge_items(machine);
+CREATE INDEX IF NOT EXISTS idx_knowledge_items_problem_category
+    ON knowledge_items(problem_category);
+
+CREATE TABLE IF NOT EXISTS knowledge_item_embeddings (
+    embedding_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    item_id      UUID NOT NULL REFERENCES knowledge_items(item_id) ON DELETE CASCADE UNIQUE,
+    embedding    VECTOR(1024),
+    model_name   VARCHAR(50) NOT NULL DEFAULT 'embo-01',
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_knowledge_item_embeddings_hnsw
+    ON knowledge_item_embeddings USING hnsw (embedding vector_cosine_ops)
+    WITH (m = 16, ef_construction = 64);
+
+CREATE TABLE IF NOT EXISTS knowledge_item_weights (
+    item_id          UUID PRIMARY KEY REFERENCES knowledge_items(item_id) ON DELETE CASCADE,
+    helpful_weight   DOUBLE PRECISION NOT NULL DEFAULT 0,
+    misleading_weight DOUBLE PRECISION NOT NULL DEFAULT 0,
+    feedback_count   INTEGER NOT NULL DEFAULT 0,
+    current_weight   DOUBLE PRECISION NOT NULL DEFAULT 0.5,
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_knowledge_item_weights_weight
+    ON knowledge_item_weights(current_weight DESC);

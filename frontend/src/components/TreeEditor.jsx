@@ -502,7 +502,8 @@ const TreeEditor = forwardRef(function TreeEditor({ initialTree, onSave, onCance
 
       {/* 画布 */}
       <div style={{ 
-        height: 500, 
+        height: 500,
+        width: '100%',
         border: '1px solid rgba(24,144,255,0.2)', 
         borderRadius: 8,
         overflow: 'hidden',
@@ -517,7 +518,7 @@ const TreeEditor = forwardRef(function TreeEditor({ initialTree, onSave, onCance
           nodeTypes={nodeTypes}
           fitView
           fitViewOptions={{ padding: 0.2 }}
-          style={{ background: 'transparent' }}
+          style={{ background: 'transparent', width: '100%', height: '100%' }}
         >
           <Controls style={{ background: '#141b3a', border: '1px solid rgba(24,144,255,0.2)' }} />
           <Background color="#1890ff" gap={20} style={{ opacity: 0.1 }} />

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import {
-  Card, Upload, Table, Button, Space, Tag, Typography, message, Progress, Empty, Popconfirm, Steps, Alert
+  Card, Upload, Table, Button, Space, Tag, Typography, message, Progress, Empty, Popconfirm, Steps, Alert, Input, Modal, Form, Select
 } from 'antd'
 import { 
   UploadOutlined, 
@@ -24,6 +24,17 @@ export default function KnowledgeBase() {
   const [progress, setProgress] = useState(0)
   const [loading, setLoading] = useState(true)
   const [uploadStep, setUploadStep] = useState(0)
+  const [weightSubmitting, setWeightSubmitting] = useState({})
+  const [uploadPipeline, setUploadPipeline] = useState('流水线1')
+  const [pipelines, setPipelines] = useState(['流水线1'])
+
+  const [items, setItems] = useState([])
+  const [itemsLoading, setItemsLoading] = useState(false)
+  const [itemsPipeline, setItemsPipeline] = useState('流水线1')
+  const [itemModalOpen, setItemModalOpen] = useState(false)
+  const [itemSubmitting, setItemSubmitting] = useState(false)
+  const [itemWeightSubmitting, setItemWeightSubmitting] = useState({})
+  const [itemForm] = Form.useForm()
 
   const loadDocs = async () => {
     try {
@@ -36,6 +47,34 @@ export default function KnowledgeBase() {
   }
 
   useEffect(() => { loadDocs() }, [])
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const list = await api.listPipelines()
+        const p = Array.from(new Set(['流水线1', ...(list || []).filter(Boolean)]))
+        setPipelines(p)
+        if (!p.includes(uploadPipeline)) setUploadPipeline(p[0] || '流水线1')
+        if (!p.includes(itemsPipeline)) setItemsPipeline(p[0] || '流水线1')
+      } catch {
+        setPipelines(['流水线1'])
+      }
+    }
+    load()
+  }, [])
+
+  const loadItems = async (pipelineValue = itemsPipeline) => {
+    setItemsLoading(true)
+    try {
+      const data = await api.listKnowledgeItems({ pipeline: pipelineValue, status: 'active', limit: 100 })
+      setItems(Array.isArray(data) ? data : [])
+    } catch (e) {
+      setItems([])
+      message.error(e.response?.data?.detail || e.message || '加载结构化知识失败')
+    }
+    setItemsLoading(false)
+  }
+
+  useEffect(() => { loadItems(itemsPipeline) }, [itemsPipeline])
 
   const handleUpload = async ({ file }) => {
     setUploading(true)
@@ -56,7 +95,7 @@ export default function KnowledgeBase() {
       setUploadStep(3)
       setProgress(60)
       
-      await api.uploadDocument(file, setProgress)
+      await api.uploadDocument(file, setProgress, uploadPipeline)
       
       // 步骤4: 完成
       setUploadStep(4)
@@ -80,6 +119,23 @@ export default function KnowledgeBase() {
     } catch (err) {
       message.error('删除失败')
     }
+  }
+
+  const handleFeedbackWeight = async (docId, feedbackType) => {
+    const key = `${docId}:${feedbackType}`
+    setWeightSubmitting(prev => ({ ...prev, [key]: true }))
+    try {
+      await api.feedbackKnowledgeWeight({
+        doc_id: docId,
+        feedback_type: feedbackType,
+        amount: 1,
+      })
+      message.success('已反馈')
+      await loadDocs()
+    } catch (err) {
+      message.error(err.response?.data?.detail || '反馈失败')
+    }
+    setWeightSubmitting(prev => ({ ...prev, [key]: false }))
   }
 
   // 获取文件图标 - 使用 FileTextOutlined 代替不存在的 FileTxtOutlined
@@ -118,6 +174,38 @@ export default function KnowledgeBase() {
       ),
     },
     {
+      title: '知识权重',
+      dataIndex: 'current_weight',
+      key: 'current_weight',
+      width: 180,
+      render: (v, row) => {
+        const weight = Number(v)
+        const pct = Math.round((Number.isFinite(weight) ? weight : 0.5) * 100)
+        return (
+          <Space direction="vertical" size={4} style={{ width: '100%' }}>
+            <Progress percent={pct} size="small" showInfo={false} />
+            <Space size={6} wrap>
+              <Tag color={pct >= 70 ? 'green' : pct >= 50 ? 'blue' : 'orange'}>{pct}%</Tag>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                反馈 {Number(row.feedback_count || 0)}
+              </Text>
+            </Space>
+          </Space>
+        )
+      },
+    },
+    {
+      title: '有效/误导',
+      key: 'weight_counts',
+      width: 140,
+      render: (_, row) => (
+        <Space size={8}>
+          <Tag color="green">{Number(row.helpful_weight || 0)}</Tag>
+          <Tag color="red">{Number(row.misleading_weight || 0)}</Tag>
+        </Space>
+      ),
+    },
+    {
       title: '上传时间', 
       dataIndex: 'upload_time', 
       key: 'upload_time',
@@ -126,15 +214,112 @@ export default function KnowledgeBase() {
     {
       title: '操作', 
       key: 'action',
-      width: 100,
+      width: 220,
       render: (_, row) => (
-        <Popconfirm 
-          title="确认删除此文档？" 
-          description="删除后相关知识将从知识库中移除"
-          onConfirm={() => handleDelete(row.doc_id)}
-        >
-          <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
-        </Popconfirm>
+        <Space size={8}>
+          <Button
+            size="small"
+            onClick={() => handleFeedbackWeight(row.doc_id, 'helpful')}
+            loading={!!weightSubmitting[`${row.doc_id}:helpful`]}
+          >
+            有效 +1
+          </Button>
+          <Button
+            size="small"
+            danger
+            onClick={() => handleFeedbackWeight(row.doc_id, 'misleading')}
+            loading={!!weightSubmitting[`${row.doc_id}:misleading`]}
+          >
+            误导 +1
+          </Button>
+          <Popconfirm 
+            title="确认删除此文档？" 
+            description="删除后相关知识将从知识库中移除"
+            onConfirm={() => handleDelete(row.doc_id)}
+          >
+            <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
+          </Popconfirm>
+        </Space>
+      ),
+    },
+  ]
+
+  const itemColumns = [
+    { title: '机械类别', dataIndex: 'machine_category', key: 'machine_category', width: 120, render: (v) => <Text>{v || '-'}</Text> },
+    { title: '机械', dataIndex: 'machine', key: 'machine', width: 140, render: (v) => <Text>{v || '-'}</Text> },
+    { title: '问题类别', dataIndex: 'problem_category', key: 'problem_category', width: 120, render: (v) => <Text>{v || '-'}</Text> },
+    { title: '问题', dataIndex: 'problem', key: 'problem', render: (v) => <Text style={{ color: '#1a1a1a' }}>{v}</Text> },
+    { title: '导致原因', dataIndex: 'root_cause', key: 'root_cause', render: (v) => <Text type="secondary">{v || '-'}</Text> },
+    { title: '解决方法', dataIndex: 'solution', key: 'solution', render: (v) => <Text type="secondary">{v || '-'}</Text> },
+    {
+      title: '权重',
+      dataIndex: 'current_weight',
+      key: 'current_weight',
+      width: 120,
+      render: (v) => {
+        const weight = Number(v)
+        const pct = Math.round((Number.isFinite(weight) ? weight : 0.5) * 100)
+        return <Tag color={pct >= 70 ? 'green' : pct >= 50 ? 'blue' : 'orange'}>{pct}%</Tag>
+      },
+    },
+    {
+      title: '操作',
+      key: 'action',
+      width: 200,
+      render: (_, row) => (
+        <Space size={8}>
+          <Button
+            size="small"
+            onClick={async () => {
+              const key = `${row.item_id}:helpful`
+              setItemWeightSubmitting(prev => ({ ...prev, [key]: true }))
+              try {
+                await api.feedbackKnowledgeItemWeight({ item_id: row.item_id, feedback_type: 'helpful', amount: 1 })
+                await loadItems()
+                message.success('已反馈')
+              } catch (e) {
+                message.error(e.response?.data?.detail || e.message || '反馈失败')
+              }
+              setItemWeightSubmitting(prev => ({ ...prev, [key]: false }))
+            }}
+            loading={!!itemWeightSubmitting[`${row.item_id}:helpful`]}
+          >
+            有效 +1
+          </Button>
+          <Button
+            size="small"
+            danger
+            onClick={async () => {
+              const key = `${row.item_id}:misleading`
+              setItemWeightSubmitting(prev => ({ ...prev, [key]: true }))
+              try {
+                await api.feedbackKnowledgeItemWeight({ item_id: row.item_id, feedback_type: 'misleading', amount: 1 })
+                await loadItems()
+                message.success('已反馈')
+              } catch (e) {
+                message.error(e.response?.data?.detail || e.message || '反馈失败')
+              }
+              setItemWeightSubmitting(prev => ({ ...prev, [key]: false }))
+            }}
+            loading={!!itemWeightSubmitting[`${row.item_id}:misleading`]}
+          >
+            误导 +1
+          </Button>
+          <Popconfirm
+            title="确认删除此条结构化知识？"
+            onConfirm={async () => {
+              try {
+                await api.deleteKnowledgeItem(row.item_id)
+                await loadItems()
+                message.success('已删除')
+              } catch (e) {
+                message.error(e.response?.data?.detail || e.message || '删除失败')
+              }
+            }}
+          >
+            <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
+          </Popconfirm>
+        </Space>
       ),
     },
   ]
@@ -183,6 +368,21 @@ export default function KnowledgeBase() {
 
       {/* 上传区域 */}
       <Card className="glass-card" style={{ marginBottom: 24 }}>
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 12 }}>
+          <Text strong>流水线</Text>
+          <Select
+            style={{ width: 220 }}
+            value={uploadPipeline}
+            onChange={setUploadPipeline}
+            options={pipelines.map(p => ({ value: p, label: p }))}
+          />
+          <Input
+            style={{ width: 260 }}
+            value={uploadPipeline}
+            onChange={(e) => setUploadPipeline(e.target.value)}
+            placeholder="可输入新流水线名称"
+          />
+        </div>
         {/* 上传进度步骤条 */}
         {uploading && (
           <div style={{ marginBottom: 24 }}>
@@ -273,6 +473,87 @@ export default function KnowledgeBase() {
           }}
         />
       </Card>
+
+      <Card className="glass-card" style={{ marginTop: 24 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+          <Space>
+            <Text strong style={{ fontSize: 15, color: '#1a1a1a' }}>结构化知识（流水线→机械类别→机械→问题类别→问题→原因）</Text>
+            <Select
+              style={{ width: 220 }}
+              value={itemsPipeline}
+              onChange={setItemsPipeline}
+              options={pipelines.map(p => ({ value: p, label: p }))}
+            />
+          </Space>
+          <Space>
+            <Button onClick={() => loadItems(itemsPipeline)} loading={itemsLoading}>刷新</Button>
+            <Button type="primary" onClick={() => {
+              itemForm.resetFields()
+              itemForm.setFieldsValue({ pipeline: itemsPipeline })
+              setItemModalOpen(true)
+            }}>新增结构化知识</Button>
+          </Space>
+        </div>
+
+        <Table
+          columns={itemColumns}
+          dataSource={items}
+          rowKey="item_id"
+          loading={itemsLoading}
+          pagination={{ pageSize: 8 }}
+          locale={{ emptyText: <Empty description="暂无结构化知识，请新增" /> }}
+        />
+      </Card>
+
+      <Modal
+        open={itemModalOpen}
+        title="新增结构化知识"
+        onCancel={() => setItemModalOpen(false)}
+        okText="保存"
+        confirmLoading={itemSubmitting}
+        onOk={async () => {
+          try {
+            const values = await itemForm.validateFields()
+            setItemSubmitting(true)
+            await api.createKnowledgeItem(values)
+            setItemModalOpen(false)
+            await loadItems(values.pipeline || itemsPipeline)
+            message.success('已新增')
+          } catch (e) {
+            if (e?.errorFields) return
+            message.error(e.response?.data?.detail || e.message || '保存失败')
+          }
+          setItemSubmitting(false)
+        }}
+      >
+        <Form
+          form={itemForm}
+          layout="vertical"
+          initialValues={{ pipeline: itemsPipeline }}
+        >
+          <Form.Item name="pipeline" label="流水线" rules={[{ required: true, message: '请输入流水线' }]}>
+            <Input placeholder="例如：流水线1" />
+          </Form.Item>
+          <Form.Item name="machine_category" label="机械类别">
+            <Input placeholder="例如：变频器" />
+          </Form.Item>
+          <Form.Item name="machine" label="机械">
+            <Input placeholder="例如：1FT7 电机" />
+          </Form.Item>
+          <Form.Item name="problem_category" label="问题类别">
+            <Input placeholder="例如：运行异常" />
+          </Form.Item>
+          <Form.Item name="problem" label="问题" rules={[{ required: true, message: '请输入问题' }]}>
+            <Input.TextArea placeholder="例如：设备运行时出现电弧" autoSize={{ minRows: 2, maxRows: 4 }} />
+          </Form.Item>
+          <Form.Item name="root_cause" label="导致原因">
+            <Input.TextArea placeholder="例如：运行时断开插接导致电弧" autoSize={{ minRows: 2, maxRows: 4 }} />
+          </Form.Item>
+          <Form.Item name="solution" label="解决方法">
+            <Input.TextArea placeholder="例如：只能在断电时断开连接" autoSize={{ minRows: 2, maxRows: 4 }} />
+          </Form.Item>
+        </Form>
+      </Modal>
     </div>
   )
 }
