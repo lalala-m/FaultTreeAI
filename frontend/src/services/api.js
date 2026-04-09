@@ -143,6 +143,12 @@ export const feedbackKnowledgeItemWeight = async (payload) => {
   return data
 }
 
+export const listKnowledgeItemSuggestions = async (pipeline, limit = 8) => {
+  const { data } = await api.get('/knowledge/items/suggestions', { params: { pipeline, limit } })
+  if (Array.isArray(data)) return data
+  return Array.isArray(data?.suggestions) ? data.suggestions : []
+}
+
 export const updateKnowledgeItem = async (itemId, payload) => {
   const { data } = await api.put(`/knowledge/items/${itemId}`, payload)
   invalidateCache(['knowledgeItems'])
@@ -272,6 +278,7 @@ api.createKnowledgeItem = createKnowledgeItem
 api.listKnowledgeItems = listKnowledgeItems
 api.searchKnowledgeItems = searchKnowledgeItems
 api.feedbackKnowledgeItemWeight = feedbackKnowledgeItemWeight
+api.listKnowledgeItemSuggestions = listKnowledgeItemSuggestions
 api.updateKnowledgeItem = updateKnowledgeItem
 api.deleteKnowledgeItem = deleteKnowledgeItem
 api.generateFaultTree = generateFaultTree

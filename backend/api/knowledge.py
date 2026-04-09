@@ -991,6 +991,53 @@ async def list_knowledge_items(
     ]
 
 
+@router.get("/items/suggestions")
+async def list_knowledge_item_suggestions(pipeline: str = "流水线1", limit: int = 8):
+    pipeline = _normalize_pipeline(pipeline)
+    limit = max(1, min(int(limit or 8), 20))
+
+    with psycopg2.connect(
+        host=settings.DB_HOST, port=settings.DB_PORT,
+        user=settings.DB_USER, password=settings.DB_PASSWORD,
+        database=settings.DB_NAME
+    ) as conn:
+        _ensure_structured_knowledge_tables(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    ki.problem,
+                    COALESCE(kw.current_weight, 0.5) AS w,
+                    ki.updated_at
+                FROM knowledge_items ki
+                LEFT JOIN knowledge_item_weights kw ON kw.item_id = ki.item_id
+                WHERE ki.status = 'active'
+                  AND ki.pipeline = %s
+                  AND LENGTH(TRIM(COALESCE(ki.problem, ''))) > 0
+                ORDER BY w DESC, ki.updated_at DESC
+                LIMIT 200
+                """,
+                (pipeline,),
+            )
+            rows = cur.fetchall() or []
+
+    seen = set()
+    out = []
+    for problem, _, _ in rows:
+        p = str(problem or "").strip()
+        if not p:
+            continue
+        key = p.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(p)
+        if len(out) >= limit:
+            break
+
+    return {"pipeline": pipeline, "suggestions": out}
+
+
 @router.put("/items/{item_id}")
 async def update_knowledge_item(item_id: str, payload: KnowledgeItemUpdateRequest):
     try:

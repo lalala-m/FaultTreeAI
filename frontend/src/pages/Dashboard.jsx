@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState, Suspense, lazy, useRef } from 'react'
-import { Typography, Card, Input, Button, Space, Select, Badge, Slider, Tag, Modal, message } from 'antd'
-import { ThunderboltOutlined } from '@ant-design/icons'
+import { Typography, Card, Input, Button, Space, Select, Badge, Slider, Tag, Modal, message, Popover } from 'antd'
+import { ThunderboltOutlined, SendOutlined, SettingOutlined } from '@ant-design/icons'
 import api from '../services/api.js'
 
 const { Title, Text } = Typography
@@ -196,6 +196,7 @@ export default function Dashboard({ onNavigate }) {
   const [troubleshootingSessions, setTroubleshootingSessions] = useState({})
   const troubleshootingSessionsRef = useRef({})
   const [feedbackSubmittingSession, setFeedbackSubmittingSession] = useState(null)
+  const bottomRef = useRef(null)
 
   useEffect(() => {
     troubleshootingSessionsRef.current = troubleshootingSessions
@@ -227,6 +228,42 @@ export default function Dashboard({ onNavigate }) {
     loadProviders()
   }, [])
 
+  const fallbackSuggestions = useMemo(() => ([
+    '设备通电后无法启动，伴随异响',
+    '电机运行时过热并触发保护',
+    '伺服驱动器报警，无法复位',
+    '设备运行异常：振动增大，噪声变大',
+    '设备无法开机，电源指示灯不亮',
+    '运行过程中频繁跳闸，疑似短路',
+    '气动系统压力不足，动作缓慢',
+    '传感器信号不稳定，误报警频发',
+  ]), [])
+
+  const [suggestions, setSuggestions] = useState([])
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const selectedDocItem = docs.find(item => item.doc_id === selectedDoc)
+        const activeDoc = docs.find(d => d.status === 'active')
+        const pipeline = (selectedDocItem?.pipeline || activeDoc?.pipeline || '流水线1')
+        const list = await api.listKnowledgeItemSuggestions(pipeline, 8)
+        setSuggestions(Array.isArray(list) ? list.filter(Boolean) : [])
+      } catch {
+        setSuggestions([])
+      }
+    }
+    if (messages.length === 0) load()
+  }, [docs, selectedDoc, messages.length])
+
+  useEffect(() => {
+    try {
+      if (messages.length === 0) return
+      bottomRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'end' })
+    } catch {
+    }
+  }, [messages.length])
+
   useEffect(() => {
     try {
       const raw = sessionStorage.getItem('dashboard_chat_inject')
@@ -241,8 +278,10 @@ export default function Dashboard({ onNavigate }) {
   }, [])
   const send = async () => {
     const text = input.trim()
-    if (!text) return
-    setMessages(prev => [...prev, { role: 'user', text }])
+    if (!text || loading) return
+    const now = Date.now()
+    const typingId = `typing_${now}_${Math.random().toString(16).slice(2, 8)}`
+    setMessages(prev => [...prev, { role: 'user', text }, { role: 'assistant', kind: 'typing', id: typingId }])
     setInput('')
     setLoading(true)
     try {
@@ -256,7 +295,7 @@ export default function Dashboard({ onNavigate }) {
         manual_weight: Math.max(0, Math.min(100, manualWeight)) / 100.0,
       })
       const selectedDocItem = docs.find(item => item.doc_id === selectedDoc)
-      setMessages(prev => [...prev, {
+      setMessages(prev => prev.map(m => (m.id === typingId ? {
         role: 'assistant',
         text: data.fault_tree?.analysis_summary || '已生成故障树。',
         result: data,
@@ -266,12 +305,62 @@ export default function Dashboard({ onNavigate }) {
           manual_weight: manualWeight,
           provider: selectedProvider || null,
         },
-      }])
+      } : m)))
     } catch (e) {
-      setMessages(prev => [...prev, { role: 'assistant', text: '生成失败：' + (e.response?.data?.detail || e.message) }])
+      setMessages(prev => prev.map(m => (m.id === typingId
+        ? { role: 'assistant', text: '生成失败：' + (e.response?.data?.detail || e.message) }
+        : m
+      )))
     }
     setLoading(false)
   }
+
+  const composerSettings = (
+    <div style={{ width: 520 }}>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 10 }}>
+        <div style={{ width: 72, fontSize: 12, color: '#666' }}>操作手册</div>
+        <Select
+          style={{ flex: 1 }}
+          placeholder="选择已上传的操作手册..."
+          value={selectedDoc}
+          onChange={setSelectedDoc}
+          allowClear
+          options={docs.filter(d => d.status === 'active').map(d => ({ value: d.doc_id, label: d.filename }))}
+        />
+      </div>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 10 }}>
+        <div style={{ width: 72, fontSize: 12, color: '#666' }}>模型</div>
+        <Select
+          style={{ flex: 1 }}
+          value={selectedProvider}
+          onChange={setSelectedProvider}
+          options={providers.map(p => ({
+            value: p.name,
+            disabled: !p.available,
+            label: (
+              <Space>
+                <span style={{ textTransform: 'capitalize' }}>{p.name}</span>
+                <Badge status={p.available ? 'success' : 'error'} text={p.available ? '可用' : (p.reason || '不可用')} />
+              </Space>
+            )
+          }))}
+        />
+      </div>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+        <div style={{ width: 72, fontSize: 12, color: '#666' }}>文档权重</div>
+        <Slider
+          style={{ flex: 1, minWidth: 220 }}
+          value={manualWeight}
+          onChange={setManualWeight}
+          min={0}
+          max={100}
+          step={1}
+          marks={{ 0: '0%', 50: '50%', 100: '100%' }}
+        />
+        <Tag color="geekblue" style={{ minWidth: 48, textAlign: 'center' }}>{manualWeight}%</Tag>
+      </div>
+    </div>
+  )
 
   const createTroubleshootingMessage = (sessionId, state) => {
     const question = state?.questions?.find(item => item.question_id === state?.currentQuestionId) || null
@@ -473,169 +562,195 @@ export default function Dashboard({ onNavigate }) {
   }
 
   return (
-    <div className="page-container" style={{ padding: 0, paddingBottom: 96, minHeight: 'auto', background: 'transparent' }}>
-      <div style={{ marginBottom: 16 }}>
-        <Title level={3} className="page-title">对话</Title>
-      </div>
-      <Card
-        className="glass-card"
-        style={{ height: 'calc(100vh - 260px)', overflow: 'hidden' }}
-        styles={{ body: { height: '100%', overflow: 'auto', padding: 16 } }}
-      >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12, minHeight: '100%' }}>
-          {messages.length === 0 && <Text type="secondary">在下方输入框与 AI 对话，这里会显示双方对话内容。</Text>}
-          {messages.map((m, i) => (
-            <div key={i} style={{ display: 'flex', justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start' }}>
-              <div style={{
-                maxWidth: '80%',
-                padding: 12,
-                borderRadius: 8,
-                background: m.role === 'user' ? '#e6f7ff' : '#fafafa',
-                border: '1px solid #f0f0f0'
-              }}>
-                {m.kind === 'troubleshooting' || m.kind === 'troubleshooting_done' ? (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                    <div>
-                      <Text strong>帮你排查故障</Text>
-                      <div style={{ marginTop: 4 }}>
-                        <Text type="secondary" style={{ fontSize: 12 }}>
-                          {m.question ? `当前问题：${m.question.title}` : '排查已结束，可直接反馈结果'}
-                        </Text>
+    <div className="page-container" style={{ height: 'calc(100vh - 112px)', display: 'flex', flexDirection: 'column', padding: 0, overflow: 'hidden', minHeight: 'auto', background: 'transparent' }}>
+      <style>{`
+        .chat-scroll::-webkit-scrollbar { width: 0; height: 0; }
+        @keyframes chatDotPulse { 0%, 80%, 100% { opacity: .25; transform: translateY(0);} 40% { opacity: 1; transform: translateY(-2px);} }
+      `}</style>
+      <div className="chat-scroll" style={{ flex: 1, overflow: 'auto', padding: '12px 0 18px 0', scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+        {messages.length === 0 ? (
+          <div style={{ height: 'calc(100vh - 220px)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 18 }}>
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ fontSize: 28, fontWeight: 700, color: '#111' }}>有什么我能帮你的吗？</div>
+              <div style={{ marginTop: 8, color: '#666' }}>从下方输入故障现象，我会生成故障树并提供排查建议</div>
+            </div>
+            <div style={{ maxWidth: 980, padding: '0 12px', display: 'flex', flexWrap: 'wrap', gap: 10, justifyContent: 'center' }}>
+              {(suggestions.length > 0 ? suggestions : fallbackSuggestions).map((s) => (
+                <Button
+                  key={s}
+                  shape="round"
+                  onClick={() => setInput(s)}
+                  style={{ background: '#f5f5f5', borderColor: '#f0f0f0' }}
+                >
+                  {s}
+                </Button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div style={{ maxWidth: 980, margin: '0 auto', padding: '0 12px' }}>
+            <div style={{ marginBottom: 12 }}>
+              <Title level={3} className="page-title" style={{ margin: 0 }}>对话</Title>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {messages.map((m, i) => (
+                <div key={i} style={{ display: 'flex', justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start' }}>
+                  <div style={{
+                    maxWidth: '86%',
+                    padding: 12,
+                    borderRadius: 12,
+                    background: m.role === 'user' ? '#e6f7ff' : '#fff',
+                    border: '1px solid #f0f0f0'
+                  }}>
+                    {m.kind === 'typing' ? (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                          <span style={{ width: 6, height: 6, borderRadius: 6, background: '#1677ff', display: 'inline-block', animation: 'chatDotPulse 1.1s infinite', animationDelay: '0s' }} />
+                          <span style={{ width: 6, height: 6, borderRadius: 6, background: '#1677ff', display: 'inline-block', animation: 'chatDotPulse 1.1s infinite', animationDelay: '0.15s' }} />
+                          <span style={{ width: 6, height: 6, borderRadius: 6, background: '#1677ff', display: 'inline-block', animation: 'chatDotPulse 1.1s infinite', animationDelay: '0.3s' }} />
+                        </div>
+                        <Text type="secondary">正在生成…</Text>
                       </div>
-                    </div>
-                    {m.question && (
-                      <div>
-                        <Text style={{ display: 'block', whiteSpace: 'pre-wrap' }}>{m.question.description}</Text>
+                    ) : null}
+                    {m.kind === 'troubleshooting' || m.kind === 'troubleshooting_done' ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                        <div>
+                          <Text strong>帮你排查故障</Text>
+                          <div style={{ marginTop: 4 }}>
+                            <Text type="secondary" style={{ fontSize: 12 }}>
+                              {m.question ? `当前问题：${m.question.title}` : '排查已结束，可直接反馈结果'}
+                            </Text>
+                          </div>
+                        </div>
+                        {m.question && (
+                          <div>
+                            <Text style={{ display: 'block', whiteSpace: 'pre-wrap' }}>{m.question.description}</Text>
+                            <div style={{ marginTop: 8 }}>
+                              <Space wrap>
+                                {m.question.options.map(opt => (
+                                  <Button
+                                    key={opt.value}
+                                    size="small"
+                                    type={opt.value === 'yes' ? 'primary' : 'default'}
+                                    onClick={() => submitTroubleshootingAnswer(m.session_id, opt.value)}
+                                    disabled={troubleshootingSessionsRef.current?.[m.session_id]?.currentQuestionId !== m.question_id}
+                                  >
+                                    {opt.label}
+                                  </Button>
+                                ))}
+                              </Space>
+                            </div>
+                          </div>
+                        )}
+                        {Array.isArray(m.top_candidates) && m.top_candidates.length > 0 && (
+                          <div>
+                            <Text type="secondary" style={{ fontSize: 12 }}>当前最可能根因：</Text>
+                            <div style={{ marginTop: 6 }}>
+                              <Space wrap>
+                                {m.top_candidates.slice(0, 3).map(item => (
+                                  <Tag key={item.node_id} color="red">
+                                    {item.name} {Math.round(Number(item.score || 0) * 100)}%
+                                  </Tag>
+                                ))}
+                              </Space>
+                            </div>
+                          </div>
+                        )}
+                        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                          <Button
+                            size="small"
+                            type="primary"
+                            ghost
+                            onClick={() => submitTroubleshootingFinalFeedback(m.session_id)}
+                            loading={feedbackSubmittingSession === m.session_id}
+                          >
+                            问题已解决，反馈结果
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      m.kind !== 'typing' ? <Text style={{ whiteSpace: 'pre-wrap' }}>{m.text}</Text> : null
+                    )}
+                    {m.result && (
+                      <div style={{ marginTop: 12 }}>
+                        <Space wrap>
+                          {m.result.provider && <Tag color="purple">模型: {String(m.result.provider).toUpperCase()}</Tag>}
+                          <Tag>权重: {m.meta?.manual_weight ?? manualWeight}%</Tag>
+                          {m.meta?.doc_weight != null && <Tag color="blue">知识权重: {Math.round(Number(m.meta.doc_weight || 0.5) * 100)}%</Tag>}
+                          <Tag>TopK: 5</Tag>
+                        </Space>
+                        <div style={{ marginTop: 12 }}>
+                          <Suspense fallback={null}>
+                            <FaultTreeViewer tree={{
+                              tree_id: m.result.tree_id,
+                              fault_tree: m.result.fault_tree,
+                              nodes_json: m.result.fault_tree?.nodes,
+                              gates_json: m.result.fault_tree?.gates,
+                              mcs: m.result.mcs,
+                              importance: m.result.importance,
+                              validation_issues: m.result.validation_issues
+                            }} />
+                          </Suspense>
+                        </div>
+                        <div style={{ marginTop: 8 }}>
+                          <Button size="small" onClick={() => loadToGenerate(m.result)}>
+                            载入到生成页并编辑
+                          </Button>
+                        </div>
                         <div style={{ marginTop: 8 }}>
                           <Space wrap>
-                            {m.question.options.map(opt => (
-                              <Button
-                                key={opt.value}
-                                size="small"
-                                type={opt.value === 'yes' ? 'primary' : 'default'}
-                                onClick={() => submitTroubleshootingAnswer(m.session_id, opt.value)}
-                                disabled={troubleshootingSessionsRef.current?.[m.session_id]?.currentQuestionId !== m.question_id}
-                              >
-                                {opt.label}
-                              </Button>
-                            ))}
+                            <Button size="small" type="primary" onClick={() => startTroubleshooting(m)}>
+                              帮我排查故障
+                            </Button>
+                            <Button size="small" onClick={() => openNativeFullScreen(m.result, 'view')}>系统全屏查看</Button>
+                            <Button size="small" type="primary" onClick={() => openFullScreen(m.result, 'edit')}>主页专家编辑</Button>
+                            <Button size="small" onClick={() => loadToGenerate(m.result)}>载入到生成页并编辑</Button>
                           </Space>
                         </div>
                       </div>
                     )}
-                    {Array.isArray(m.top_candidates) && m.top_candidates.length > 0 && (
-                      <div>
-                        <Text type="secondary" style={{ fontSize: 12 }}>当前最可能根因：</Text>
-                        <div style={{ marginTop: 6 }}>
-                          <Space wrap>
-                            {m.top_candidates.slice(0, 3).map(item => (
-                              <Tag key={item.node_id} color="red">
-                                {item.name} {Math.round(Number(item.score || 0) * 100)}%
-                              </Tag>
-                            ))}
-                          </Space>
-                        </div>
-                      </div>
-                    )}
-                    <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                      <Button
-                        size="small"
-                        type="primary"
-                        ghost
-                        onClick={() => submitTroubleshootingFinalFeedback(m.session_id)}
-                        loading={feedbackSubmittingSession === m.session_id}
-                      >
-                        问题已解决，反馈结果
-                      </Button>
-                    </div>
                   </div>
-                ) : (
-                  <Text style={{ whiteSpace: 'pre-wrap' }}>{m.text}</Text>
-                )}
-                {m.result && (
-                  <div style={{ marginTop: 12 }}>
-                    <Space wrap>
-                      {m.result.provider && <Tag color="purple">模型: {String(m.result.provider).toUpperCase()}</Tag>}
-                      <Tag>权重: {m.meta?.manual_weight ?? manualWeight}%</Tag>
-                      {m.meta?.doc_weight != null && <Tag color="blue">知识权重: {Math.round(Number(m.meta.doc_weight || 0.5) * 100)}%</Tag>}
-                      <Tag>TopK: 5</Tag>
-                    </Space>
-                    <div style={{ marginTop: 12 }}>
-                      <Suspense fallback={null}>
-                        <FaultTreeViewer tree={{
-                          tree_id: m.result.tree_id,
-                          fault_tree: m.result.fault_tree,
-                          nodes_json: m.result.fault_tree?.nodes,
-                          gates_json: m.result.fault_tree?.gates,
-                          mcs: m.result.mcs,
-                          importance: m.result.importance,
-                          validation_issues: m.result.validation_issues
-                        }} />
-                      </Suspense>
-                    </div>
-                    <div style={{ marginTop: 8 }}>
-                      <Button size="small" onClick={() => loadToGenerate(m.result)}>
-                        载入到生成页并编辑
-                      </Button>
-                    </div>
-                    <div style={{ marginTop: 8 }}>
-                      <Space wrap>
-                        <Button size="small" type="primary" onClick={() => startTroubleshooting(m)}>
-                          帮我排查故障
-                        </Button>
-                        <Button size="small" onClick={() => openNativeFullScreen(m.result, 'view')}>系统全屏查看</Button>
-                        <Button size="small" type="primary" onClick={() => openFullScreen(m.result, 'edit')}>主页专家编辑</Button>
-                        <Button size="small" onClick={() => loadToGenerate(m.result)}>载入到生成页并编辑</Button>
-                      </Space>
-                    </div>
-                  </div>
-                )}
-              </div>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
-      </Card>
-      <div style={{ position: 'fixed', left: 280, right: 0, bottom: 0, background: '#fff', borderTop: '1px solid #f0f0f0', padding: '12px 16px' }}>
-        <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 8 }}>
-          <Select
-            style={{ width: 420 }}
-            placeholder="选择已上传的操作手册..."
-            value={selectedDoc}
-            onChange={setSelectedDoc}
-            allowClear
-            options={docs.filter(d=>d.status==='active').map(d=>({value:d.doc_id,label:d.filename}))}
-          />
-          <Select
-            style={{ width: 180 }}
-            value={selectedProvider}
-            onChange={setSelectedProvider}
-            options={providers.map(p => ({
-              value: p.name,
-              disabled: !p.available,
-              label: (
-                <Space>
-                  <span style={{ textTransform: 'capitalize' }}>{p.name}</span>
-                  <Badge status={p.available ? 'success' : 'error'} text={p.available ? '可用' : (p.reason || '不可用')} />
-                </Space>
-              )
-            }))}
-          />
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1 }}>
-            <span style={{ whiteSpace: 'nowrap', fontSize: 12 }}>文档权重</span>
-            <Slider style={{ flex: 1, minWidth: 300 }} value={manualWeight} onChange={setManualWeight} min={0} max={100} step={1} marks={{0:'0%',50:'50%',100:'100%'}} />
-            <Tag color="geekblue" style={{ minWidth: 48, textAlign: 'center' }}>{manualWeight}%</Tag>
+            <div ref={bottomRef} />
           </div>
-        </div>
-        <div style={{ display: 'flex', gap: 12 }}>
-          <Input.TextArea
-            value={input}
-            onChange={e=>setInput(e.target.value)}
-            onPressEnter={(e)=>{ if(!e.shiftKey){ e.preventDefault(); send(); } }}
-            placeholder="有问题，尽管问，shift+enter 换行"
-            autoSize={{ minRows: 2, maxRows: 4 }}
-            disabled={loading}
-          />
-          <Button type="primary" icon={<ThunderboltOutlined />} onClick={send} loading={loading}>发送</Button>
+        )}
+      </div>
+
+      <div style={{ padding: '12px 0 18px 0', background: 'transparent' }}>
+        <div style={{ maxWidth: 980, margin: '0 auto', padding: '0 12px' }}>
+          <Card className="glass-card" style={{ borderRadius: 16 }} styles={{ body: { padding: 12 } }}>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end' }}>
+              <Input.TextArea
+                value={input}
+                onChange={e => setInput(e.target.value)}
+                onPressEnter={(e) => { if (!e.shiftKey) { e.preventDefault(); send() } }}
+                placeholder="发消息…"
+                autoSize={{ minRows: 2, maxRows: 6 }}
+                disabled={loading}
+                style={{ borderRadius: 12 }}
+              />
+              <Button type="primary" icon={<SendOutlined />} onClick={send} loading={loading} style={{ height: 40 }}>
+                发送
+              </Button>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>
+              <Space size={8} wrap>
+                <Button size="small" icon={<ThunderboltOutlined />} onClick={() => setInput('设备运行异常：')}>
+                  快速
+                </Button>
+              </Space>
+              <Popover content={composerSettings} trigger="click" placement="topRight">
+                <Button size="small" icon={<SettingOutlined />}>
+                  设置
+                </Button>
+              </Popover>
+            </div>
+          </Card>
+          <div style={{ marginTop: 10, textAlign: 'center', color: '#888', fontSize: 12 }}>
+            Enter 发送，Shift+Enter 换行
+          </div>
         </div>
       </div>
       {fsNativeOpen && (
