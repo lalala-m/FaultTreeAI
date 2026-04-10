@@ -59,7 +59,7 @@ const _cached = async (key, ttlMs, fetcher) => {
 export const uploadDocument = async (file, onProgress, pipeline = '流水线1') => {
   const form = new FormData()
   form.append('file', file)
-  if (pipeline) form.append('pipeline', pipeline)
+  form.append('pipeline', pipeline)
   const { data } = await api.post('/knowledge/upload', form, {
     headers: { 'Content-Type': 'multipart/form-data' },
     onUploadProgress: (e) => onProgress?.(Math.round((e.loaded * 100) / (e.total || 1))),
@@ -81,6 +81,12 @@ export const deleteDocument = async (docId) => {
   return data
 }
 
+export const updateDocumentPipeline = async (docId, pipeline) => {
+  const { data } = await api.put(`/knowledge/${docId}/pipeline`, null, { params: { pipeline } })
+  invalidateCache(['documents'])
+  return data
+}
+
 export const searchKnowledge = async (query, topK = 5) => {
   const { data } = await api.post('/knowledge/search', null, {
     params: { query, top_k: topK }
@@ -95,69 +101,21 @@ export const getKnowledgeStats = async () => {
   })
 }
 
-export const feedbackKnowledgeWeight = async (payload) => {
-  const { data } = await api.post('/knowledge/feedback-weight', payload)
-  invalidateCache(['documents', 'knowledgeStats'])
+export const getKnowledgeGraph = async (pipeline = '流水线1') => {
+  const { data } = await api.get('/knowledge/graph', { params: { pipeline } })
   return data
 }
 
 export const listPipelines = async () => {
-  const { data } = await api.get('/knowledge/pipelines')
-  if (Array.isArray(data)) return data
-  return Array.isArray(data?.pipelines) ? data.pipelines : []
+  return _cached('pipelines', 30_000, async () => {
+    const { data } = await api.get('/knowledge/pipelines')
+    return Array.isArray(data?.pipelines) ? data.pipelines : []
+  })
 }
 
-export const getKnowledgeGraph = async (line) => {
-  const { data } = await api.get('/knowledge/graph', { params: { pipeline: line } })
-  return data
-}
-
-export const rebuildKnowledgeGraph = async (arg) => {
-  const pipeline = typeof arg === 'string' ? arg : (arg?.pipeline || arg?.line)
-  const mode = typeof arg === 'object' && arg ? arg.mode : undefined
-  const params = { pipeline }
-  if (mode) params.mode = mode
-  const { data } = await api.post('/knowledge/graph/rebuild', null, { params })
-  return data
-}
-
-export const createKnowledgeItem = async (payload) => {
-  const { data } = await api.post('/knowledge/items', payload)
-  invalidateCache(['knowledgeItems'])
-  return data
-}
-
-export const listKnowledgeItems = async (params) => {
-  const { data } = await api.get('/knowledge/items', { params })
-  return data
-}
-
-export const searchKnowledgeItems = async (payload) => {
-  const { data } = await api.post('/knowledge/items/search', payload)
-  return data
-}
-
-export const feedbackKnowledgeItemWeight = async (payload) => {
-  const { data } = await api.post('/knowledge/items/feedback-weight', payload)
-  invalidateCache(['knowledgeItems'])
-  return data
-}
-
-export const listKnowledgeItemSuggestions = async (pipeline, limit = 8) => {
-  const { data } = await api.get('/knowledge/items/suggestions', { params: { pipeline, limit } })
-  if (Array.isArray(data)) return data
-  return Array.isArray(data?.suggestions) ? data.suggestions : []
-}
-
-export const updateKnowledgeItem = async (itemId, payload) => {
-  const { data } = await api.put(`/knowledge/items/${itemId}`, payload)
-  invalidateCache(['knowledgeItems'])
-  return data
-}
-
-export const deleteKnowledgeItem = async (itemId) => {
-  const { data } = await api.delete(`/knowledge/items/${itemId}`)
-  invalidateCache(['knowledgeItems'])
+export const rebuildKnowledgeGraph = async (pipeline = '流水线1') => {
+  const { data } = await api.post('/knowledge/graph/rebuild', null, { params: { pipeline } })
+  invalidateCache(['documents'])
   return data
 }
 
@@ -268,19 +226,12 @@ export const prefetchBootstrap = async () => {
 api.uploadDocument = uploadDocument
 api.listDocuments = listDocuments
 api.deleteDocument = deleteDocument
+api.updateDocumentPipeline = updateDocumentPipeline
 api.searchKnowledge = searchKnowledge
 api.getKnowledgeStats = getKnowledgeStats
-api.feedbackKnowledgeWeight = feedbackKnowledgeWeight
-api.listPipelines = listPipelines
 api.getKnowledgeGraph = getKnowledgeGraph
+api.listPipelines = listPipelines
 api.rebuildKnowledgeGraph = rebuildKnowledgeGraph
-api.createKnowledgeItem = createKnowledgeItem
-api.listKnowledgeItems = listKnowledgeItems
-api.searchKnowledgeItems = searchKnowledgeItems
-api.feedbackKnowledgeItemWeight = feedbackKnowledgeItemWeight
-api.listKnowledgeItemSuggestions = listKnowledgeItemSuggestions
-api.updateKnowledgeItem = updateKnowledgeItem
-api.deleteKnowledgeItem = deleteKnowledgeItem
 api.generateFaultTree = generateFaultTree
 api.getFaultTree = getFaultTree
 api.getSessionByTree = getSessionByTree

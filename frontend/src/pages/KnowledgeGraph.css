@@ -1,0 +1,85 @@
+.cloud-node {
+  position: relative;
+  width: 220px;
+  min-height: 86px;
+  padding: 12px 18px;
+  border-radius: 45% 55% 50% 50% / 55% 45% 55% 45%;
+  border: 1px solid #91caff;
+  background: linear-gradient(145deg, #f7fbff, #eaf4ff);
+  box-shadow: 0 8px 20px rgba(22, 119, 255, 0.12);
+  transition: opacity 0.68s ease, transform 0.68s ease, filter 0.68s ease;
+  animation: cloudFadeIn 0.72s ease both;
+}
+
+.cloud-node__puff {
+  position: absolute;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: inherit;
+  border: 1px solid #91caff;
+  z-index: 0;
+}
+
+.cloud-node__puff--l {
+  left: 10px;
+  top: -10px;
+}
+
+.cloud-node__puff--r {
+  right: 14px;
+  top: -12px;
+}
+
+.cloud-node__label {
+  position: relative;
+  z-index: 1;
+  text-align: center;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+  font-size: 14px;
+  font-weight: 600;
+  color: #1f2937;
+}
+
+.cloud-node--fault {
+  border-color: #ffd666;
+  background: linear-gradient(145deg, #fffdf2, #fff7da);
+  box-shadow: 0 8px 20px rgba(250, 173, 20, 0.14);
+}
+
+.cloud-node--solution {
+  width: 260px;
+  min-height: 96px;
+  border-color: #95de64;
+  background: linear-gradient(145deg, #f7fff3, #ecffe2);
+  box-shadow: 0 8px 20px rgba(82, 196, 26, 0.14);
+}
+
+.cloud-node--hidden {
+  opacity: 0;
+  transform: scale(0.9);
+  filter: blur(1px);
+  pointer-events: none;
+}
+
+.cloud-node--visible {
+  opacity: 1;
+  transform: scale(1);
+}
+
+@keyframes cloudFadeIn {
+  from {
+    opacity: 0.08;
+    transform: scale(0.88);
+    filter: blur(2.2px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+    filter: blur(0);
+  }
+}

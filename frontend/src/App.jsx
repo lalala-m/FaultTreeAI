@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState, Suspense, lazy } from 'react'
-import { Layout, Menu, Typography, Card, Space, Tag, Button, Empty, message } from 'antd'
-import { UploadOutlined, ApiOutlined, HistoryOutlined, DashboardOutlined, ThunderboltOutlined, ApartmentOutlined, CloudOutlined, ReloadOutlined } from '@ant-design/icons'
+import { Layout, Menu, Typography } from 'antd'
+import { UploadOutlined, ApiOutlined, HistoryOutlined, DashboardOutlined, ThunderboltOutlined, ApartmentOutlined } from '@ant-design/icons'
 import api from './services/api.js'
 
 const KnowledgeBase = lazy(() => import('./pages/KnowledgeBase.jsx'))
@@ -12,75 +12,6 @@ const KnowledgeGraph = lazy(() => import('./pages/KnowledgeGraph.jsx'))
 
 const { Header, Sider, Content } = Layout
 const { Title } = Typography
-
-function DataCloud() {
-  const [loading, setLoading] = useState(false)
-  const [docs, setDocs] = useState([])
-
-  const load = async () => {
-    setLoading(true)
-    try {
-      const data = await api.listDocuments()
-      setDocs(Array.isArray(data) ? data.filter(d => d && d.status !== 'deleted') : [])
-    } catch (e) {
-      setDocs([])
-      message.error(e.response?.data?.detail || e.message || '加载失败')
-    }
-    setLoading(false)
-  }
-
-  useEffect(() => {
-    load()
-  }, [])
-
-  const tags = useMemo(() => {
-    return (docs || [])
-      .map(d => {
-        const weight = Number(d.current_weight)
-        const w = Number.isFinite(weight) ? weight : 0.5
-        const size = 12 + Math.round(w * 16)
-        const count = Number(d.feedback_count || 0)
-        const color = w >= 0.7 ? 'green' : w >= 0.5 ? 'blue' : 'orange'
-        return {
-          key: d.doc_id,
-          label: d.filename || String(d.doc_id),
-          weight: w,
-          size,
-          color,
-          count,
-        }
-      })
-      .sort((a, b) => b.weight - a.weight)
-  }, [docs])
-
-  return (
-    <div className="page-container">
-      <div style={{ marginBottom: 16 }}>
-        <Title level={3} className="page-title">数据云图</Title>
-        <Space wrap>
-          <Button icon={<ReloadOutlined />} onClick={load} loading={loading}>刷新</Button>
-          <Tag>文档 {docs.length}</Tag>
-        </Space>
-      </div>
-
-      <Card className="glass-card">
-        {tags.length === 0 ? (
-          <div style={{ height: 360, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <Empty description="暂无数据（请先上传文档或检查后端接口）" />
-          </div>
-        ) : (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, lineHeight: 1.2 }}>
-            {tags.map(t => (
-              <Tag key={t.key} color={t.color} style={{ fontSize: t.size, padding: '6px 10px' }}>
-                {t.label} {t.count ? `(${t.count})` : ''}
-              </Tag>
-            ))}
-          </div>
-        )}
-      </Card>
-    </div>
-  )
-}
 
 export default function App() {
   const [active, setActive] = useState('dashboard')
@@ -98,8 +29,7 @@ export default function App() {
   const items = useMemo(() => ([
     { key: 'dashboard', icon: <DashboardOutlined />, label: '总览' },
     { key: 'knowledge', icon: <UploadOutlined />, label: '知识库' },
-    { key: 'knowledgeGraph', icon: <ApartmentOutlined />, label: '知识图谱' },
-    { key: 'dataCloud', icon: <CloudOutlined />, label: '数据云图' },
+    { key: 'knowledgeGraph', icon: <ApartmentOutlined />, label: '数据云图' },
     { key: 'generate', icon: <ApiOutlined />, label: '生成故障树' },
     { key: 'vision', icon: <ThunderboltOutlined />, label: '视觉识别' },
     { key: 'history', icon: <HistoryOutlined />, label: '历史记录' },
@@ -143,7 +73,6 @@ export default function App() {
             {active === 'dashboard' && <Dashboard onNavigate={setActive} />}
             {active === 'knowledge' && <KnowledgeBase />}
             {active === 'knowledgeGraph' && <KnowledgeGraph />}
-            {active === 'dataCloud' && <DataCloud />}
             {active === 'generate' && <Generate />}
             {active === 'vision' && <VisionDetect />}
             {active === 'history' && <History />}
