@@ -21,10 +21,16 @@ import psycopg2, psycopg2.extras
 
 router = APIRouter(tags=["知识管理"])
 DEVICE_TERMS = [
+    "手持式无线吸尘器", "无线吸尘器", "吸尘器",
     "电饭煲", "传送带", "输送带",
     "电机", "液压泵", "泵", "阀门", "传感器", "轴承", "PLC", "变频器",
     "液压缸", "输送带", "风机", "压缩机", "电池", "继电器", "接触器",
     "控制器", "电源", "减速机", "编码器", "过滤器"
+]
+CANONICAL_DEVICE_ALIASES = [
+    ("吸尘器", ["手持式无线吸尘器", "无线吸尘器", "吸尘器"]),
+    ("电饭煲", ["电饭煲", "电饭锅"]),
+    ("传送带", ["传送带", "输送带"]),
 ]
 FAULT_HINTS = [
     "故障", "异常", "报警", "失效", "损坏", "泄漏", "过热", "振动", "异响",
@@ -34,7 +40,8 @@ FAULT_HINTS = [
 SOLUTION_HINTS = [
     "检查", "更换", "清理", "维修", "修复", "调整", "校准", "紧固",
     "润滑", "复位", "重启", "测试", "确认", "处理", "排查",
-    "连接", "按压", "激活", "检测", "冲洗", "清空", "取出", "滴加", "清洁", "冷却", "待"
+    "连接", "按压", "激活", "检测", "冲洗", "清空", "取出", "滴加", "清洁", "冷却", "待",
+    "拆卸", "测量", "插拔", "更换", "送修", "购买", "装回"
 ]
 COMMON_FAULT_TITLES = [
     "无法开机", "吸力减弱", "异常噪音", "充电故障",
@@ -45,7 +52,8 @@ NOISE_TERMS = {
     "常见故障排查表", "技术参数", "定期保养计划", "安全须知", "产品结构图示", "分步维修指南",
     "每日", "每周", "每月", "每半年", "每年", "额定电压", "空载转速", "最大真空度",
     "电池容量", "工作噪音", "注意事项", "维修查询热线", "更新日期", "可能原因", "解决方法",
-    "故障现象", "本手册", "标准化模板", "官方完整手册", "维修保养手册", "常见故障"
+    "故障现象", "本手册", "标准化模板", "官方完整手册", "维修保养手册", "常见故障",
+    "故障诊断", "电路图", "流程图", "目录"
 }
 
 
@@ -86,6 +94,8 @@ def _is_noise_phrase(s: str) -> bool:
         return True
     if t.isdigit():
         return True
+    if "手册" in t or "目录" in t:
+        return True
     if any(_norm_text(x) in t for x in NOISE_TERMS):
         return True
     return False
@@ -107,29 +117,84 @@ def _clean_solution(s: str) -> str:
     return v
 
 
-def _is_valid_fault_phrase(s: str) -> bool:
-    t = _norm_text(s)
+def _canonicalize_device_name(name: str) -> str:
+    raw = str(name or "").strip()
+    if not raw:
+        return ""
+    compact = re.sub(r"\s+", "", raw)
+    for canonical, aliases in CANONICAL_DEVICE_ALIASES:
+        if any(alias in compact for alias in aliases):
+            return canonical
+    return _short_text(compact, 24)
+
+
+def _is_generic_fault_phrase(s: str) -> bool:
+    raw = str(s or "").strip()
+    t = _norm_text(raw)
     if not t:
+        return True
+    generic_exact = {
+        "故障", "设备故障", "设备异常", "系统故障", "系统异常",
+        "电饭煲故障", "吸尘器故障", "传送带故障", "输送带故障",
+        "电饭煲异常", "吸尘器异常", "传送带异常", "输送带异常",
+    }
+    if t in {_norm_text(x) for x in generic_exact}:
+        return True
+    if re.fullmatch(r"故障[0-9一二三四五六七八九十]+", raw):
+        return True
+    if re.fullmatch(r"[0-9一二三四五六七八九十]+", raw):
+        return True
+    canonical_devices = {c for c, _aliases in CANONICAL_DEVICE_ALIASES}
+    for dev in canonical_devices:
+        dn = _norm_text(dev)
+        if t in {dn, dn + "故障", dn + "异常"}:
+            return True
+    return False
+
+
+def _is_valid_fault_phrase(s: str) -> bool:
+    raw = str(s or "").strip()
+    t = _norm_text(raw)
+    if not t:
+        return False
+    if _is_generic_fault_phrase(raw):
+        return False
+    if len(raw) < 2 or len(raw) > 30:
+        return False
+    if any(x in raw for x in ["手册", "目录", "图示", "步骤", "注意事项", "热线", "更新日期"]):
+        return False
+    if any(x in raw for x in ["若", "如果", "则", "需要", "应当", "建议", "请", "确认"]):
+        return False
+    if any(k in raw for k in SOLUTION_HINTS):
+        return False
+    if "，" in raw or "," in raw or "。" in raw:
         return False
     if any(x in t for x in ["排查表", "技术参数", "保养计划", "维修指南", "查询热线", "更新日期"]):
         return False
     if any(x in t for x in ["每日", "每周", "每月", "每半年", "每年"]):
         return False
     allowed_short = set(COMMON_FAULT_TITLES)
+    symptom_patterns = [
+        r"无法|不能|不通电|无反应|不加热|不熟|煮糊|溢出|失灵|错误代码|吸力减弱|异常噪音|充电故障|无法开机|不启动|无法充电|充不进电"
+    ]
     if any(x in s for x in FAULT_HINTS) or s in allowed_short:
+        return True
+    if any(re.search(p, raw) for p in symptom_patterns):
         return True
     return False
 
 
-def _extract_graph_from_content(content: str) -> dict:
+def _extract_graph_from_content(content: str, main_device: str | None = None) -> dict:
     sentences = [x.strip() for x in re.split(r"[。！？；;\n]+", content or "") if x.strip()]
     graph = {}
     for sent in sentences:
-        devices = [d for d in DEVICE_TERMS if d in sent]
-        if not devices:
-            continue
         has_fault = any(k in sent for k in FAULT_HINTS)
         has_solution = any(k in sent for k in SOLUTION_HINTS)
+        devices = [d for d in DEVICE_TERMS if d in sent]
+        if main_device and (has_fault or has_solution):
+            devices = [main_device]
+        if not devices:
+            continue
         fault_name = _short_text(sent)
         for dev in devices:
             graph.setdefault(dev, {"faults": {}})
@@ -160,7 +225,7 @@ def _sanitize_kg_payload(data: dict) -> dict:
     devices = data.get("devices", []) if isinstance(data, dict) else []
     cleaned_devices = []
     for dev in devices:
-        name = str((dev or {}).get("name", "")).strip()
+        name = _canonicalize_device_name(str((dev or {}).get("name", "")).strip())
         if not name or _is_noise_phrase(name):
             continue
         faults = []
@@ -207,11 +272,113 @@ def _infer_main_device(content: str) -> str:
     text = content or ""
     m = re.search(r"([\u4e00-\u9fff]{2,20})(?:维修保养手册|维修手册|保养手册)", text)
     if m:
-        return m.group(1)
-    for d in DEVICE_TERMS:
+        return _canonicalize_device_name(m.group(1))
+    for d in sorted(DEVICE_TERMS, key=len, reverse=True):
         if d in text:
-            return d
+            return _canonicalize_device_name(d)
     return "设备"
+
+
+def _pick_reliable_main_device(base: dict, content: str, title_hint: str = "") -> str:
+    inferred = _infer_main_device((title_hint or "") + "\n" + (content or "")[:2000])
+    if inferred and inferred != "设备":
+        return inferred
+    text = (content or "")[:6000]
+    vacuum_score = sum(1 for kw in ["吸力", "集尘", "滤网", "刷头", "吸管", "充电器", "电池电量", "风道"] if kw in text)
+    rice_score = sum(1 for kw in ["电饭煲", "加热盘", "内锅", "煮饭", "磁钢", "限温器", "内胆", "上盖"] if kw in text)
+    if vacuum_score >= 2 and vacuum_score > rice_score:
+        return "吸尘器"
+    if rice_score >= 2 and rice_score > vacuum_score:
+        return "电饭煲"
+    best_name = ""
+    best_fault_count = 0
+    for d in (base or {}).get("devices", []) or []:
+        name = _canonicalize_device_name(str((d or {}).get("name", "")).strip())
+        if not name or name == "设备":
+            continue
+        fault_count = len((d or {}).get("faults", []) or [])
+        if fault_count > best_fault_count:
+            best_name = name
+            best_fault_count = fault_count
+    return best_name
+
+
+def _extract_numbered_fault_blocks(content: str, limit: int = 12) -> list[dict]:
+    text = content or ""
+    pattern = re.compile(r"故障\s*[0-9一二三四五六七八九十]+\s*[：:]\s*([^\n]{2,48})")
+    matches = list(pattern.finditer(text))
+    if not matches:
+        return []
+    pairs = []
+    for i, m in enumerate(matches):
+        fault_raw = m.group(1).strip()
+        fault_raw = re.split(r"[（(]", fault_raw)[0].strip() or fault_raw
+        fault_name = _clean_fault_name(fault_raw)
+        if not fault_name or not _is_valid_fault_phrase(fault_name):
+            continue
+        st = m.end()
+        ed = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        block = text[st:ed]
+        step_match = re.search(r"(维修步骤|解决方法|处理步骤)\s*[：:]([\s\S]*)", block)
+        seg = step_match.group(2) if step_match else block
+        lines = []
+        for ln in re.split(r"[\n\r]+", seg):
+            for part in re.split(r"[；;。]", ln):
+                p = re.sub(r"^[\s·\-•\d\.\、]+\s*", "", part.strip())
+                if p:
+                    lines.append(p)
+        solutions = []
+        seen = set()
+        for ln in lines:
+            sv = _clean_solution(ln)
+            if not sv:
+                continue
+            nk = _norm_text(sv)
+            if nk in seen:
+                continue
+            seen.add(nk)
+            solutions.append(sv)
+            if len(solutions) >= 6:
+                break
+        if solutions:
+            pairs.append({"name": fault_name, "solutions": solutions})
+        if len(pairs) >= limit:
+            break
+    return pairs
+
+
+def _constrain_kg_to_main_device(kg: dict, content: str, title_hint: str = "") -> dict:
+    base = _sanitize_kg_payload(kg or {})
+    if not isinstance(base, dict):
+        return {"devices": []}
+    main_dev = _pick_reliable_main_device(base, content, title_hint)
+    if not main_dev:
+        return base
+    all_faults = []
+    seen_fault = set()
+    for d in base.get("devices", []) or []:
+        for f in (d or {}).get("faults", []) or []:
+            fname = _clean_fault_name(str((f or {}).get("name", "")).strip())
+            if not fname or not _is_valid_fault_phrase(fname):
+                continue
+            fk = _norm_text(fname)
+            if fk in seen_fault:
+                continue
+            sols = []
+            seen_sol = set()
+            for s in (f or {}).get("solutions", []) or []:
+                sv = _clean_solution(str(s).strip())
+                nk = _norm_text(sv)
+                if sv and nk not in seen_sol:
+                    sols.append(sv)
+                    seen_sol.add(nk)
+            if not sols:
+                continue
+            all_faults.append({"name": fname, "solutions": sols[:6]})
+            seen_fault.add(fk)
+    if not all_faults:
+        return {"devices": []}
+    return {"devices": [{"name": main_dev, "faults": all_faults[:12]}]}
 
 
 def _extract_fault_solution_pairs_from_content(content: str, limit: int = 10) -> list[dict]:
@@ -448,17 +615,20 @@ def _build_fallback_kg(content: str) -> dict:
         return pairs
 
     text = content[:120000]
-    dev = _infer_main_device(content)
+    main_dev = _infer_main_device(content)
     candidates = []
 
     pf = _extract_known_faults_pairs(text)
     if pf:
-        candidates.append({"devices": [{"name": dev, "faults": pf}]})
+        candidates.append({"devices": [{"name": main_dev, "faults": pf}]})
+    numbered_pairs = _extract_numbered_fault_blocks(text)
+    if numbered_pairs:
+        candidates.append({"devices": [{"name": main_dev, "faults": numbered_pairs}]})
 
     table_kg = _parse_table_kg(text)
     if _has_useful_kg(table_kg):
-        candidates.append(_sanitize_kg_payload(table_kg))
-    graph = _extract_graph_from_content(content[:120000])
+        candidates.append(_constrain_kg_to_main_device(table_kg, text))
+    graph = _extract_graph_from_content(content[:120000], main_device=main_dev)
     devices = []
     for dev, val in graph.items():
         faults = []
@@ -470,11 +640,12 @@ def _build_fallback_kg(content: str) -> dict:
 
     pairs = _extract_fault_solution_by_position(text)
     if not pairs:
+        pairs = _extract_numbered_fault_blocks(text)
+    if not pairs:
         pairs = _extract_table_pairs_from_content(text)
     if not pairs:
         pairs = _extract_fault_solution_pairs_from_content(text)
     if pairs:
-        main_dev = _infer_main_device(content)
         found = next((d for d in devices if d["name"] == main_dev), None)
         if found:
             exists = {x["name"] for x in found["faults"]}
@@ -496,7 +667,7 @@ def _build_fallback_kg(content: str) -> dict:
         return fault_cnt, sol_cnt
 
     best = max(candidates, key=score)
-    return _sanitize_kg_payload(best)
+    return _constrain_kg_to_main_device(best, text)
 
 
 def _build_minimum_kg(content: str) -> dict:
@@ -568,7 +739,7 @@ def _merge_pairs_into_kg(kg: dict, content: str) -> dict:
             target["faults"].append(p)
             exists.add(nk)
     base["devices"] = devices[:30]
-    return _sanitize_kg_payload(base)
+    return _constrain_kg_to_main_device(base, content)
 
 
 async def _build_doc_kg_with_ai(content: str) -> dict:
@@ -597,13 +768,22 @@ async def _build_doc_kg_with_ai(content: str) -> dict:
 6. 去重与清洗：
    - 丢弃“常见故障排查表/技术参数/定期保养计划/安全须知/产品结构图示/分步维修指南/每日/每周/每月/每半年/每年/维修查询热线/更新日期/可能原因/解决方法/故障现象”等标题或周期词
    - 丢弃无动作动词的方案
-7. 数量要求：
+   - 严禁把“原因句/条件句/判断句”当作故障名，例如包含“若/如果/则/需/需要/确认/建议”的句子不能作为故障名
+   - 严禁把“手册标题/章节标题/目录项”当作故障名
+7. 故障字段要求：
+   - 必须是“故障现象短语”，长度 2~16 字，不能含逗号句号
+   - 优先使用：无法开机/吸力减弱/异常噪音/充电故障/无法启动/不启动/无法充电/充不进电/过热报警/异响/无压力/压力不足
+   - 若出现“温度传感器故障/加热盘损坏”等也可保留
+8. 解决方案字段要求：
+   - 必须是可执行动作，不得只是“原因判断”
+   - 如果同一行只有“原因”没有动作，则不输出该方案
+9. 数量要求：
    - 每个设备输出 3~8 个故障（如果手册中确实只有更少，则按实际）
    - 每个故障输出 1~5 条解决方案
-8. 若未识别到表格：
+10. 若未识别到表格：
    - 在全文中查找明确的故障标题（例如：无法开机/吸力减弱/异常噪音/充电故障/无法启动/不启动/无法充电/充不进电/过热报警/异响/无压力/压力不足），
      并在相邻段落或该标题下方提取动作型解决方案
-9. 如仍得不到有效条目，返回空数组 devices: []
+11. 如仍得不到有效条目，返回空数组 devices: []
 
 输出结构（严格遵循）：
 {{
@@ -707,10 +887,12 @@ async def upload_document(
                 kg_payload = _build_fallback_kg(merged_text)
             if not _has_useful_kg(kg_payload):
                 kg_payload = _build_minimum_kg(merged_text)
+            kg_payload = _constrain_kg_to_main_device(kg_payload, merged_text, file.filename or "")
         except Exception:
             kg_payload = _build_fallback_kg(merged_text)
             if not _has_useful_kg(kg_payload):
                 kg_payload = _build_minimum_kg(merged_text)
+            kg_payload = _constrain_kg_to_main_device(kg_payload, merged_text, file.filename or "")
 
         res = await add_chunks_to_db(chunks, str(doc_id))
         embedded = bool(res.get("embedded"))
@@ -960,6 +1142,7 @@ async def knowledge_graph(pipeline: str = "流水线1"):
             source = part_from_db
         else:
             source = part_from_min
+        source = _constrain_kg_to_main_device(source, content[:120000], row[1] or "")
         if not source.get("devices"):
             guessed = _infer_main_device((row[1] or "") + "\n" + content[:1000])
             source = {
@@ -1083,10 +1266,12 @@ async def rebuild_knowledge_graph(pipeline: str = "流水线1"):
                     kg_payload = _build_fallback_kg(content[:120000])
                 if not _has_useful_kg(kg_payload):
                     kg_payload = _build_minimum_kg(content[:120000])
+                kg_payload = _constrain_kg_to_main_device(kg_payload, content[:120000])
             except Exception:
                 kg_payload = _build_fallback_kg(content[:120000])
                 if not _has_useful_kg(kg_payload):
                     kg_payload = _build_minimum_kg(content[:120000])
+                kg_payload = _constrain_kg_to_main_device(kg_payload, content[:120000])
 
             useful = _has_useful_kg(kg_payload)
             with psycopg2.connect(
@@ -1157,10 +1342,12 @@ async def reparse_document(doc_id: str):
             kg_payload = _build_fallback_kg(merged_text)
         if not _has_useful_kg(kg_payload):
             kg_payload = _build_minimum_kg(merged_text)
+        kg_payload = _constrain_kg_to_main_device(kg_payload, merged_text, row[0] or "")
     except Exception:
         kg_payload = _build_fallback_kg(merged_text)
         if not _has_useful_kg(kg_payload):
             kg_payload = _build_minimum_kg(merged_text)
+        kg_payload = _constrain_kg_to_main_device(kg_payload, merged_text, row[0] or "")
     with psycopg2.connect(
         host=settings.DB_HOST, port=settings.DB_PORT,
         user=settings.DB_USER, password=settings.DB_PASSWORD,

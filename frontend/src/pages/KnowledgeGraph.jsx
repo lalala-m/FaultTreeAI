@@ -7,18 +7,34 @@ import api from '../services/api.js'
 
 const { Title, Text } = Typography
 const FAULT_HINTS = ['故障', '异常', '报警', '失效', '损坏', '泄漏', '过热', '振动', '异响', '堵塞', '磨损', '卡滞', '偏差', '无法启动', '不启动', '无压力', '压力不足', '温度过高', '短路', '断路', '跳闸', '停机']
-const SOLUTION_HINTS = ['检查', '更换', '清理', '维修', '修复', '调整', '校准', '紧固', '润滑', '复位', '重启', '测试', '确认', '处理', '排查']
-const NOISE_TERMS = ['常见故障排查表', '技术参数', '定期保养计划', '安全须知', '产品结构图示', '分步维修指南', '每日', '每周', '每月', '每半年', '每年', '维修查询热线', '更新日期', '可能原因', '解决方法', '故障现象']
+const SOLUTION_HINTS = ['检查', '更换', '清理', '维修', '修复', '调整', '校准', '紧固', '润滑', '复位', '重启', '测试', '确认', '处理', '排查', '连接', '检测', '冲洗', '清空', '取出', '冷却', '拆卸', '测量', '插拔', '送修', '购买', '装回']
+const NOISE_TERMS = ['常见故障排查表', '技术参数', '定期保养计划', '安全须知', '产品结构图示', '分步维修指南', '每日', '每周', '每月', '每半年', '每年', '维修查询热线', '更新日期', '可能原因', '解决方法', '故障现象', '故障诊断', '手册', '目录']
 
 const norm = (s) => String(s || '').replace(/[\s，。,.、；;：:【】\[\]()（）\-—_]+/g, '')
 const isNoise = (s) => {
   const t = norm(s)
   return !t || NOISE_TERMS.some(n => t.includes(norm(n)))
 }
+const isGenericFault = (s) => {
+  const v = String(s || '').trim()
+  const t = norm(v)
+  if (!t) return true
+  const generic = ['故障', '设备故障', '设备异常', '系统故障', '系统异常', '电饭煲故障', '吸尘器故障', '传送带故障', '输送带故障', '电饭煲异常', '吸尘器异常', '传送带异常', '输送带异常']
+  if (generic.some(g => norm(g) === t)) return true
+  if (/^故障[0-9一二三四五六七八九十]+$/.test(v)) return true
+  if (/^[0-9一二三四五六七八九十]+$/.test(v)) return true
+  return false
+}
 const isFault = (s) => {
   const v = String(s || '')
   if (isNoise(v)) return false
-  return FAULT_HINTS.some(k => v.includes(k)) || ['无法开机', '吸力减弱', '异常噪音', '充电故障', '无法启动'].includes(v)
+  if (isGenericFault(v)) return false
+  if (v.length < 2 || v.length > 30) return false
+  if (/[，,。]/.test(v)) return false
+  if (['若', '如果', '则', '需要', '请', '确认', '建议'].some(k => v.includes(k))) return false
+  if (SOLUTION_HINTS.some(k => v.includes(k))) return false
+  if (FAULT_HINTS.some(k => v.includes(k)) || ['无法开机', '吸力减弱', '异常噪音', '充电故障', '无法启动'].includes(v)) return true
+  return /(无法|不能|不通电|无反应|不加热|不熟|煮糊|溢出|失灵|错误代码|吸力减弱|异常噪音|充电故障|不启动|无法充电|充不进电)/.test(v)
 }
 const isSolution = (s) => {
   const v = String(s || '')
@@ -84,15 +100,15 @@ const faultAngles = (count) => {
   }
   return arr
 }
-const getBaseDevicePos = (allDevices, deviceId) => {
+const getDeviceRowPos = (allDevices, deviceId) => {
   const total = Math.max((allDevices || []).length, 1)
-  const devRing = ringRadius(total, DEVICE_NODE_W, 56, 280)
   const idx = (allDevices || []).findIndex((d) => `dev-${d.name}` === deviceId)
   const safeIdx = idx >= 0 ? idx : 0
-  const angle = (Math.PI * 2 * safeIdx) / total - Math.PI / 2
+  const step = Math.min(340, Math.max(240, 900 / Math.max(total - 1, 1)))
+  const startX = CENTER_X - ((total - 1) * step) / 2
   return {
-    x: CENTER_X + Math.cos(angle) * devRing,
-    y: CENTER_Y + Math.sin(angle) * devRing,
+    x: startX + safeIdx * step,
+    y: CENTER_Y,
   }
 }
 
@@ -242,14 +258,9 @@ export default function KnowledgeGraph() {
       }
       return { nodes: ns, edges: es }
     }
-    const total = Math.max(devices.length, 1)
-    const devRing = ringRadius(total, DEVICE_NODE_W, 56, 280)
     const basePosById = new Map()
-    devices.forEach((d, i) => {
-      const angle = (Math.PI * 2 * i) / total - Math.PI / 2
-      const x = CENTER_X + Math.cos(angle) * devRing
-      const y = CENTER_Y + Math.sin(angle) * devRing
-      basePosById.set(`dev-${d.name}`, { x, y })
+    devices.forEach((d) => {
+      basePosById.set(`dev-${d.name}`, getDeviceRowPos(devices, `dev-${d.name}`))
     })
     devices.forEach((d, i) => {
       const devId = `dev-${d.name}`
