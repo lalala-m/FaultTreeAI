@@ -11,10 +11,12 @@ from collections import Counter
 from pathlib import Path
 from fastapi import APIRouter, UploadFile, File, HTTPException, Form
 import aiofiles
+from pydantic import BaseModel
 
 from backend.core.parser.document import parse_document
 from backend.core.rag.pgvector_retriever import add_chunks_to_db, retrieve
 from backend.core.llm.manager import get_llm_manager
+from backend.core.knowledge.ai_graph_extractor import extract_knowledge_items_with_ai
 from backend.models.schemas import UploadResponse
 from backend.config import settings
 import psycopg2, psycopg2.extras
@@ -66,6 +68,127 @@ def _normalize_pipeline(pipeline: str | None) -> str:
     return p
 
 
+def _ensure_structured_knowledge_tables(conn) -> None:
+    with conn.cursor() as cur:
+        cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        cur.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS knowledge_items (
+                item_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                pipeline VARCHAR(64) NOT NULL DEFAULT '流水线1',
+                machine_category VARCHAR(120) NOT NULL DEFAULT '',
+                machine VARCHAR(160) NOT NULL DEFAULT '',
+                problem_category VARCHAR(120) NOT NULL DEFAULT '',
+                problem TEXT NOT NULL,
+                root_cause TEXT NOT NULL DEFAULT '',
+                solution TEXT NOT NULL DEFAULT '',
+                metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+                status VARCHAR(20) NOT NULL DEFAULT 'active',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_knowledge_items_pipeline
+            ON knowledge_items(pipeline)
+            """
+        )
+        cur.execute(
+            """
+            WITH ranked AS (
+                SELECT
+                    ctid,
+                    row_number() OVER (
+                        PARTITION BY pipeline, machine, problem, root_cause
+                        ORDER BY updated_at DESC, created_at DESC
+                    ) AS rn
+                FROM knowledge_items
+            )
+            DELETE FROM knowledge_items k
+            USING ranked r
+            WHERE k.ctid = r.ctid
+              AND r.rn > 1
+            """
+        )
+        cur.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_knowledge_items_unique
+            ON knowledge_items (pipeline, machine, problem, root_cause)
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS knowledge_item_weights (
+                item_id UUID PRIMARY KEY REFERENCES knowledge_items(item_id) ON DELETE CASCADE,
+                helpful_weight DOUBLE PRECISION NOT NULL DEFAULT 0,
+                misleading_weight DOUBLE PRECISION NOT NULL DEFAULT 0,
+                feedback_count INTEGER NOT NULL DEFAULT 0,
+                current_weight DOUBLE PRECISION NOT NULL DEFAULT 0.5,
+                expert_weight DOUBLE PRECISION,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        cur.execute("ALTER TABLE knowledge_item_weights ADD COLUMN IF NOT EXISTS expert_weight DOUBLE PRECISION")
+        conn.commit()
+
+
+class KnowledgeItemCreateRequest(BaseModel):
+    pipeline: str = "流水线1"
+    machine_category: str = ""
+    machine: str = ""
+    problem_category: str = ""
+    problem: str
+    root_cause: str = ""
+    solution: str = ""
+    metadata: dict | None = None
+
+
+class KnowledgeItemUpdateRequest(BaseModel):
+    pipeline: str | None = None
+    machine_category: str | None = None
+    machine: str | None = None
+    problem_category: str | None = None
+    problem: str | None = None
+    root_cause: str | None = None
+    solution: str | None = None
+    metadata: dict | None = None
+    status: str | None = None
+
+
+class KnowledgeItemSearchRequest(BaseModel):
+    query: str = ""
+    pipeline: str | None = None
+    top_k: int = 10
+
+
+class KnowledgeItemWeightFeedbackRequest(BaseModel):
+    item_id: str
+    feedback_type: str
+    amount: float = 1.0
+
+
+class KnowledgeItemExpertWeightRequest(BaseModel):
+    item_id: str
+    expert_weight: float | None = None
+
+
+class KnowledgeItemReextractRequest(BaseModel):
+    pipeline: str = "流水线1"
+    doc_ids: list[str] | None = None
+    mode: str = "replace"  # replace | append
+
+
+class KnowledgeItemCleanupRequest(BaseModel):
+    pipeline: str = "流水线1"
+    dry_run: bool = False
+    delete_unknown_cause: bool = True
+    delete_noise: bool = True
+
+
 def _extract_terms_from_text(text: str, top_k: int = 5) -> list[str]:
     # 仅抽取中文术语，避免知识图谱出现英文节点
     tokens = re.findall(r"[\u4e00-\u9fff]{2,}", text or "")
@@ -86,6 +209,42 @@ def _short_text(s: str, max_len: int = 22) -> str:
 
 def _norm_text(s: str) -> str:
     return re.sub(r"[\s，。,.、；;：:【】\[\]()（）\-—_]+", "", (s or "").strip().lower())
+
+
+def _machine_dedupe_key(name: str) -> str:
+    raw = str(name or "").strip()
+    if not raw:
+        return ""
+    compact = re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff]+", "", raw)
+    upper = compact.upper()
+    codes = re.findall(r"\d+[A-Z]{1,4}\d+", upper)
+    if codes:
+        return f"model:{codes[0]}"
+    return _norm_text(raw) or raw.lower()
+
+
+def _pick_preferred_machine_name(names) -> str:
+    arr = [str(x or "").strip() for x in (names or [])]
+    arr = [x for x in arr if x]
+    if not arr:
+        return "设备"
+
+    def score(v: str) -> tuple[int, int, str]:
+        lo = v.lower()
+        s = 0
+        if "simotics" in lo:
+            s += 50
+        if "siemens" in lo:
+            s += 50
+        if "-" in v or "_" in v:
+            s += 5
+        if " " in v:
+            s += 2
+        if "系列" in v:
+            s -= 2
+        return (s, len(v), v)
+
+    return min(arr, key=score)
 
 
 def _is_noise_phrase(s: str) -> bool:
@@ -277,6 +436,55 @@ def _infer_main_device(content: str) -> str:
         if d in text:
             return _canonicalize_device_name(d)
     return "设备"
+
+
+def _infer_device_from_filename(name: str) -> str:
+    raw = str(name or "").strip()
+    if not raw:
+        return "设备"
+    n = re.sub(r"\.[^.]+$", "", raw)
+    m = re.search(r"([\u4e00-\u9fff]{2,40})(维修保养手册|维修手册|保养手册|操作说明|说明书)?", n)
+    return (m.group(1) if m else (n or "设备")).strip() or "设备"
+
+
+def _infer_machine_category_from_machine(machine: str) -> str:
+    v = re.sub(r"\s+", "", str(machine or "")).lower()
+    if not v:
+        return ""
+    mapping = [
+        ("伺服", ["伺服", "servo"]),
+        ("变频器", ["变频", "inverter"]),
+        ("PLC", ["plc"]),
+        ("电机", ["电机", "motor"]),
+        ("传送带", ["传送带", "输送带"]),
+        ("传感器", ["传感器", "sensor"]),
+        ("轴承", ["轴承", "bearing"]),
+        ("液压", ["液压", "hydraulic"]),
+        ("气动", ["气动", "pneumatic"]),
+    ]
+    for cat, keys in mapping:
+        if any(k in v for k in keys):
+            return cat
+    return ""
+
+
+def _infer_problem_category_from_problem(problem: str) -> str:
+    v = re.sub(r"\s+", "", str(problem or "")).lower()
+    if not v:
+        return ""
+    if any(k in v for k in ["短路", "断路", "漏电", "跳闸", "过流", "过压", "欠压", "电源", "接线"]):
+        return "电气"
+    if any(k in v for k in ["振动", "异响", "磨损", "断裂", "卡滞", "堵塞", "松动", "轴承"]):
+        return "机械"
+    if any(k in v for k in ["报警", "通讯", "通信", "程序", "参数", "plc", "伺服", "驱动器", "编码器"]):
+        return "控制"
+    if any(k in v for k in ["液压", "油", "泄漏", "压力", "泵", "阀"]):
+        return "液压"
+    if any(k in v for k in ["气动", "气压", "气缸", "电磁阀"]):
+        return "气动"
+    if any(k in v for k in ["传感器", "信号", "误报警"]):
+        return "传感器"
+    return ""
 
 
 def _pick_reliable_main_device(base: dict, content: str, title_hint: str = "") -> str:
@@ -813,6 +1021,7 @@ async def _build_doc_kg_with_ai(content: str) -> dict:
 async def upload_document(
     file: UploadFile = File(...),
     pipeline: str = Form("流水线1"),
+    auto_extract: bool = Form(True),
 ):
     """上传设备文档，自动解析分块并存入 PostgreSQL 向量库"""
     # 文件大小校验
@@ -919,6 +1128,52 @@ async def upload_document(
                     )
                 )
                 conn.commit()
+
+        if auto_extract:
+            try:
+                r = await extract_knowledge_items_with_ai(pipeline=pipeline, doc_ids=[str(doc_id)])
+                with psycopg2.connect(
+                    host=settings.DB_HOST, port=settings.DB_PORT,
+                    user=settings.DB_USER, password=settings.DB_PASSWORD,
+                    database=settings.DB_NAME
+                ) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            UPDATE documents
+                            SET metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb
+                            WHERE doc_id = %s
+                            """,
+                            (
+                                psycopg2.extras.Json({
+                                    "structured_kb": "ok",
+                                    "structured_extracted": int(getattr(r, "extracted", 0)),
+                                    "structured_inserted": int(getattr(r, "inserted", 0)),
+                                    "structured_skipped": int(getattr(r, "skipped", 0)),
+                                }),
+                                str(doc_id),
+                            ),
+                        )
+                        conn.commit()
+            except Exception as e:
+                try:
+                    with psycopg2.connect(
+                        host=settings.DB_HOST, port=settings.DB_PORT,
+                        user=settings.DB_USER, password=settings.DB_PASSWORD,
+                        database=settings.DB_NAME
+                    ) as conn:
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                """
+                                UPDATE documents
+                                SET metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb
+                                WHERE doc_id = %s
+                                """,
+                                (psycopg2.extras.Json({"structured_kb": "failed", "structured_error": str(e)[:200]}), str(doc_id)),
+                            )
+                            conn.commit()
+                except Exception:
+                    pass
     except ValueError as e:
         with psycopg2.connect(
             host=settings.DB_HOST, port=settings.DB_PORT,
@@ -1048,12 +1303,20 @@ async def list_pipelines():
         user=settings.DB_USER, password=settings.DB_PASSWORD,
         database=settings.DB_NAME
     ) as conn:
+        _ensure_structured_knowledge_tables(conn)
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT DISTINCT COALESCE(metadata->>'pipeline', '流水线1') AS pipeline
-                FROM documents
-                WHERE status <> 'deleted'
+                SELECT DISTINCT pipeline FROM (
+                    SELECT COALESCE(metadata->>'pipeline', '流水线1') AS pipeline
+                    FROM documents
+                    WHERE status <> 'deleted'
+                    UNION ALL
+                    SELECT pipeline
+                    FROM knowledge_items
+                    WHERE status <> 'deleted'
+                ) t
+                WHERE pipeline IS NOT NULL AND pipeline <> ''
                 ORDER BY pipeline
                 """
             )
@@ -1098,6 +1361,601 @@ async def search_knowledge(query: str, top_k: int = 5):
         raise HTTPException(status_code=500, detail=f"搜索失败: {str(e)}")
 
 
+@router.post("/items")
+async def create_knowledge_item(payload: KnowledgeItemCreateRequest):
+    pipeline = _normalize_pipeline(payload.pipeline)
+    problem = str(payload.problem or "").strip()
+    if not problem:
+        raise HTTPException(status_code=400, detail="problem 不能为空")
+
+    with psycopg2.connect(
+        host=settings.DB_HOST, port=settings.DB_PORT,
+        user=settings.DB_USER, password=settings.DB_PASSWORD,
+        database=settings.DB_NAME
+    ) as conn:
+        _ensure_structured_knowledge_tables(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO knowledge_items (
+                    pipeline, machine_category, machine, problem_category,
+                    problem, root_cause, solution, metadata, status
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, 'active')
+                RETURNING item_id::text
+                """,
+                (
+                    pipeline,
+                    str(payload.machine_category or "").strip(),
+                    str(payload.machine or "").strip(),
+                    str(payload.problem_category or "").strip(),
+                    problem,
+                    str(payload.root_cause or "").strip(),
+                    str(payload.solution or "").strip(),
+                    json.dumps(payload.metadata or {}, ensure_ascii=False),
+                ),
+            )
+            item_id = (cur.fetchone() or [None])[0]
+            cur.execute(
+                """
+                INSERT INTO knowledge_item_weights (item_id, helpful_weight, misleading_weight, feedback_count, current_weight)
+                VALUES (%s::uuid, 0, 0, 0, 0.5)
+                ON CONFLICT (item_id) DO NOTHING
+                """,
+                (item_id,),
+            )
+            conn.commit()
+
+    return {"item_id": item_id}
+
+
+@router.get("/items")
+async def list_knowledge_items(pipeline: str | None = None, status: str = "active", limit: int = 100, offset: int = 0):
+    limit = max(1, min(int(limit or 100), 500))
+    offset = max(0, int(offset or 0))
+    pipeline_value = _normalize_pipeline(pipeline) if pipeline else None
+    status = (status or "active").strip()
+
+    filters = ["ki.status = %s"]
+    params: list = [status]
+    if pipeline_value:
+        filters.append("ki.pipeline = %s")
+        params.append(pipeline_value)
+    where_sql = " AND ".join(filters)
+
+    with psycopg2.connect(
+        host=settings.DB_HOST, port=settings.DB_PORT,
+        user=settings.DB_USER, password=settings.DB_PASSWORD,
+        database=settings.DB_NAME
+    ) as conn:
+        _ensure_structured_knowledge_tables(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                    ki.item_id::text,
+                    ki.pipeline,
+                    ki.machine_category,
+                    ki.machine,
+                    ki.problem_category,
+                    ki.problem,
+                    ki.root_cause,
+                    ki.solution,
+                    ki.metadata,
+                    ki.status,
+                    ki.created_at,
+                    ki.updated_at,
+                    COALESCE(kw.helpful_weight, 0),
+                    COALESCE(kw.misleading_weight, 0),
+                    COALESCE(kw.feedback_count, 0),
+                    COALESCE(kw.current_weight, 0.5),
+                    kw.expert_weight,
+                    COALESCE(kw.expert_weight, kw.current_weight, 0.5) AS effective_weight
+                FROM knowledge_items ki
+                LEFT JOIN knowledge_item_weights kw ON kw.item_id = ki.item_id
+                WHERE {where_sql}
+                ORDER BY ki.updated_at DESC
+                LIMIT %s OFFSET %s
+                """,
+                (*params, limit, offset),
+            )
+            rows = cur.fetchall() or []
+
+    out = []
+    for r in rows:
+        metadata = r[8] if isinstance(r[8], dict) else {}
+        machine = str(r[3] or "").strip()
+        machine_category = str(r[2] or "").strip()
+        problem_category = str(r[4] or "").strip()
+        if not machine:
+            machine = _infer_device_from_filename(str((metadata or {}).get("filename") or "")) if metadata else ""
+        if not machine_category:
+            machine_category = _infer_machine_category_from_machine(machine)
+        if not problem_category:
+            problem_category = _infer_problem_category_from_problem(str(r[5] or ""))
+        out.append(
+            {
+                "item_id": r[0],
+                "pipeline": r[1],
+                "machine_category": machine_category,
+                "machine": machine,
+                "problem_category": problem_category,
+                "problem": r[5],
+                "root_cause": r[6],
+                "solution": r[7],
+                "metadata": metadata,
+                "status": r[9],
+                "created_at": r[10].isoformat() if r[10] else None,
+                "updated_at": r[11].isoformat() if r[11] else None,
+                "helpful_weight": float(r[12] or 0),
+                "misleading_weight": float(r[13] or 0),
+                "feedback_count": int(r[14] or 0),
+                "current_weight": float(r[15] if r[15] is not None else 0.5),
+                "expert_weight": float(r[16]) if r[16] is not None else None,
+                "effective_weight": float(r[17] if r[17] is not None else (r[15] if r[15] is not None else 0.5)),
+            }
+        )
+    return out
+
+
+@router.post("/items/reextract")
+async def reextract_knowledge_items(payload: KnowledgeItemReextractRequest):
+    pipeline = _normalize_pipeline(payload.pipeline)
+    mode = (payload.mode or "replace").strip().lower()
+    if mode not in {"replace", "append"}:
+        mode = "replace"
+
+    doc_ids = payload.doc_ids or []
+    if doc_ids:
+        doc_ids = [str(uuid.UUID(str(x))) for x in doc_ids]
+
+    with psycopg2.connect(
+        host=settings.DB_HOST, port=settings.DB_PORT,
+        user=settings.DB_USER, password=settings.DB_PASSWORD,
+        database=settings.DB_NAME
+    ) as conn:
+        _ensure_structured_knowledge_tables(conn)
+
+        if not doc_ids:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT d.doc_id::text
+                    FROM documents d
+                    WHERE d.status = 'active'
+                      AND COALESCE(d.metadata->>'pipeline', '流水线1') = %s
+                    ORDER BY d.updated_at DESC, d.created_at DESC
+                    LIMIT 50
+                    """,
+                    (pipeline,),
+                )
+                doc_ids = [r[0] for r in (cur.fetchall() or []) if r and r[0]]
+
+        if not doc_ids:
+            return {"pipeline": pipeline, "mode": mode, "doc_ids": [], "deleted": 0, "result": None}
+
+        deleted = 0
+        if mode == "replace":
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    DELETE FROM knowledge_items
+                    WHERE pipeline = %s
+                      AND COALESCE(metadata->>'doc_id', '') = ANY(%s::text[])
+                    """,
+                    (pipeline, doc_ids),
+                )
+                deleted = int(cur.rowcount or 0)
+                conn.commit()
+
+    result = await extract_knowledge_items_with_ai(pipeline=pipeline, doc_ids=doc_ids)
+    return {
+        "pipeline": pipeline,
+        "mode": mode,
+        "doc_ids": doc_ids,
+        "deleted": deleted,
+        "result": {
+            "extracted": int(getattr(result, "extracted", 0)),
+            "inserted": int(getattr(result, "inserted", 0)),
+            "skipped": int(getattr(result, "skipped", 0)),
+            "provider": str(getattr(result, "provider", "") or ""),
+            "errors": list(getattr(result, "errors", []) or []),
+        },
+    }
+
+
+@router.post("/items/cleanup")
+async def cleanup_knowledge_items(payload: KnowledgeItemCleanupRequest):
+    pipeline = _normalize_pipeline(payload.pipeline)
+    dry_run = bool(payload.dry_run)
+    delete_unknown_cause = bool(payload.delete_unknown_cause)
+    delete_noise = bool(payload.delete_noise)
+
+    machine_noise = {
+        "操作说明", "使用说明", "用户指南", "用户手册", "说明书", "安装指南", "安装说明",
+        "参数表", "技术参数", "目录", "保养计划", "安全须知", "注意事项",
+    }
+    unknown_cause = {"未明确", "未知", "不详", "n/a", "na", "-", "—", "null", "none"}
+    noise_in_problem = {"操作说明", "使用说明", "用户指南", "说明书", "安装", "参数", "目录", "注意", "安全", "步骤", "工具", "保养", "授权", "接触器"}
+    machine_noise_norm = {_norm_text(x) for x in machine_noise}
+    unknown_cause_norm = {_norm_text(x) for x in unknown_cause}
+    noise_problem_norm = {_norm_text(x) for x in noise_in_problem}
+
+    with psycopg2.connect(
+        host=settings.DB_HOST, port=settings.DB_PORT,
+        user=settings.DB_USER, password=settings.DB_PASSWORD,
+        database=settings.DB_NAME
+    ) as conn:
+        _ensure_structured_knowledge_tables(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    ki.item_id::text,
+                    ki.machine_category,
+                    ki.machine,
+                    ki.problem_category,
+                    ki.problem,
+                    ki.root_cause,
+                    ki.metadata
+                FROM knowledge_items ki
+                WHERE ki.status = 'active'
+                  AND ki.pipeline = %s
+                ORDER BY ki.updated_at DESC
+                """,
+                (pipeline,),
+            )
+            rows = cur.fetchall() or []
+
+        to_delete: list[str] = []
+        to_update: list[tuple] = []
+        for item_id, mc, m, pc, p, rc, meta in rows:
+            metadata = meta if isinstance(meta, dict) else {}
+            machine = str(m or "").strip()
+            machine_category = str(mc or "").strip()
+            problem_category = str(pc or "").strip()
+            problem = str(p or "").strip()
+            root_cause = str(rc or "").strip()
+
+            if not machine:
+                machine = _infer_device_from_filename(str((metadata or {}).get("filename") or "")) if metadata else ""
+            if not machine_category and machine:
+                machine_category = _infer_machine_category_from_machine(machine)
+            if not problem_category and problem:
+                problem_category = _infer_problem_category_from_problem(problem)
+
+            norm_machine = _norm_text(machine)
+            norm_root = _norm_text(root_cause)
+            norm_problem = _norm_text(problem)
+
+            should_delete = False
+            if delete_unknown_cause and (not root_cause or norm_root in unknown_cause_norm):
+                should_delete = True
+            if delete_noise:
+                if norm_machine in machine_noise_norm:
+                    should_delete = True
+                if any(k in norm_problem for k in noise_problem_norm if k):
+                    should_delete = True
+                if _is_noise_phrase(problem):
+                    should_delete = True
+                if machine_category == "" and (norm_machine in machine_noise_norm or any(k in norm_problem for k in noise_problem_norm if k)):
+                    should_delete = True
+
+            if should_delete:
+                to_delete.append(str(item_id))
+            else:
+                to_update.append((machine_category, machine, problem_category, str(item_id)))
+
+        deleted = len(to_delete)
+        updated = 0
+
+        if not dry_run:
+            with conn.cursor() as cur:
+                if to_delete:
+                    cur.execute(
+                        "UPDATE knowledge_items SET status = 'deleted', updated_at = NOW() WHERE item_id = ANY(%s::uuid[])",
+                        (to_delete,),
+                    )
+                if to_update:
+                    cur.executemany(
+                        """
+                        UPDATE knowledge_items
+                        SET machine_category = %s,
+                            machine = %s,
+                            problem_category = %s,
+                            updated_at = NOW()
+                        WHERE item_id = %s::uuid
+                        """,
+                        to_update,
+                    )
+                    updated = int(cur.rowcount or 0)
+                conn.commit()
+        else:
+            updated = len(to_update)
+
+    return {"pipeline": pipeline, "dry_run": dry_run, "deleted": deleted, "updated": updated, "total": len(rows)}
+
+
+
+@router.put("/items/{item_id}")
+async def update_knowledge_item(item_id: str, payload: KnowledgeItemUpdateRequest):
+    try:
+        item_uuid = uuid.UUID(str(item_id))
+    except Exception:
+        raise HTTPException(status_code=400, detail="item_id 不是有效的 UUID")
+
+    fields = []
+    params: list = []
+    for col in ["pipeline", "machine_category", "machine", "problem_category", "problem", "root_cause", "solution", "status"]:
+        v = getattr(payload, col)
+        if v is None:
+            continue
+        if col == "pipeline":
+            v = _normalize_pipeline(v)
+        fields.append(f"{col} = %s")
+        params.append(v)
+    if payload.metadata is not None:
+        fields.append("metadata = %s::jsonb")
+        params.append(json.dumps(payload.metadata or {}, ensure_ascii=False))
+    fields.append("updated_at = NOW()")
+
+    if not fields:
+        return {"item_id": str(item_uuid)}
+
+    with psycopg2.connect(
+        host=settings.DB_HOST, port=settings.DB_PORT,
+        user=settings.DB_USER, password=settings.DB_PASSWORD,
+        database=settings.DB_NAME
+    ) as conn:
+        _ensure_structured_knowledge_tables(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE knowledge_items SET {', '.join(fields)} WHERE item_id = %s",
+                (*params, str(item_uuid)),
+            )
+            conn.commit()
+
+    return {"item_id": str(item_uuid)}
+
+
+@router.delete("/items/{item_id}")
+async def delete_knowledge_item(item_id: str):
+    try:
+        item_uuid = uuid.UUID(str(item_id))
+    except Exception:
+        raise HTTPException(status_code=400, detail="item_id 不是有效的 UUID")
+
+    with psycopg2.connect(
+        host=settings.DB_HOST, port=settings.DB_PORT,
+        user=settings.DB_USER, password=settings.DB_PASSWORD,
+        database=settings.DB_NAME
+    ) as conn:
+        _ensure_structured_knowledge_tables(conn)
+        with conn.cursor() as cur:
+            cur.execute("UPDATE knowledge_items SET status='deleted', updated_at=NOW() WHERE item_id = %s", (str(item_uuid),))
+            conn.commit()
+
+    return {"item_id": str(item_uuid), "deleted": True}
+
+
+@router.post("/items/search")
+async def search_knowledge_items(payload: KnowledgeItemSearchRequest):
+    query = str(payload.query or "").strip()
+    top_k = max(1, min(int(payload.top_k or 10), 50))
+    pipeline_value = _normalize_pipeline(payload.pipeline) if payload.pipeline else None
+
+    if not query:
+        return {"results": [], "count": 0, "query": query, "pipeline": pipeline_value or ""}
+
+    filters = ["ki.status = 'active'"]
+    params: list = []
+    if pipeline_value:
+        filters.append("ki.pipeline = %s")
+        params.append(pipeline_value)
+    where_sql = " AND ".join(filters)
+
+    like = f"%{query}%"
+    with psycopg2.connect(
+        host=settings.DB_HOST, port=settings.DB_PORT,
+        user=settings.DB_USER, password=settings.DB_PASSWORD,
+        database=settings.DB_NAME
+    ) as conn:
+        _ensure_structured_knowledge_tables(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                    ki.item_id::text,
+                    ki.pipeline,
+                    ki.machine_category,
+                    ki.machine,
+                    ki.problem_category,
+                    ki.problem,
+                    ki.root_cause,
+                    ki.solution,
+                    COALESCE(kw.expert_weight, kw.current_weight, 0.5) AS item_weight
+                FROM knowledge_items ki
+                LEFT JOIN knowledge_item_weights kw ON kw.item_id = ki.item_id
+                WHERE {where_sql}
+                  AND (ki.problem ILIKE %s OR ki.root_cause ILIKE %s OR ki.solution ILIKE %s)
+                ORDER BY item_weight DESC, ki.updated_at DESC
+                LIMIT %s
+                """,
+                (*params, like, like, like, top_k),
+            )
+            rows = cur.fetchall() or []
+
+    results = []
+    for r in rows:
+        results.append(
+            {
+                "item_id": r[0],
+                "pipeline": r[1],
+                "machine_category": r[2],
+                "machine": r[3],
+                "problem_category": r[4],
+                "problem": r[5],
+                "root_cause": r[6],
+                "solution": r[7],
+                "item_weight": float(r[8] if r[8] is not None else 0.5),
+            }
+        )
+    return {"results": results, "count": len(results), "query": query, "pipeline": pipeline_value or ""}
+
+
+@router.post("/items/feedback-weight")
+async def feedback_knowledge_item_weight(payload: KnowledgeItemWeightFeedbackRequest):
+    try:
+        item_uuid = uuid.UUID(str(payload.item_id))
+    except Exception:
+        raise HTTPException(status_code=400, detail="item_id 不是有效的 UUID")
+
+    feedback_type = str(payload.feedback_type or "").strip()
+    if feedback_type not in {"helpful", "misleading"}:
+        raise HTTPException(status_code=400, detail="feedback_type 仅支持 helpful / misleading")
+    amount = float(payload.amount or 1.0)
+    if amount <= 0:
+        amount = 1.0
+
+    with psycopg2.connect(
+        host=settings.DB_HOST, port=settings.DB_PORT,
+        user=settings.DB_USER, password=settings.DB_PASSWORD,
+        database=settings.DB_NAME
+    ) as conn:
+        _ensure_structured_knowledge_tables(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO knowledge_item_weights (item_id, helpful_weight, misleading_weight, feedback_count, current_weight)
+                VALUES (%s, 0, 0, 0, 0.5)
+                ON CONFLICT (item_id) DO NOTHING
+                """,
+                (str(item_uuid),),
+            )
+            cur.execute(
+                "SELECT helpful_weight, misleading_weight FROM knowledge_item_weights WHERE item_id = %s",
+                (str(item_uuid),),
+            )
+            row = cur.fetchone() or (0, 0)
+            helpful = float(row[0] or 0)
+            misleading = float(row[1] or 0)
+            if feedback_type == "helpful":
+                helpful += amount
+            else:
+                misleading += amount
+            total = max(1.0, helpful + misleading)
+            weight = helpful / total
+            weight = max(0.0, min(1.0, weight))
+
+            cur.execute(
+                """
+                UPDATE knowledge_item_weights
+                SET helpful_weight = %s,
+                    misleading_weight = %s,
+                    feedback_count = feedback_count + 1,
+                    current_weight = %s,
+                    updated_at = NOW()
+                WHERE item_id = %s
+                """,
+                (helpful, misleading, weight, str(item_uuid)),
+            )
+            cur.execute(
+                "SELECT COALESCE(expert_weight, %s) FROM knowledge_item_weights WHERE item_id = %s",
+                (weight, str(item_uuid)),
+            )
+            effective_weight = float((cur.fetchone() or [weight])[0] or weight)
+            conn.commit()
+
+    return {"item_id": str(item_uuid), "item_weight": weight, "effective_weight": effective_weight}
+
+
+@router.post("/items/expert-weight")
+async def set_knowledge_item_expert_weight(payload: KnowledgeItemExpertWeightRequest):
+    try:
+        item_uuid = uuid.UUID(str(payload.item_id))
+    except Exception:
+        raise HTTPException(status_code=400, detail="item_id 不是有效的 UUID")
+
+    w = payload.expert_weight
+    if w is not None:
+        w = float(w)
+        if w > 1.0:
+            w = w / 100.0
+        if w < 0.0 or w > 1.0:
+            raise HTTPException(status_code=400, detail="expert_weight 取值范围为 0~1（或 0~100）")
+        w = round(w, 4)
+
+    with psycopg2.connect(
+        host=settings.DB_HOST, port=settings.DB_PORT,
+        user=settings.DB_USER, password=settings.DB_PASSWORD,
+        database=settings.DB_NAME
+    ) as conn:
+        _ensure_structured_knowledge_tables(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO knowledge_item_weights (item_id, helpful_weight, misleading_weight, feedback_count, current_weight, expert_weight)
+                VALUES (%s, 0, 0, 0, 0.5, %s)
+                ON CONFLICT (item_id) DO UPDATE SET expert_weight = EXCLUDED.expert_weight, updated_at = NOW()
+                """,
+                (str(item_uuid), w),
+            )
+            cur.execute(
+                "SELECT COALESCE(expert_weight, current_weight, 0.5), current_weight, expert_weight FROM knowledge_item_weights WHERE item_id = %s",
+                (str(item_uuid),),
+            )
+            row = cur.fetchone() or (0.5, 0.5, None)
+            conn.commit()
+
+    return {"item_id": str(item_uuid), "effective_weight": float(row[0]), "current_weight": float(row[1]), "expert_weight": (float(row[2]) if row[2] is not None else None)}
+
+
+@router.get("/items/suggestions")
+async def list_knowledge_item_suggestions(pipeline: str = "流水线1", limit: int = 8):
+    pipeline = _normalize_pipeline(pipeline)
+    limit = max(1, min(int(limit or 8), 20))
+
+    with psycopg2.connect(
+        host=settings.DB_HOST, port=settings.DB_PORT,
+        user=settings.DB_USER, password=settings.DB_PASSWORD,
+        database=settings.DB_NAME
+    ) as conn:
+        _ensure_structured_knowledge_tables(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    ki.problem,
+                    COALESCE(kw.expert_weight, kw.current_weight, 0.5) AS w,
+                    ki.updated_at
+                FROM knowledge_items ki
+                LEFT JOIN knowledge_item_weights kw ON kw.item_id = ki.item_id
+                WHERE ki.status = 'active'
+                  AND ki.pipeline = %s
+                  AND LENGTH(TRIM(COALESCE(ki.problem, ''))) > 0
+                ORDER BY w DESC, ki.updated_at DESC
+                LIMIT 200
+                """,
+                (pipeline,),
+            )
+            rows = cur.fetchall() or []
+
+    seen = set()
+    out = []
+    for problem, _, _ in rows:
+        p = str(problem or "").strip()
+        if not p:
+            continue
+        key = p.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(p)
+        if len(out) >= limit:
+            break
+    return {"pipeline": pipeline, "suggestions": out}
+
+
 @router.get("/graph")
 async def knowledge_graph(pipeline: str = "流水线1"):
     pipeline = _normalize_pipeline(pipeline)
@@ -1107,6 +1965,130 @@ async def knowledge_graph(pipeline: str = "流水线1"):
         user=settings.DB_USER, password=settings.DB_PASSWORD,
         database=settings.DB_NAME
     ) as conn:
+        _ensure_structured_knowledge_tables(conn)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        TRIM(COALESCE(machine_category, '')) AS machine_category,
+                        COALESCE(NULLIF(TRIM(machine), ''), '设备') AS machine,
+                        TRIM(COALESCE(problem_category, '')) AS problem_category,
+                        TRIM(COALESCE(problem, '')) AS problem,
+                        TRIM(COALESCE(root_cause, '')) AS root_cause
+                    FROM knowledge_items
+                    WHERE status = 'active'
+                      AND pipeline = %s
+                      AND LENGTH(TRIM(COALESCE(problem, ''))) > 0
+                    ORDER BY updated_at DESC
+                    LIMIT 800
+                    """,
+                    (pipeline,),
+                )
+                item_rows = cur.fetchall() or []
+        except Exception:
+            item_rows = []
+
+        if item_rows:
+            unknown_root = {"未明确", "未知", "不详", "n/a", "na", "-", "—", "null", "none"}
+            unknown_root_norm = {_norm_text(x) for x in unknown_root}
+            machine_noise_norm = {_norm_text(x) for x in {"操作说明", "使用说明", "用户指南", "用户手册", "说明书", "安装指南", "安装说明", "参数表", "技术参数", "目录", "保养计划", "安全须知", "注意事项"}}
+
+            cat_map: dict[str, dict] = {}
+            device_map: dict[str, dict] = {}
+
+            for machine_category, machine, problem_category, problem, root_cause in item_rows:
+                dev = str(machine or "").strip() or "设备"
+                dev_norm = _norm_text(dev)
+                if not dev_norm or dev_norm in machine_noise_norm:
+                    continue
+                fault = str(problem or "").strip()
+                if not fault or _is_noise_phrase(fault):
+                    continue
+                root = str(root_cause or "").strip()
+                if not root or _norm_text(root) in unknown_root_norm:
+                    continue
+
+                mc = str(machine_category or "").strip()
+                if not mc:
+                    mc = _infer_machine_category_from_machine(dev)
+                pc = str(problem_category or "").strip()
+                if not pc:
+                    pc = _infer_problem_category_from_problem(fault)
+
+                mc_key = _norm_text(mc) or mc.lower()
+                m_key = _machine_dedupe_key(dev)
+                pc_key = _norm_text(pc) or pc.lower()
+                p_key = _norm_text(fault) or fault.lower()
+                r_key = _norm_text(root) or root.lower()
+
+                mc_bucket = cat_map.setdefault(mc_key, {"name": mc or "通用设备", "machines": {}})
+                mach_bucket = mc_bucket["machines"].setdefault(m_key, {"names": set(), "name": dev, "problem_categories": {}})
+                mach_bucket["names"].add(dev)
+                mach_bucket["name"] = _pick_preferred_machine_name(mach_bucket["names"])
+                pc_bucket = mach_bucket["problem_categories"].setdefault(pc_key, {"name": pc or "", "problems": {}})
+                if len(pc) > len(str(pc_bucket.get("name", ""))):
+                    pc_bucket["name"] = pc
+                prob_bucket = pc_bucket["problems"].setdefault(p_key, {"name": fault, "root_causes": {}})
+                if len(fault) > len(str(prob_bucket.get("name", ""))):
+                    prob_bucket["name"] = fault
+                prob_bucket["root_causes"][r_key] = root
+
+                dev_bucket = device_map.setdefault(m_key, {"names": set(), "name": dev, "faults": {}})
+                dev_bucket["names"].add(dev)
+                dev_bucket["name"] = _pick_preferred_machine_name(dev_bucket["names"])
+                dev_fault = dev_bucket["faults"].setdefault(p_key, {"name": fault, "solutions": []})
+                if root not in dev_fault["solutions"]:
+                    dev_fault["solutions"].append(root)
+
+            machine_categories = []
+            for _k, mc_bucket in sorted(cat_map.items(), key=lambda x: x[0]):
+                machines = []
+                for _mk, mach_bucket in list((mc_bucket.get("machines") or {}).items())[:30]:
+                    pcs = []
+                    for _pck, pc_bucket in list((mach_bucket.get("problem_categories") or {}).items())[:30]:
+                        problems = []
+                        for _pk, p_bucket in list((pc_bucket.get("problems") or {}).items())[:30]:
+                            roots = list((p_bucket.get("root_causes") or {}).values())
+                            roots = [r for r in roots if str(r).strip()]
+                            if not roots:
+                                continue
+                            problems.append({"name": p_bucket.get("name") or "", "root_causes": roots[:8]})
+                        if not problems:
+                            continue
+                        pcs.append({"name": pc_bucket.get("name") or "", "problems": problems[:12]})
+                    if not pcs:
+                        continue
+                    machines.append({"name": mach_bucket.get("name") or "", "problem_categories": pcs[:12]})
+                if not machines:
+                    continue
+                machine_categories.append({"name": mc_bucket.get("name") or "", "machines": machines[:12]})
+
+            devices = []
+            for _dev_key, val in list(device_map.items())[:40]:
+                faults = []
+                dev_name = str(val.get("name") or "").strip() or "设备"
+                for _fk, fentry in list((val.get("faults") or {}).items())[:60]:
+                    sols = [s for s in (fentry.get("solutions") or []) if str(s).strip()]
+                    if not sols:
+                        continue
+                    faults.append({"name": str(fentry.get("name") or "").strip(), "solutions": sols[:6]})
+                if faults:
+                    devices.append({"name": dev_name, "faults": faults[:10]})
+
+            devices = devices[:20]
+            return {
+                "pipeline": pipeline,
+                "doc_count": 0,
+                "item_count": len(item_rows),
+                "devices": devices,
+                "kb_tree": {"machine_categories": machine_categories[:12]},
+                "device_count": len(devices),
+                "fault_count": sum(len((d or {}).get("faults", []) or []) for d in devices),
+                "version": "kg_v6_items_tree",
+                "source": "knowledge_items",
+            }
+
         with conn.cursor() as cur:
             cur.execute(
                 """

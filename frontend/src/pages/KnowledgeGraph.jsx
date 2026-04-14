@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Card, Typography, Space, Empty, Tag, AutoComplete, Button, message } from 'antd'
-import ReactFlow, { Background, Controls, MiniMap } from 'reactflow'
+import ReactFlow, { Background, Controls, MiniMap, MarkerType, Handle, Position } from 'reactflow'
 import 'reactflow/dist/style.css'
 import './KnowledgeGraph.css'
 import api from '../services/api.js'
@@ -69,14 +69,15 @@ const inferDeviceFromFilename = (name) => {
 function CloudNode({ data }) {
   return (
     <div className={`cloud-node cloud-node--${data.kind || 'device'} ${data.hidden ? 'cloud-node--hidden' : 'cloud-node--visible'}`}>
-      <div className="cloud-node__puff cloud-node__puff--l" />
-      <div className="cloud-node__puff cloud-node__puff--r" />
+      <Handle type="target" position={Position.Top} style={{ opacity: 0 }} />
+      <Handle type="source" position={Position.Bottom} style={{ opacity: 0 }} />
       <div className="cloud-node__label">{data.label}</div>
     </div>
   )
 }
 
 const nodeTypes = { cloud: CloudNode }
+const defaultEdgeOptions = { type: 'straight' }
 const DEVICE_NODE_W = 220
 const FAULT_NODE_W = 220
 const SOLUTION_NODE_W = 260
@@ -114,8 +115,13 @@ const getDeviceRowPos = (allDevices, deviceId) => {
 
 export default function KnowledgeGraph() {
   const [line, setLine] = useState('流水线1')
-  const [pipelines, setPipelines] = useState(['流水线1'])
+  const [lineInput, setLineInput] = useState('流水线1')
+  const [pipelines, setPipelines] = useState([])
   const [devices, setDevices] = useState([])
+  const [kbTree, setKbTree] = useState(null)
+  const [graphMode, setGraphMode] = useState('legacy') // legacy | structured
+  const [structuredNav, setStructuredNav] = useState({ level: 'mc', mcKey: null, mKey: null, pcKey: null, pKey: null })
+  const [structuredShowChildren, setStructuredShowChildren] = useState(true)
   const [expandDevices, setExpandDevices] = useState({})
   const [expandFaults, setExpandFaults] = useState({})
   const [rf, setRf] = useState(null)
@@ -126,18 +132,151 @@ export default function KnowledgeGraph() {
   const [focusDeviceId, setFocusDeviceId] = useState(null) // 点击后正在聚焦的设备
   const [transitionPhase, setTransitionPhase] = useState('idle') // idle | focusing | expanded | collapsing | faultFocusing | faultExpanded
   const [pinnedDevicePos, setPinnedDevicePos] = useState(null) // { deviceId, x, y }
+  const rfRef = useRef(null)
+  const idleViewportRef = useRef(null)
+  const actionRef = useRef(0)
   const timersRef = useRef([])
+  const flowWrapRef = useRef(null)
+  const rafRef = useRef(null)
+  const structuredAnchorRef = useRef(null)
   const clearTimers = () => {
     timersRef.current.forEach(t => clearTimeout(t))
     timersRef.current = []
   }
+  const cancelRaf = () => {
+    if (rafRef.current) cancelAnimationFrame(rafRef.current)
+    rafRef.current = null
+  }
+  const beginAction = () => {
+    actionRef.current += 1
+    clearTimers()
+    cancelRaf()
+    return actionRef.current
+  }
+  const schedule = (actionId, fn, delayMs) => {
+    const t = setTimeout(() => {
+      if (actionRef.current !== actionId) return
+      fn()
+    }, delayMs)
+    timersRef.current.push(t)
+    return t
+  }
+  const easeInOutCubic = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2)
+  const easeInOutQuint = (t) => (t < 0.5 ? 16 * t * t * t * t * t : 1 - Math.pow(-2 * t + 2, 5) / 2)
+  const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3)
+  const animateCenterZoom = (centerX, centerY, zoom, durationMs, easing = easeInOutCubic) => {
+    const inst = rfRef.current
+    if (!inst) return
+    cancelRaf()
+    const actionId = actionRef.current
+    const wrap = flowWrapRef.current
+    const rect = wrap?.getBoundingClientRect?.()
+    const vp = inst.getViewport?.()
+    const from = {
+      x: Number.isFinite(vp?.x) ? vp.x : 0,
+      y: Number.isFinite(vp?.y) ? vp.y : 0,
+      zoom: Number.isFinite(vp?.zoom) ? vp.zoom : 1,
+    }
+    const w = Number.isFinite(rect?.width) ? rect.width : 0
+    const h = Number.isFinite(rect?.height) ? rect.height : 0
+    const to = {
+      x: w ? (w / 2 - centerX * zoom) : from.x,
+      y: h ? (h / 2 - centerY * zoom) : from.y,
+      zoom,
+    }
+    const startTs = performance.now()
+    const step = (now) => {
+      if (actionRef.current !== actionId) return
+      const t = Math.min(1, (now - startTs) / Math.max(1, durationMs || 1))
+      const k = easing(t)
+      const x = from.x + (to.x - from.x) * k
+      const y = from.y + (to.y - from.y) * k
+      const z = from.zoom + (to.zoom - from.zoom) * k
+      inst.setViewport({ x, y, zoom: z }, { duration: 0 })
+      if (t < 1) {
+        rafRef.current = requestAnimationFrame(step)
+      } else {
+        rafRef.current = null
+      }
+    }
+    rafRef.current = requestAnimationFrame(step)
+  }
+  const getNodePos = (nodeId, fallback) => {
+    const inst = rfRef.current
+    const n = inst?.getNode?.(nodeId)
+    return n?.positionAbsolute || n?.position || fallback || { x: CENTER_X, y: CENTER_Y }
+  }
+  const restoreIdleViewport = (duration = 720) => {
+    const inst = rfRef.current
+    if (!inst) return
+    const v = idleViewportRef.current
+    if (v) {
+      try {
+        inst.setViewport(v, { duration })
+        return
+      } catch {}
+    }
+    try {
+      inst.fitView({ duration, padding: 0.2 })
+      idleViewportRef.current = inst.getViewport()
+    } catch {}
+  }
+
+  const hashStr = (s) => {
+    const v = String(s || '')
+    let h = 5381
+    for (let i = 0; i < v.length; i += 1) {
+      h = ((h << 5) + h) ^ v.charCodeAt(i)
+    }
+    return (h >>> 0).toString(16)
+  }
+  const makeId = (prefix, parts) => `${prefix}-${hashStr(`${prefix}|${(parts || []).map(p => String(p || '')).join('|')}`)}`
+  const keyOf = (s) => norm(s).toLowerCase()
+  const treeCats = useMemo(() => {
+    const cats = kbTree?.machine_categories
+    return Array.isArray(cats) ? cats : []
+  }, [kbTree])
+  const findCat = (mcKey) => treeCats.find(c => keyOf(c?.name) === String(mcKey || '')) || null
+  const findMachine = (cat, mKey) => {
+    const ms = Array.isArray(cat?.machines) ? cat.machines : []
+    return ms.find(m => keyOf(m?.name) === String(mKey || '')) || null
+  }
+  const findPc = (mach, pcKey) => {
+    const pcs = Array.isArray(mach?.problem_categories) ? mach.problem_categories : []
+    return pcs.find(p => keyOf(p?.name) === String(pcKey || '')) || null
+  }
+  const findProblem = (pc, pKey) => {
+    const ps = Array.isArray(pc?.problems) ? pc.problems : []
+    return ps.find(p => keyOf(p?.name) === String(pKey || '')) || null
+  }
+  const animateStructuredNav = (nextNav, focusId = null) => {
+    const actionId = beginAction()
+    setStructuredShowChildren(false)
+    setStructuredNav(nextNav)
+    schedule(actionId, () => setStructuredShowChildren(true), 160)
+    const inst = rfRef.current
+    if (inst && focusId) {
+      schedule(actionId, () => {
+        const p = getNodePos(focusId, { x: CENTER_X, y: CENTER_Y })
+        const currentZoom = inst.getViewport?.().zoom
+        const focusZoom = Number.isFinite(currentZoom) ? Math.min(1.28, currentZoom + 0.28) : 1.12
+        requestAnimationFrame(() => animateCenterZoom(p.x + DEVICE_NODE_W / 2, p.y + CLOUD_CENTER_Y_OFFSET, focusZoom, 980, easeOutCubic))
+      }, 100)
+    }
+  }
 
   const handleFlowInit = (instance) => {
+    rfRef.current = instance
     setRf(instance)
     setTimeout(() => {
       try {
         instance.fitView({ duration: 0, padding: 0.2 })
       } catch {}
+      setTimeout(() => {
+        try {
+          idleViewportRef.current = instance.getViewport()
+        } catch {}
+      }, 0)
     }, 0)
   }
 
@@ -151,20 +290,48 @@ export default function KnowledgeGraph() {
     const load = async () => {
       try {
         const all = await api.listPipelines()
-        const p = Array.from(new Set(['流水线1', ...all.filter(Boolean)]))
-        setPipelines(p)
-        if (!p.includes(line)) setLine(p[0] || '流水线1')
-        const data = await api.getKnowledgeGraph(line)
-        let next = sanitizeDevices(data?.devices)
-        if ((!next || next.length === 0) && (data?.doc_count || 0) > 0) {
-          const docs = await api.listDocuments()
-          const byPipe = (Array.isArray(docs) ? docs : []).filter(d => (d.pipeline || '流水线1') === line && d.status === 'active')
-          next = byPipe.slice(0, 8).map(d => ({
-            name: inferDeviceFromFilename(d.filename),
-            faults: [{ name: '设备运行异常', solutions: ['请在知识库中补充“故障现象-解决方法”段落后重建图谱'] }]
-          }))
+        const uniq = Array.from(new Set((all || []).filter(Boolean)))
+        if (uniq.length === 0) uniq.push('流水线1')
+        setPipelines(uniq)
+        const chosen = uniq.includes(line) ? line : (uniq[0] || '流水线1')
+        if (chosen !== line) setLine(chosen)
+        setLineInput(chosen)
+      } catch {
+        setPipelines(['流水线1'])
+        setLineInput(line || '流水线1')
+      }
+    }
+    load()
+  }, [])
+
+  useEffect(() => {
+    const load = async () => {
+      const pipeline = (line || '').trim() || '流水线1'
+      try {
+        const data = await api.getKnowledgeGraph(pipeline)
+        const tree = data?.kb_tree?.machine_categories ? data.kb_tree : null
+        if (tree?.machine_categories?.length) {
+          setGraphMode('structured')
+          setKbTree(tree)
+          setDevices([])
+          setStructuredNav({ level: 'mc', mcKey: null, mKey: null, pcKey: null, pKey: null })
+          setStructuredShowChildren(true)
+        } else {
+          setGraphMode('legacy')
+          setKbTree(null)
+          let next = sanitizeDevices(data?.devices)
+          if ((!next || next.length === 0) && (data?.doc_count || 0) > 0) {
+            const docs = await api.listDocuments()
+            const byPipe = (Array.isArray(docs) ? docs : []).filter(d => (d.pipeline || '流水线1') === pipeline && d.status === 'active')
+            next = byPipe.slice(0, 8).map(d => ({
+              name: inferDeviceFromFilename(d.filename),
+              faults: [{ name: '设备运行异常', solutions: ['请在知识库中补充“故障现象-解决方法”段落后重建图谱'] }]
+            }))
+          }
+          setDevices(next)
+          setStructuredNav({ level: 'mc', mcKey: null, mKey: null, pcKey: null, pKey: null })
+          setStructuredShowChildren(true)
         }
-        setDevices(next)
         setExpandDevices({})
         setExpandFaults({})
         setActiveDeviceId(null)
@@ -173,8 +340,15 @@ export default function KnowledgeGraph() {
         setFocusDeviceId(null)
         setPinnedDevicePos(null)
         setTransitionPhase('idle')
+        setTimeout(() => {
+          restoreIdleViewport(0)
+        }, 0)
       } catch {
         setDevices([])
+        setKbTree(null)
+        setGraphMode('legacy')
+        setStructuredNav({ level: 'mc', mcKey: null, mKey: null, pcKey: null, pKey: null })
+        setStructuredShowChildren(true)
       }
     }
     load()
@@ -186,16 +360,29 @@ export default function KnowledgeGraph() {
       const ret = await api.rebuildKnowledgeGraph((line || '').trim() || '流水线1')
       message.success(`重建完成：成功 ${ret.rebuilt || 0}，失败 ${ret.failed || 0}`)
       const data = await api.getKnowledgeGraph((line || '').trim() || '流水线1')
-      let next = sanitizeDevices(data?.devices)
-      if ((!next || next.length === 0) && (data?.doc_count || 0) > 0) {
-        const docs = await api.listDocuments()
-        const byPipe = (Array.isArray(docs) ? docs : []).filter(d => (d.pipeline || '流水线1') === line && d.status === 'active')
-        next = byPipe.slice(0, 8).map(d => ({
-          name: inferDeviceFromFilename(d.filename),
-          faults: [{ name: '设备运行异常', solutions: ['请在知识库中补充“故障现象-解决方法”段落后重建图谱'] }]
-        }))
+      const tree = data?.kb_tree?.machine_categories ? data.kb_tree : null
+      if (tree?.machine_categories?.length) {
+        setGraphMode('structured')
+        setKbTree(tree)
+        setDevices([])
+        setStructuredNav({ level: 'mc', mcKey: null, mKey: null, pcKey: null, pKey: null })
+        setStructuredShowChildren(true)
+      } else {
+        setGraphMode('legacy')
+        setKbTree(null)
+        let next = sanitizeDevices(data?.devices)
+        if ((!next || next.length === 0) && (data?.doc_count || 0) > 0) {
+          const docs = await api.listDocuments()
+          const byPipe = (Array.isArray(docs) ? docs : []).filter(d => (d.pipeline || '流水线1') === line && d.status === 'active')
+          next = byPipe.slice(0, 8).map(d => ({
+            name: inferDeviceFromFilename(d.filename),
+            faults: [{ name: '设备运行异常', solutions: ['请在知识库中补充“故障现象-解决方法”段落后重建图谱'] }]
+          }))
+        }
+        setDevices(next)
+        setStructuredNav({ level: 'mc', mcKey: null, mKey: null, pcKey: null, pKey: null })
+        setStructuredShowChildren(true)
       }
-      setDevices(next)
       setExpandDevices({})
       setExpandFaults({})
       setActiveDeviceId(null)
@@ -204,14 +391,208 @@ export default function KnowledgeGraph() {
       setFocusDeviceId(null)
       setPinnedDevicePos(null)
       setTransitionPhase('idle')
-      message.info(`当前图谱：${data?.device_count || next.length || 0} 个设备，${data?.fault_count || 0} 条故障`)
+      setTimeout(() => {
+        restoreIdleViewport(0)
+      }, 0)
+      message.info(`当前图谱：${data?.source === 'knowledge_items' ? '结构化知识库' : '文档知识'} / 版本 ${data?.version || '-'}`)
     } catch (e) {
       message.error('重建失败: ' + (e.response?.data?.detail || e.message))
     }
     setRebuilding(false)
   }
 
+  const buildStructuredFlow = useMemo(() => {
+    if (graphMode !== 'structured') return null
+    if (!treeCats.length) return null
+    const ns = []
+    const es = []
+    const level = structuredNav.level || 'mc'
+    const mcKey = structuredNav.mcKey
+    const mKey = structuredNav.mKey
+    const pcKey = structuredNav.pcKey
+    const pKey = structuredNav.pKey
+
+    const nodeIdSet = new Set()
+    const edgeIdSet = new Set()
+
+    const addNode = (id, label, kind, x, y, hidden, extra) => {
+      if (!id) return
+      if (nodeIdSet.has(id)) return
+      nodeIdSet.add(id)
+      ns.push({
+        id,
+        type: 'cloud',
+        data: { label, kind, hidden: !!hidden, ...(extra || {}) },
+        position: { x, y },
+        draggable: false,
+        style: hidden ? { opacity: 0, pointerEvents: 'none' } : undefined,
+      })
+    }
+    const addEdge = (src, dst, stroke) => {
+      if (!src || !dst) return
+      const id = `e-${src}-${dst}`
+      if (edgeIdSet.has(id)) return
+      edgeIdSet.add(id)
+      es.push({ id, source: src, target: dst, animated: true, style: { stroke: stroke || '#91caff' }, markerEnd: { type: MarkerType.ArrowClosed } })
+    }
+
+    const uniqByKey = (items, getKey, getName) => {
+      const map = new Map()
+      for (const it of Array.isArray(items) ? items : []) {
+        const k = String(getKey(it) || '')
+        if (!k) continue
+        const nm = String(getName(it) || '').trim()
+        const prev = map.get(k)
+        if (!prev) {
+          map.set(k, it)
+          continue
+        }
+        const prevName = String(getName(prev) || '').trim()
+        if (nm.length > prevName.length) map.set(k, it)
+      }
+      return Array.from(map.entries()).map(([k, it]) => ({ it, key: k }))
+    }
+
+    const catPairs = uniqByKey(treeCats, (c) => keyOf(c?.name) || keyOf('通用设备'), (c) => String(c?.name || '').trim() || '通用设备')
+    const cats = catPairs.map(({ it, key }) => ({ name: String(it?.name || '').trim() || '通用设备', key, raw: it }))
+    const catStep = Math.min(360, Math.max(240, 1000 / Math.max(cats.length - 1, 1)))
+    const catStartX = CENTER_X - ((cats.length - 1) * catStep) / 2
+    const pipelineId = makeId('pipe', [line])
+    const anchor = structuredAnchorRef.current
+    const base = anchor && Number.isFinite(anchor.x) && Number.isFinite(anchor.y) ? anchor : { x: CENTER_X, y: CENTER_Y }
+    const baseCenter = { x: base.x + DEVICE_NODE_W / 2, y: base.y + CLOUD_CENTER_Y_OFFSET }
+
+    if (level === 'mc' || !mcKey) {
+      addNode(pipelineId, line, 'pipeline', CENTER_X, CENTER_Y, false, { level: 'pipe' })
+      const center = { x: CENTER_X + DEVICE_NODE_W / 2, y: CENTER_Y + CLOUD_CENTER_Y_OFFSET }
+      const ring = ringRadius(cats.length || 1, DEVICE_NODE_W, 54, 300)
+      const angles = faultAngles(Math.max(cats.length, 1))
+      cats.forEach((c, idx) => {
+        const a = angles[idx] ?? ((Math.PI * 2 * idx) / Math.max(cats.length, 1))
+        const x = center.x + Math.cos(a) * ring - DEVICE_NODE_W / 2
+        const y = center.y + Math.sin(a) * ring - CLOUD_CENTER_Y_OFFSET
+        const id = makeId('mc', [c.key])
+        addNode(id, c.name, 'device', x, y, false, { level: 'mc', key: c.key })
+        addEdge(pipelineId, id, '#91caff')
+      })
+      return { nodes: ns, edges: es }
+    }
+
+    const selectedCat = findCat(mcKey)
+    const selectedCatName = String(selectedCat?.name || '').trim() || cats.find(c => c.key === mcKey)?.name || '通用设备'
+    const catId = makeId('mc', [mcKey])
+
+    addNode(catId, selectedCatName, 'device', base.x, base.y, false, { level: 'mc', key: mcKey })
+
+    const machines = Array.isArray(selectedCat?.machines) ? selectedCat.machines : []
+    const mPairs = uniqByKey(
+      machines,
+      (m) => keyOf(m?.name) || keyOf('设备'),
+      (m) => String(m?.name || '').trim() || '设备'
+    )
+    const mItems = mPairs.map(({ it, key }) => ({ name: String(it?.name || '').trim() || '设备', key, raw: it })).slice(0, 18)
+
+    if (level === 'm' || !mKey) {
+      const ring = ringRadius(mItems.length || 1, DEVICE_NODE_W, 54, 280)
+      const angles = faultAngles(Math.max(mItems.length, 1))
+      mItems.forEach((m, i) => {
+        const a = angles[i] ?? ((Math.PI * 2 * i) / Math.max(mItems.length, 1))
+        const x = baseCenter.x + Math.cos(a) * ring - DEVICE_NODE_W / 2
+        const y = baseCenter.y + Math.sin(a) * ring - CLOUD_CENTER_Y_OFFSET
+        const id = makeId('m', [mcKey, m.key])
+        addNode(id, m.name, 'device', x, y, !structuredShowChildren, { level: 'm', mcKey, key: m.key })
+        addEdge(catId, id, '#91caff')
+      })
+      return { nodes: ns, edges: es }
+    }
+
+    const selectedMachine = findMachine(selectedCat, mKey)
+    const selectedMachineName = String(selectedMachine?.name || '').trim() || mItems.find(m => m.key === mKey)?.name || '设备'
+    const machId = makeId('m', [mcKey, mKey])
+    addNode(machId, selectedMachineName, 'device', base.x, base.y, false, { level: 'm', mcKey, key: mKey })
+
+    const pcs = Array.isArray(selectedMachine?.problem_categories) ? selectedMachine.problem_categories : []
+    const pcPairs = uniqByKey(pcs, (p) => keyOf(p?.name) || keyOf('问题类别'), (p) => String(p?.name || '').trim() || '问题类别')
+    const pcItems = pcPairs.map(({ it, key }) => ({ name: String(it?.name || '').trim() || '问题类别', key, raw: it })).slice(0, 18)
+
+    if (level === 'pc' || !pcKey) {
+      const ring = ringRadius(pcItems.length || 1, FAULT_NODE_W, 54, 300)
+      const angles = faultAngles(Math.max(pcItems.length, 1))
+      pcItems.forEach((pc, i) => {
+        const a = angles[i] ?? ((Math.PI * 2 * i) / Math.max(pcItems.length, 1))
+        const x = baseCenter.x + Math.cos(a) * ring - FAULT_NODE_W / 2
+        const y = baseCenter.y + Math.sin(a) * ring - CLOUD_CENTER_Y_OFFSET
+        const id = makeId('pc', [mcKey, mKey, pc.key])
+        addNode(id, pc.name, 'fault', x, y, !structuredShowChildren, { level: 'pc', mcKey, mKey, key: pc.key })
+        addEdge(machId, id, '#ffd666')
+      })
+      return { nodes: ns, edges: es }
+    }
+
+    const selectedPc = findPc(selectedMachine, pcKey)
+    const selectedPcName = String(selectedPc?.name || '').trim() || pcItems.find(p => p.key === pcKey)?.name || '问题类别'
+    const pcId = makeId('pc', [mcKey, mKey, pcKey])
+    addNode(pcId, selectedPcName, 'fault', base.x, base.y, false, { level: 'pc', mcKey, mKey, key: pcKey })
+
+    const problems = Array.isArray(selectedPc?.problems) ? selectedPc.problems : []
+    const pPairs = uniqByKey(problems, (p) => keyOf(p?.name) || keyOf('问题'), (p) => String(p?.name || '').trim() || '问题')
+    const pItems = pPairs.map(({ it, key }) => ({ name: String(it?.name || '').trim() || '问题', key, raw: it })).slice(0, 18)
+
+    if (level === 'p' || !pKey) {
+      const ring = ringRadius(pItems.length || 1, FAULT_NODE_W, 54, 320)
+      const angles = faultAngles(Math.max(pItems.length, 1))
+      pItems.forEach((p, i) => {
+        const a = angles[i] ?? ((Math.PI * 2 * i) / Math.max(pItems.length, 1))
+        const x = baseCenter.x + Math.cos(a) * ring - FAULT_NODE_W / 2
+        const y = baseCenter.y + Math.sin(a) * ring - CLOUD_CENTER_Y_OFFSET
+        const id = makeId('p', [mcKey, mKey, pcKey, p.key])
+        addNode(id, p.name, 'fault', x, y, !structuredShowChildren, { level: 'p', mcKey, mKey, pcKey, key: p.key })
+        addEdge(pcId, id, '#ffd666')
+      })
+      return { nodes: ns, edges: es }
+    }
+
+    const selectedProblem = findProblem(selectedPc, pKey)
+    const selectedProblemName = String(selectedProblem?.name || '').trim() || pItems.find(p => p.key === pKey)?.name || '问题'
+    const probId = makeId('p', [mcKey, mKey, pcKey, pKey])
+    addNode(probId, selectedProblemName, 'fault', base.x, base.y, false, { level: 'p', mcKey, mKey, pcKey, key: pKey })
+
+    const roots = Array.isArray(selectedProblem?.root_causes) ? selectedProblem.root_causes : []
+    const rootPairs = uniqByKey(roots, (r) => keyOf(r), (r) => String(r || '').trim())
+    const rootItems = rootPairs.map(({ it }) => String(it || '').trim()).filter(Boolean).slice(0, 12)
+    const ring = ringRadius(rootItems.length || 1, SOLUTION_NODE_W, 34, 260)
+    const angles = faultAngles(Math.max(rootItems.length, 1))
+    rootItems.forEach((r, i) => {
+      const a = angles[i] ?? ((Math.PI * 2 * i) / Math.max(rootItems.length, 1))
+      const x = baseCenter.x + Math.cos(a) * ring - SOLUTION_NODE_W / 2
+      const y = baseCenter.y + Math.sin(a) * ring - CLOUD_CENTER_Y_OFFSET
+      const id = makeId('rc', [mcKey, mKey, pcKey, pKey, r])
+      addNode(id, r, 'solution', x, y, !structuredShowChildren, { level: 'rc', mcKey, mKey, pcKey, pKey, key: keyOf(r) })
+      addEdge(probId, id, '#95de64')
+    })
+    return { nodes: ns, edges: es }
+  }, [graphMode, treeCats, structuredNav, structuredShowChildren])
+
+  useEffect(() => {
+    if (graphMode !== 'structured') return
+    if ((structuredNav?.level || 'mc') !== 'mc') return
+    if (structuredNav?.mcKey) return
+    const inst = rfRef.current
+    if (!inst) return
+    setTimeout(() => {
+      try {
+        inst.fitView({ duration: 0, padding: 0.18 })
+      } catch {}
+      setTimeout(() => {
+        try {
+          idleViewportRef.current = inst.getViewport()
+        } catch {}
+      }, 0)
+    }, 0)
+  }, [graphMode, line, treeCats.length, structuredNav?.level, structuredNav?.mcKey])
+
   const { nodes, edges } = useMemo(() => {
+    if (graphMode === 'structured' && buildStructuredFlow) return buildStructuredFlow
     const ns = []
     const es = []
     if ((transitionPhase === 'faultFocusing' || transitionPhase === 'faultExpanded') && faultFocus) {
@@ -240,7 +621,7 @@ export default function KnowledgeGraph() {
             position: { x: devX, y: ay },
             draggable: false
           })
-          es.push({ id: `e-${devId}-${faultId}`, source: devId, target: faultId, animated: true, style: { stroke: '#faad14' } })
+          es.push({ id: `e-${devId}-${faultId}`, source: devId, target: faultId, animated: true, style: { stroke: '#faad14' }, markerEnd: { type: MarkerType.ArrowClosed } })
           const sols = fault.solutions || []
           const startY = ay - ((sols.length - 1) * 120) / 2
           sols.forEach((s, i) => {
@@ -252,7 +633,7 @@ export default function KnowledgeGraph() {
               position: { x: solX, y: startY + i * 120 },
               draggable: false
             })
-            es.push({ id: `e-${faultId}-${solId}`, source: faultId, target: solId, style: { stroke: '#95de64' } })
+            es.push({ id: `e-${faultId}-${solId}`, source: faultId, target: solId, style: { stroke: '#95de64' }, markerEnd: { type: MarkerType.ArrowClosed } })
           })
         }
       }
@@ -298,7 +679,7 @@ export default function KnowledgeGraph() {
             position: { x: fx, y: fy },
             draggable: false
           })
-          es.push({ id: `e-${devId}-${faultId}`, source: devId, target: faultId, animated: true, style: { stroke: '#faad14' } })
+          es.push({ id: `e-${devId}-${faultId}`, source: devId, target: faultId, animated: true, style: { stroke: '#faad14' }, markerEnd: { type: MarkerType.ArrowClosed } })
           if (activeFaultId === faultId) {
             const solutions = f.solutions || []
             const sRadius = ringRadius(solutions.length || 1, SOLUTION_NODE_W, 24, 210)
@@ -314,81 +695,143 @@ export default function KnowledgeGraph() {
                 position: { x: sx, y: sy },
                 draggable: false
               })
-              es.push({ id: `e-${faultId}-${solId}`, source: faultId, target: solId, style: { stroke: '#95de64' } })
+              es.push({ id: `e-${faultId}-${solId}`, source: faultId, target: solId, style: { stroke: '#95de64' }, markerEnd: { type: MarkerType.ArrowClosed } })
             })
           }
         })
       }
     })
     return { nodes: ns, edges: es }
-  }, [devices, activeDeviceId, activeFaultId, focusDeviceId, transitionPhase, faultFocus, pinnedDevicePos])
+  }, [graphMode, buildStructuredFlow, devices, activeDeviceId, activeFaultId, focusDeviceId, transitionPhase, faultFocus, pinnedDevicePos])
 
   const onNodeClick = (_, node) => {
+    if (graphMode === 'structured') {
+      const d = node?.data || {}
+      const lv = d.level
+      const actionId = beginAction()
+      const inst = rfRef.current
+      const centerOn = (id, zoom = 1.06) => {
+        if (!inst || !id) return
+        schedule(actionId, () => {
+          const p = getNodePos(id, node.positionAbsolute || node.position)
+          inst.setCenter(p.x + DEVICE_NODE_W / 2, p.y + CLOUD_CENTER_Y_OFFSET, { zoom, duration: 820 })
+        }, 0)
+      }
+      if (lv === 'mc') {
+        const mcKey = d.key
+        if (structuredNav.level === 'm' && structuredNav.mcKey === mcKey) {
+          animateStructuredNav({ level: 'mc', mcKey: null, mKey: null, pcKey: null, pKey: null })
+          schedule(actionId, () => inst?.fitView?.({ duration: 680, padding: 0.2 }), 40)
+          return
+        }
+        animateStructuredNav({ level: 'm', mcKey, mKey: null, pcKey: null, pKey: null }, makeId('mc', [mcKey]))
+        return
+      }
+      if (lv === 'pipe') {
+        rfRef.current?.fitView?.({ duration: 680, padding: 0.2 })
+        return
+      }
+      if (lv === 'm') {
+        const mcKey = d.mcKey
+        const mKey = d.key
+        if (structuredNav.level === 'pc' && structuredNav.mcKey === mcKey && structuredNav.mKey === mKey) {
+          animateStructuredNav({ level: 'm', mcKey, mKey: null, pcKey: null, pKey: null }, makeId('m', [mcKey, mKey]))
+          return
+        }
+        animateStructuredNav({ level: 'pc', mcKey, mKey, pcKey: null, pKey: null }, makeId('m', [mcKey, mKey]))
+        return
+      }
+      if (lv === 'pc') {
+        const mcKey = d.mcKey
+        const mKey = d.mKey
+        const pcKey = d.key
+        if (structuredNav.level === 'p' && structuredNav.mcKey === mcKey && structuredNav.mKey === mKey && structuredNav.pcKey === pcKey) {
+          animateStructuredNav({ level: 'pc', mcKey, mKey, pcKey: null, pKey: null }, makeId('pc', [mcKey, mKey, pcKey]))
+          return
+        }
+        animateStructuredNav({ level: 'p', mcKey, mKey, pcKey, pKey: null }, makeId('pc', [mcKey, mKey, pcKey]))
+        return
+      }
+      if (lv === 'p') {
+        const mcKey = d.mcKey
+        const mKey = d.mKey
+        const pcKey = d.pcKey
+        const pKey = d.key
+        if (structuredNav.level === 'rc' && structuredNav.mcKey === mcKey && structuredNav.mKey === mKey && structuredNav.pcKey === pcKey && structuredNav.pKey === pKey) {
+          animateStructuredNav({ level: 'p', mcKey, mKey, pcKey, pKey: null }, makeId('p', [mcKey, mKey, pcKey, pKey]))
+          return
+        }
+        animateStructuredNav({ level: 'rc', mcKey, mKey, pcKey, pKey }, makeId('p', [mcKey, mKey, pcKey, pKey]))
+        return
+      }
+      return
+    }
     if (node.id.startsWith('dev-')) {
+      const actionId = beginAction()
       const isSameExpandedDevice = transitionPhase === 'expanded' && activeDeviceId === node.id && !faultFocus
       if (isSameExpandedDevice) {
-        clearTimers()
         setActiveDeviceId(null)
         setActiveFaultId(null)
         setFaultFocus(null)
         setFocusDeviceId(null)
         setPinnedDevicePos(null)
         setTransitionPhase('idle')
-        if (rf) {
-          rf.fitView({ duration: 720, padding: 0.2 })
-        }
+        restoreIdleViewport(720)
         return
       }
       const fromFaultScene = transitionPhase === 'faultFocusing' || transitionPhase === 'faultExpanded'
       const nextSelected = node.id
-      if (rf) {
+      if (rfRef.current) {
         if (nextSelected) {
-          const p = node.positionAbsolute || node.position
-          clearTimers()
+          const currentZoom = rfRef.current?.getViewport?.().zoom
+          const focusZoom = Number.isFinite(currentZoom) ? Math.min(1.12, currentZoom + 0.28) : 1.12
           if (fromFaultScene) {
-            rf.setCenter(p.x + DEVICE_NODE_W / 2, p.y + CLOUD_CENTER_Y_OFFSET, { zoom: 1.04, duration: 520 })
-            const t0 = setTimeout(() => {
+            const p0 = node.positionAbsolute || node.position
+            animateCenterZoom(p0.x + DEVICE_NODE_W / 2, p0.y + CLOUD_CENTER_Y_OFFSET, focusZoom, 680)
+            schedule(actionId, () => {
               setFaultFocus(null)
               setActiveFaultId(null)
               setActiveDeviceId(null)
-              setPinnedDevicePos({ deviceId: node.id, x: p.x, y: p.y })
+              setPinnedDevicePos({ deviceId: node.id, x: p0.x, y: p0.y })
               setFocusDeviceId(node.id)
               setTransitionPhase('focusing')
-              rf.setCenter(p.x + DEVICE_NODE_W / 2, p.y + CLOUD_CENTER_Y_OFFSET, { zoom: 1.06, duration: 640 })
-              const t1 = setTimeout(() => {
-                setActiveDeviceId(node.id)
-                setActiveFaultId(null)
-                setTransitionPhase('expanded')
-                const device = devices.find(d => `dev-${d.name}` === node.id)
-                const faultCount = Math.max((device?.faults || []).length, 1)
-                const targetZoom = faultCount <= 3 ? 0.98 : faultCount <= 5 ? 0.9 : 0.82
-                rf.setCenter(p.x + DEVICE_NODE_W / 2, p.y + CLOUD_CENTER_Y_OFFSET, { zoom: targetZoom, duration: 680 })
-              }, 660)
-              timersRef.current = [t1]
-            }, 520)
-            timersRef.current = [t0]
-          } else {
-            setPinnedDevicePos(null)
-            setFocusDeviceId(node.id)
-            setTransitionPhase('focusing')
-            rf.setCenter(p.x + DEVICE_NODE_W / 2, p.y + CLOUD_CENTER_Y_OFFSET, { zoom: 1.06, duration: 760 })
-            const t1 = setTimeout(() => {
+            }, 680)
+            schedule(actionId, () => {
               setActiveDeviceId(node.id)
               setActiveFaultId(null)
               setTransitionPhase('expanded')
               const device = devices.find(d => `dev-${d.name}` === node.id)
               const faultCount = Math.max((device?.faults || []).length, 1)
               const targetZoom = faultCount <= 3 ? 0.98 : faultCount <= 5 ? 0.9 : 0.82
-              rf.setCenter(p.x + DEVICE_NODE_W / 2, p.y + CLOUD_CENTER_Y_OFFSET, { zoom: targetZoom, duration: 680 })
-            }, 780)
-            const t2 = setTimeout(() => {
+              schedule(actionId, () => {
+                const p1 = getNodePos(node.id, p0)
+                animateCenterZoom(p1.x + DEVICE_NODE_W / 2, p1.y + CLOUD_CENTER_Y_OFFSET, targetZoom, 760)
+              }, 40)
+            }, 720)
+          } else {
+            const p0 = getNodePos(node.id, node.positionAbsolute || node.position)
+            animateCenterZoom(p0.x + DEVICE_NODE_W / 2, p0.y + CLOUD_CENTER_Y_OFFSET, focusZoom, 680)
+            schedule(actionId, () => {
+              setPinnedDevicePos(null)
+              setFocusDeviceId(node.id)
+              setTransitionPhase('focusing')
+            }, 680)
+            schedule(actionId, () => {
+              setActiveDeviceId(node.id)
+              setActiveFaultId(null)
               setTransitionPhase('expanded')
-            }, 920)
-            timersRef.current = [t1, t2]
+              const device = devices.find(d => `dev-${d.name}` === node.id)
+              const faultCount = Math.max((device?.faults || []).length, 1)
+              const targetZoom = faultCount <= 3 ? 0.98 : faultCount <= 5 ? 0.9 : 0.82
+              schedule(actionId, () => {
+                const p1 = getNodePos(node.id, p0)
+                animateCenterZoom(p1.x + DEVICE_NODE_W / 2, p1.y + CLOUD_CENTER_Y_OFFSET, targetZoom, 760)
+              }, 40)
+            }, 720)
           }
         }
       }
-      if (!rf) {
+      if (!rfRef.current) {
         setFaultFocus(null)
         setActiveDeviceId(nextSelected)
         setActiveFaultId(null)
@@ -399,44 +842,78 @@ export default function KnowledgeGraph() {
       return
     }
     if (node.id.startsWith('fault-') && transitionPhase === 'expanded') {
+      const actionId = beginAction()
       const sameFault = faultFocus && faultFocus.deviceId === node.data?.deviceId && faultFocus.faultIndex === node.data?.faultIndex
       if (sameFault) {
         setFaultFocus(null)
+        setActiveFaultId(null)
         setTransitionPhase('expanded')
-        if (rf) {
-          const p = node.positionAbsolute || node.position
-          rf.setCenter(p.x + FAULT_NODE_W / 2, p.y + DEVICE_NODE_H / 2, { zoom: 0.94, duration: 520 })
+        const devId = node.data?.deviceId
+        if (devId && rfRef.current) {
+          schedule(actionId, () => {
+            const p = getNodePos(devId, null)
+            rfRef.current?.setCenter(p.x + DEVICE_NODE_W / 2, p.y + CLOUD_CENTER_Y_OFFSET, { duration: 520 })
+          }, 0)
         }
         return
       }
       const p = node.positionAbsolute || node.position
-      setActiveFaultId(node.id)
-      setFaultFocus({
-        deviceId: node.data?.deviceId,
-        faultIndex: node.data?.faultIndex,
-        side: node.data?.side || 'right',
-        anchorX: p.x,
-        anchorY: p.y
-      })
-      setTransitionPhase('faultFocusing')
-      if (rf) {
-        rf.setCenter(p.x + FAULT_NODE_W / 2, p.y + CLOUD_CENTER_Y_OFFSET, { zoom: 1.1, duration: 620 })
-        clearTimers()
-        const t1 = setTimeout(() => {
+      if (rfRef.current) {
+        const currentZoom = rfRef.current?.getViewport?.().zoom
+          const focusZoom = Number.isFinite(currentZoom) ? Math.min(1.28, currentZoom + 0.26) : 1.12
+        animateCenterZoom(p.x + FAULT_NODE_W / 2, p.y + CLOUD_CENTER_Y_OFFSET, focusZoom, 620)
+        schedule(actionId, () => {
+          setActiveFaultId(node.id)
+          setFaultFocus({
+            deviceId: node.data?.deviceId,
+            faultIndex: node.data?.faultIndex,
+            side: node.data?.side || 'right',
+            anchorX: p.x,
+            anchorY: p.y
+          })
           setTransitionPhase('faultExpanded')
-        }, 650)
-        timersRef.current = [t1]
+          const dev = devices.find(d => `dev-${d.name}` === node.data?.deviceId)
+          const fault = (dev?.faults || [])[node.data?.faultIndex]
+          const solCount = Math.max((fault?.solutions || []).length, 1)
+          const targetZoom = solCount <= 2 ? 1.0 : solCount <= 4 ? 0.94 : solCount <= 6 ? 0.88 : 0.82
+          schedule(actionId, () => {
+            animateCenterZoom(p.x + FAULT_NODE_W / 2, p.y + CLOUD_CENTER_Y_OFFSET, targetZoom, 760)
+          }, 40)
+        }, 660)
       }
       return
     }
-    if (rf) {
+    if (rfRef.current) {
       const p = node.positionAbsolute || node.position
       const kind = node.data?.kind || 'device'
       const w = kind === 'solution' ? SOLUTION_NODE_W : DEVICE_NODE_W
       const h = kind === 'solution' ? SOLUTION_NODE_H : DEVICE_NODE_H
       if (!node.id.startsWith('dev-') && transitionPhase !== 'faultFocusing') {
-        rf.setCenter(p.x + w / 2, p.y + (kind === 'solution' ? h / 2 : CLOUD_CENTER_Y_OFFSET), { zoom: 1.16, duration: 620 })
+        beginAction()
+        rfRef.current.setCenter(p.x + w / 2, p.y + (kind === 'solution' ? h / 2 : CLOUD_CENTER_Y_OFFSET), { zoom: 1.16, duration: 620 })
       }
+    }
+  }
+
+  const onPaneClick = () => {
+    if (graphMode !== 'structured') return
+    const nav = structuredNav
+    if (nav.level === 'mc') return
+    if (nav.level === 'm') {
+      animateStructuredNav({ level: 'mc', mcKey: null, mKey: null, pcKey: null, pKey: null })
+      rfRef.current?.fitView?.({ duration: 680, padding: 0.2 })
+      return
+    }
+    if (nav.level === 'pc') {
+      animateStructuredNav({ level: 'm', mcKey: nav.mcKey, mKey: null, pcKey: null, pKey: null }, makeId('mc', [nav.mcKey]))
+      return
+    }
+    if (nav.level === 'p') {
+      animateStructuredNav({ level: 'pc', mcKey: nav.mcKey, mKey: nav.mKey, pcKey: null, pKey: null }, makeId('m', [nav.mcKey, nav.mKey]))
+      return
+    }
+    if (nav.level === 'rc') {
+      animateStructuredNav({ level: 'p', mcKey: nav.mcKey, mKey: nav.mKey, pcKey: nav.pcKey, pKey: null }, makeId('pc', [nav.mcKey, nav.mKey, nav.pcKey]))
     }
   }
 
@@ -444,7 +921,7 @@ export default function KnowledgeGraph() {
     <div className="page-container">
       <div style={{ marginBottom: 16 }}>
         <Title level={3} className="page-title">数据云图</Title>
-        <Text type="secondary">先展示设备，点击设备展开故障，点击故障展开解决方案</Text>
+        <Text type="secondary">{graphMode === 'structured' ? '按结构化知识库条目结构展示' : '先展示设备，点击设备展开故障，点击故障展开解决方案'}</Text>
       </div>
 
       <Card className="glass-card" style={{ marginBottom: 16 }}>
@@ -453,14 +930,29 @@ export default function KnowledgeGraph() {
             <Text strong style={{ display: 'block', marginBottom: 8 }}>查看流水线</Text>
             <AutoComplete
               style={{ width: 160 }}
-              value={line}
+              value={lineInput}
               options={pipelines.map(p => ({ value: p }))}
-              onChange={setLine}
+              onSearch={setLineInput}
+              onSelect={(v) => {
+                const nv = (v || '').trim() || '流水线1'
+                setLineInput(nv)
+                setLine(nv)
+              }}
               filterOption={(inputValue, option) => (option?.value || '').toLowerCase().includes(inputValue.toLowerCase())}
+              onBlur={() => {
+                const nv = (lineInput || '').trim() || '流水线1'
+                if (nv !== line) setLine(nv)
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  const nv = (lineInput || '').trim() || '流水线1'
+                  if (nv !== line) setLine(nv)
+                }
+              }}
             />
             <div style={{ marginTop: 8 }}>
               <Tag color="blue">{line}</Tag>
-              <Tag>{devices.length} 个设备</Tag>
+              <Tag>{graphMode === 'structured' ? '结构化知识' : `${devices.length} 个设备`}</Tag>
             </div>
           </div>
           <Button type="primary" onClick={handleRebuild} loading={rebuilding}>
@@ -469,15 +961,31 @@ export default function KnowledgeGraph() {
         </Space>
       </Card>
 
-      <Card className="glass-card" bodyStyle={{ padding: 0 }}>
-        {devices.length === 0 ? (
+      <Card className="glass-card" styles={{ body: { padding: 0 } }}>
+        {nodes.length === 0 ? (
           <div style={{ height: 560, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <Empty description={`当前${line}暂无可展示的设备图谱`} />
+            <Empty
+              description={
+                graphMode === 'structured'
+                  ? `当前${line}暂无可展示的结构化条目（请先“整理历史/清理无用”，并确保“问题”和“导致原因”不为空）`
+                  : `当前${line}暂无可展示的设备图谱`
+              }
+            />
           </div>
         ) : (
-          <div style={{ height: 560 }}>
-            <ReactFlow nodes={nodes} edges={edges} onNodeClick={onNodeClick} onInit={handleFlowInit} nodeTypes={nodeTypes}>
-              <MiniMap />
+          <div ref={flowWrapRef} style={{ height: 560 }}>
+            <ReactFlow
+              nodes={nodes}
+              edges={edges}
+              onNodeClick={onNodeClick}
+              onPaneClick={onPaneClick}
+              onInit={handleFlowInit}
+              nodeTypes={nodeTypes}
+              defaultEdgeOptions={defaultEdgeOptions}
+              fitView={graphMode !== 'structured'}
+              fitViewOptions={{ padding: 0.2 }}
+            >
+              {graphMode !== 'structured' && <MiniMap />}
               <Controls />
               <Background />
             </ReactFlow>

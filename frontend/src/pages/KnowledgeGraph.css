@@ -7,28 +7,9 @@
   border: 1px solid #91caff;
   background: linear-gradient(145deg, #f7fbff, #eaf4ff);
   box-shadow: 0 8px 20px rgba(22, 119, 255, 0.12);
-  transition: opacity 0.68s ease, transform 0.68s ease, filter 0.68s ease;
-  animation: cloudFadeIn 0.72s ease both;
-}
-
-.cloud-node__puff {
-  position: absolute;
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  background: inherit;
-  border: 1px solid #91caff;
-  z-index: 0;
-}
-
-.cloud-node__puff--l {
-  left: 10px;
-  top: -10px;
-}
-
-.cloud-node__puff--r {
-  right: 14px;
-  top: -12px;
+  transition: opacity 0.52s ease, transform 0.52s ease;
+  animation: cloudFadeIn 0.42s ease both;
+  will-change: transform, opacity;
 }
 
 .cloud-node__label {
@@ -59,10 +40,15 @@
   box-shadow: 0 8px 20px rgba(82, 196, 26, 0.14);
 }
 
+.cloud-node--pipeline {
+  border-color: #1677ff;
+  background: linear-gradient(145deg, #e6f4ff, #cfe7ff);
+  box-shadow: 0 10px 26px rgba(22, 119, 255, 0.18);
+}
+
 .cloud-node--hidden {
   opacity: 0;
-  transform: scale(0.9);
-  filter: blur(1px);
+  transform: scale(0.96);
   pointer-events: none;
 }
 
@@ -73,13 +59,9 @@
 
 @keyframes cloudFadeIn {
   from {
-    opacity: 0.08;
-    transform: scale(0.88);
-    filter: blur(2.2px);
+    opacity: 0;
   }
   to {
     opacity: 1;
-    transform: scale(1);
-    filter: blur(0);
   }
 }

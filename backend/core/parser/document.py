@@ -23,35 +23,12 @@ def _normalize_table_text(text: str) -> str:
         return "\n".join(lines)
     return text
 
-def _ocr_page_to_text(page) -> str:
-    """
-    对以图片为主的页面做可选 OCR（需要安装 pytesseract 和 pillow）。
-    未安装依赖时安全降级为空串。
-    """
-    try:
-        from PIL import Image
-        import pytesseract
-        pm = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 放大 2x 提高 OCR 准确度
-        img = Image.frombytes("RGB", [pm.width, pm.height], pm.samples)
-        # 优先中文，若未安装中文语言包，回退默认
-        try:
-            txt = pytesseract.image_to_string(img, lang="chi_sim")
-        except Exception:
-            txt = pytesseract.image_to_string(img)
-        return txt
-    except Exception:
-        return ""
-
 def parse_pdf(file_path: str) -> list[dict]:
     doc = fitz.open(file_path)
     chunks = []
     for page_num, page in enumerate(doc):
         text = page.get_text("text").strip()
-        # 若文本稀少，尝试 OCR
-        if len(text) < 20:
-            ocr_txt = _ocr_page_to_text(page)
-            if ocr_txt:
-                text = ocr_txt
+        # 仅保留 PDF 自带文字层，忽略页面中的图片内容。
         text = _normalize_table_text(text)
         if not text:
             continue

@@ -4,7 +4,7 @@
  */
 
 import React, { useMemo, useState, useCallback, useEffect, useLayoutEffect, useRef } from 'react';
-import { Layout, Row, Col, Card, Button, message, Divider, Space, Tabs, Alert, Select } from 'antd';
+import { Layout, Row, Col, Card, Button, message, Divider, Space, Tabs, Alert, Select, Tag, Empty } from 'antd';
 import { ThunderboltOutlined, RocketOutlined, SyncOutlined, CameraOutlined, VideoCameraOutlined, PictureOutlined } from '@ant-design/icons';
 import ImageUploader from '../../components/vision/ImageUploader';
 import CameraCapture from '../../components/vision/CameraCapture';
@@ -25,6 +25,9 @@ export default function VisionDetect({ onNavigate }) {
   const [activeTab, setActiveTab] = useState('image');
   const tabsWrapRef = useRef(null)
   const [tabsOffset, setTabsOffset] = useState(0)
+  const [cameraDevices, setCameraDevices] = useState([])
+  const [cameraSlots, setCameraSlots] = useState([null, null, null, null])
+  const [cameraShots, setCameraShots] = useState([])
   
   const [settings, setSettings] = useState({
     confThreshold: 0.25,
@@ -58,6 +61,29 @@ export default function VisionDetect({ onNavigate }) {
       return prev
     })
   }, [settings.modelKey])
+
+  useEffect(() => {
+    if (activeTab !== 'camera') return
+    const loadDevices = async () => {
+      try {
+        const list = await navigator.mediaDevices.enumerateDevices()
+        const cams = (Array.isArray(list) ? list : []).filter(d => d?.kind === 'videoinput')
+        setCameraDevices(cams)
+        setCameraSlots((prev) => {
+          const next = Array.isArray(prev) && prev.length === 4 ? [...prev] : [null, null, null, null]
+          const ids = cams.map(d => d.deviceId).filter(Boolean)
+          for (let i = 0; i < 4; i += 1) {
+            if (next[i] && ids.includes(next[i])) continue
+            next[i] = ids[i] || null
+          }
+          return next
+        })
+      } catch {
+        setCameraDevices([])
+      }
+    }
+    loadDevices()
+  }, [activeTab])
   // 收集所有图片
   useEffect(() => {
     const collected = [];
@@ -354,16 +380,16 @@ export default function VisionDetect({ onNavigate }) {
     }
 
     if (typeof onNavigate === 'function') {
-      onNavigate('generate')
+      onNavigate('dashboard')
       setTimeout(() => {
         try {
-          window.dispatchEvent(new CustomEvent('faulttreeai:vision-to-generate', { detail: payload }))
+          window.dispatchEvent(new CustomEvent('dashboard-inject', { detail: payload }))
         } catch {
         }
       }, 0)
       return
     }
-    message.warning('无法跳转到生成页：缺少导航函数')
+    message.warning('无法跳转到总览页：缺少导航函数')
   }, [visibleResult, onNavigate, settings.modelKey]);
 
   const handleReset = useCallback(() => {
@@ -417,17 +443,58 @@ export default function VisionDetect({ onNavigate }) {
       label: <span><CameraOutlined /> 摄像头</span>,
       children: (
         <Card size="small">
-          <CameraCapture
-            active={activeTab === 'camera'}
-            onCapture={handleCameraCapture}
-            onResult={(r) => { setResults(r); setResultsSource('camera') }}
-            disabled={loading}
-            modelKey={settings.modelKey}
-            confThreshold={settings.confThreshold}
-            iouThreshold={settings.iouThreshold}
-            returnAnnotated={settings.returnAnnotated}
-            intervalMs={33}
-          />
+          <Row gutter={[12, 12]}>
+            {Array.from({ length: 4 }).map((_, idx) => (
+              <Col key={idx} xs={12} sm={12}>
+                <div style={{ marginBottom: 8, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                  <div style={{ fontWeight: 600 }}>摄像头{idx + 1}</div>
+                  <Select
+                    size="small"
+                    value={cameraSlots[idx]}
+                    placeholder="选择设备"
+                    style={{ width: 220, maxWidth: '100%' }}
+                    options={cameraDevices.map((d, i) => ({
+                      value: d.deviceId,
+                      label: d.label || `摄像头设备${i + 1}`,
+                    }))}
+                    onChange={(v) => {
+                      setCameraSlots((prev) => {
+                        const next = Array.isArray(prev) && prev.length === 4 ? [...prev] : [null, null, null, null]
+                        next[idx] = v
+                        return next
+                      })
+                    }}
+                    allowClear
+                  />
+                </div>
+                <CameraCapture
+                  key={`${idx}:${cameraSlots[idx] || 'default'}`}
+                  title={`摄像头${idx + 1}实时识别`}
+                  active={activeTab === 'camera'}
+                  autoStart={false}
+                  initialDeviceId={cameraSlots[idx]}
+                  cameraIndex={idx + 1}
+                  hideRecords
+                  externalCapture
+                  onRecord={(record) => {
+                    if (!record?.image) return
+                    setCameraShots((prev) => [record, ...(Array.isArray(prev) ? prev : [])].slice(0, 40))
+                  }}
+                  onCapture={(base64) => {
+                    setCameraImage(base64)
+                    handleCameraCapture(base64)
+                  }}
+                  onResult={(r) => { setResults(r); setResultsSource('camera') }}
+                  disabled={loading}
+                  modelKey={settings.modelKey}
+                  confThreshold={settings.confThreshold}
+                  iouThreshold={settings.iouThreshold}
+                  returnAnnotated={settings.returnAnnotated}
+                  intervalMs={260}
+                />
+              </Col>
+            ))}
+          </Row>
         </Card>
       )
     },
@@ -595,6 +662,39 @@ export default function VisionDetect({ onNavigate }) {
             </Col>
 
             <Col span={activeTab === 'camera' ? 10 : 14} style={{ paddingTop: tabsOffset }}>
+              {activeTab === 'camera' && (
+                <Card size="small" style={{ marginBottom: 12 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                    <Space size={8} wrap>
+                      <div style={{ fontWeight: 600 }}>摄像头截图</div>
+                      <Tag color="blue">{cameraShots.length}</Tag>
+                    </Space>
+                    <Button size="small" onClick={() => setCameraShots([])} disabled={cameraShots.length === 0}>清空</Button>
+                  </div>
+                  {cameraShots.length === 0 ? (
+                    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无截图" />
+                  ) : (
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                      {cameraShots.slice(0, 8).map((s) => (
+                        <div key={s.id} style={{ border: '1px solid #f0f0f0', borderRadius: 8, overflow: 'hidden', background: '#fff' }}>
+                          <div style={{ position: 'relative', width: '100%', aspectRatio: '4 / 3', background: '#000' }}>
+                            <img src={s.image} alt="shot" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain' }} />
+                          </div>
+                          <div style={{ padding: 8 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                              <Tag>{`摄像头${s.cameraIndex || '-'}`}</Tag>
+                              <span style={{ fontSize: 12, color: '#999' }}>{new Date(s.ts).toLocaleTimeString('zh-CN')}</span>
+                            </div>
+                            <div style={{ fontSize: 12, color: s.type === 'anomaly' ? '#fa8c16' : s.type === 'manual' ? '#1677ff' : '#ff4d4f', marginTop: 4 }}>
+                              {String(s.message || '')}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </Card>
+              )}
               <DetectionResult result={visibleResult} loading={loading} onGenerateFaultTree={handleGenerateFaultTree} hideImage={activeTab === 'camera'} />
             </Col>
           </Row>

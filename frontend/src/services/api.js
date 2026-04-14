@@ -56,10 +56,11 @@ const _cached = async (key, ttlMs, fetcher) => {
 
 // ── 知识库 ──────────────────────────────────────────
 
-export const uploadDocument = async (file, onProgress, pipeline = '流水线1') => {
+export const uploadDocument = async (file, onProgress, pipeline = '流水线1', autoExtract = true) => {
   const form = new FormData()
   form.append('file', file)
   form.append('pipeline', pipeline)
+  form.append('auto_extract', String(!!autoExtract))
   const { data } = await api.post('/knowledge/upload', form, {
     headers: { 'Content-Type': 'multipart/form-data' },
     onUploadProgress: (e) => onProgress?.(Math.round((e.loaded * 100) / (e.total || 1))),
@@ -116,6 +117,66 @@ export const listPipelines = async () => {
 export const rebuildKnowledgeGraph = async (pipeline = '流水线1') => {
   const { data } = await api.post('/knowledge/graph/rebuild', null, { params: { pipeline } })
   invalidateCache(['documents'])
+  return data
+}
+
+export const listKnowledgeItems = async (params = {}) => {
+  const { data } = await api.get('/knowledge/items', { params })
+  return data
+}
+
+export const createKnowledgeItem = async (payload) => {
+  const { data } = await api.post('/knowledge/items', payload)
+  invalidateCache(['knowledgeItems'])
+  return data
+}
+
+export const updateKnowledgeItem = async (itemId, payload) => {
+  const { data } = await api.put(`/knowledge/items/${itemId}`, payload)
+  invalidateCache(['knowledgeItems'])
+  return data
+}
+
+export const deleteKnowledgeItem = async (itemId) => {
+  const { data } = await api.delete(`/knowledge/items/${itemId}`)
+  invalidateCache(['knowledgeItems'])
+  return data
+}
+
+export const searchKnowledgeItems = async (payload) => {
+  const { data } = await api.post('/knowledge/items/search', payload)
+  return data
+}
+
+export const feedbackKnowledgeItemWeight = async (payload) => {
+  const { data } = await api.post('/knowledge/items/feedback-weight', payload)
+  invalidateCache(['knowledgeItems'])
+  return data
+}
+
+export const setKnowledgeItemExpertWeight = async (itemId, expertWeight) => {
+  const { data } = await api.post('/knowledge/items/expert-weight', { item_id: itemId, expert_weight: expertWeight })
+  invalidateCache(['knowledgeItems'])
+  return data
+}
+
+export const listKnowledgeItemSuggestions = async (pipeline, limit = 8) => {
+  const { data } = await api.get('/knowledge/items/suggestions', { params: { pipeline, limit } })
+  return Array.isArray(data?.suggestions) ? data.suggestions : []
+}
+
+export const reextractKnowledgeItems = async (pipeline = '流水线1', mode = 'replace', docIds = null) => {
+  const payload = { pipeline, mode }
+  if (Array.isArray(docIds) && docIds.length) payload.doc_ids = docIds
+  const { data } = await api.post('/knowledge/items/reextract', payload)
+  invalidateCache(['knowledgeItems', 'documents', 'knowledgeStats'])
+  return data
+}
+
+export const cleanupKnowledgeItems = async (pipeline = '流水线1', opts = {}) => {
+  const payload = { pipeline, ...(opts || {}) }
+  const { data } = await api.post('/knowledge/items/cleanup', payload)
+  invalidateCache(['knowledgeItems', 'documents', 'knowledgeStats'])
   return data
 }
 
@@ -232,6 +293,16 @@ api.getKnowledgeStats = getKnowledgeStats
 api.getKnowledgeGraph = getKnowledgeGraph
 api.listPipelines = listPipelines
 api.rebuildKnowledgeGraph = rebuildKnowledgeGraph
+api.listKnowledgeItems = listKnowledgeItems
+api.createKnowledgeItem = createKnowledgeItem
+api.updateKnowledgeItem = updateKnowledgeItem
+api.deleteKnowledgeItem = deleteKnowledgeItem
+api.searchKnowledgeItems = searchKnowledgeItems
+api.feedbackKnowledgeItemWeight = feedbackKnowledgeItemWeight
+api.setKnowledgeItemExpertWeight = setKnowledgeItemExpertWeight
+api.listKnowledgeItemSuggestions = listKnowledgeItemSuggestions
+api.reextractKnowledgeItems = reextractKnowledgeItems
+api.cleanupKnowledgeItems = cleanupKnowledgeItems
 api.generateFaultTree = generateFaultTree
 api.getFaultTree = getFaultTree
 api.getSessionByTree = getSessionByTree

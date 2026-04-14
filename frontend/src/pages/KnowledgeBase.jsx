@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import {
-  Card, Upload, Table, Button, Space, Tag, Typography, message, Progress, Empty, Popconfirm, Steps, Alert, Select, AutoComplete
+  Card, Upload, Table, Button, Space, Tag, Typography, message, Progress, Empty, Popconfirm, Steps, Alert, Select, AutoComplete, Input, Modal, Form, Slider
 } from 'antd'
 import { 
   UploadOutlined, 
@@ -11,7 +11,8 @@ import {
   FilePdfOutlined,
   FileWordOutlined,
   RocketOutlined,
-  BookOutlined
+  BookOutlined,
+  PlusOutlined
 } from '@ant-design/icons'
 import api from '../services/api.js'
 
@@ -25,7 +26,20 @@ export default function KnowledgeBase() {
   const [loading, setLoading] = useState(true)
   const [uploadStep, setUploadStep] = useState(0)
   const [uploadPipeline, setUploadPipeline] = useState('流水线1')
-  const [pipelines, setPipelines] = useState(['流水线1'])
+  const [pipelines, setPipelines] = useState([])
+
+  const [items, setItems] = useState([])
+  const [itemsLoading, setItemsLoading] = useState(false)
+  const [itemsPipeline, setItemsPipeline] = useState('流水线1')
+  const [itemModalOpen, setItemModalOpen] = useState(false)
+  const [itemSubmitting, setItemSubmitting] = useState(false)
+  const [itemWeightSubmitting, setItemWeightSubmitting] = useState({})
+  const [expertWeightModalOpen, setExpertWeightModalOpen] = useState(false)
+  const [expertWeightItem, setExpertWeightItem] = useState(null)
+  const [expertWeightValue, setExpertWeightValue] = useState(null)
+  const [expertWeightSubmitting, setExpertWeightSubmitting] = useState(false)
+  const [reextractSubmitting, setReextractSubmitting] = useState(false)
+  const [itemForm] = Form.useForm()
 
   const loadDocs = async () => {
     try {
@@ -40,17 +54,36 @@ export default function KnowledgeBase() {
   const loadPipelines = async () => {
     try {
       const vals = await api.listPipelines()
-      const uniq = Array.from(new Set(['流水线1', ...vals.filter(Boolean)]))
+      const uniq = Array.from(new Set(vals.filter(Boolean)))
+      if (uniq.length === 0) uniq.push('流水线1')
       setPipelines(uniq)
+      if (!uniq.includes(itemsPipeline)) setItemsPipeline(uniq[0])
+      if (!uniq.includes(uploadPipeline)) setUploadPipeline(uniq[0])
     } catch {
       setPipelines(['流水线1'])
     }
+  }
+
+  const loadItems = async (pipelineValue = itemsPipeline) => {
+    setItemsLoading(true)
+    try {
+      const data = await api.listKnowledgeItems({ pipeline: pipelineValue, status: 'active', limit: 200 })
+      setItems(Array.isArray(data) ? data : [])
+    } catch (e) {
+      setItems([])
+      message.error(e.response?.data?.detail || e.message || '加载结构化知识失败')
+    }
+    setItemsLoading(false)
   }
 
   useEffect(() => {
     loadDocs()
     loadPipelines()
   }, [])
+
+  useEffect(() => {
+    loadItems(itemsPipeline)
+  }, [itemsPipeline])
 
   const handleUpload = async ({ file }) => {
     setUploading(true)
@@ -189,6 +222,98 @@ export default function KnowledgeBase() {
     { title: '完成', icon: <CheckCircleOutlined /> },
   ]
 
+  const itemColumns = [
+    { title: '机械类别', dataIndex: 'machine_category', key: 'machine_category', width: 120, render: (v) => <Text>{v || '-'}</Text> },
+    { title: '机械', dataIndex: 'machine', key: 'machine', width: 140, render: (v) => <Text>{v || '-'}</Text> },
+    { title: '问题类别', dataIndex: 'problem_category', key: 'problem_category', width: 120, render: (v) => <Text>{v || '-'}</Text> },
+    { title: '问题', dataIndex: 'problem', key: 'problem', render: (v) => <Text style={{ color: '#1a1a1a' }}>{v}</Text> },
+    { title: '导致原因', dataIndex: 'root_cause', key: 'root_cause', render: (v) => <Text type="secondary">{v || '-'}</Text> },
+    {
+      title: '权重',
+      dataIndex: 'effective_weight',
+      key: 'effective_weight',
+      width: 120,
+      render: (v, row) => {
+        const weight = Number(v)
+        const fallback = Number(row?.current_weight ?? 0.5)
+        const pct = Math.round((Number.isFinite(weight) ? weight : (Number.isFinite(fallback) ? fallback : 0.5)) * 100)
+        const tag = <Tag color={pct >= 70 ? 'green' : pct >= 50 ? 'blue' : 'orange'}>{pct}%</Tag>
+        return row?.expert_weight != null ? <Space size={6}>{tag}<Tag>专家</Tag></Space> : tag
+      },
+    },
+    {
+      title: '操作',
+      key: 'action',
+      width: 240,
+      render: (_, row) => (
+        <Space size={8}>
+          <Button
+            size="small"
+            onClick={async () => {
+              const key = `${row.item_id}:helpful`
+              setItemWeightSubmitting(prev => ({ ...prev, [key]: true }))
+              try {
+                await api.feedbackKnowledgeItemWeight({ item_id: row.item_id, feedback_type: 'helpful', amount: 1 })
+                await loadItems()
+                message.success('已反馈')
+              } catch (e) {
+                message.error(e.response?.data?.detail || e.message || '反馈失败')
+              }
+              setItemWeightSubmitting(prev => ({ ...prev, [key]: false }))
+            }}
+            loading={!!itemWeightSubmitting[`${row.item_id}:helpful`]}
+          >
+            有效 +1
+          </Button>
+          <Button
+            size="small"
+            danger
+            onClick={async () => {
+              const key = `${row.item_id}:misleading`
+              setItemWeightSubmitting(prev => ({ ...prev, [key]: true }))
+              try {
+                await api.feedbackKnowledgeItemWeight({ item_id: row.item_id, feedback_type: 'misleading', amount: 1 })
+                await loadItems()
+                message.success('已反馈')
+              } catch (e) {
+                message.error(e.response?.data?.detail || e.message || '反馈失败')
+              }
+              setItemWeightSubmitting(prev => ({ ...prev, [key]: false }))
+            }}
+            loading={!!itemWeightSubmitting[`${row.item_id}:misleading`]}
+          >
+            误导 +1
+          </Button>
+          <Button
+            size="small"
+            onClick={() => {
+              setExpertWeightItem(row)
+              const w = row?.expert_weight != null ? Number(row.expert_weight) : (row?.effective_weight != null ? Number(row.effective_weight) : 0.5)
+              setExpertWeightValue(Number.isFinite(w) ? Math.round(w * 100) : 50)
+              setExpertWeightModalOpen(true)
+            }}
+          >
+            专家权重
+          </Button>
+          <Popconfirm
+            title="确认删除此条结构化知识？"
+            onConfirm={async () => {
+              try {
+                await api.deleteKnowledgeItem(row.item_id)
+                await loadItems()
+                message.success('已删除')
+              } catch (e) {
+                message.error(e.response?.data?.detail || e.message || '删除失败')
+              }
+            }}
+          >
+            <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
+          </Popconfirm>
+        </Space>
+      ),
+    },
+  ]
+
   return (
     <div className="page-container">
       {/* 页面标题 */}
@@ -224,14 +349,17 @@ export default function KnowledgeBase() {
       </Card>
 
       {/* 上传区域 */}
-      <Card className="glass-card" style={{ marginBottom: 24 }}>
+      <Card className="glass-card kb-upload-card" style={{ marginBottom: 24 }}>
         {/* 上传进度步骤条 */}
         {uploading && (
           <div style={{ marginBottom: 24 }}>
             <Steps 
+              className="kb-upload-steps"
               current={uploadStep} 
               size="small" 
               status="process"
+              direction="horizontal"
+              responsive={false}
               items={uploadSteps}
             />
           </div>
@@ -268,13 +396,7 @@ export default function KnowledgeBase() {
           beforeUpload={() => false}
           onChange={handleUpload}
           disabled={uploading}
-          className="upload-dragger"
-          style={{ 
-            background: 'rgba(24,144,255,0.05)', 
-            border: uploading ? '1px solid #1890ff' : '2px dashed rgba(24,144,255,0.3)',
-            borderRadius: 12,
-            padding: '24px 0'
-          }}
+          className={`upload-dragger kb-upload-dragger ${uploading ? 'is-uploading' : ''}`}
         >
           <div style={{ padding: '16px 0' }}>
             <p style={{ fontSize: 48, marginBottom: 16, color: '#1890ff' }}>
@@ -328,6 +450,206 @@ export default function KnowledgeBase() {
           }}
         />
       </Card>
+
+      <Card className="glass-card" style={{ marginTop: 24 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+          <Space>
+            <Text strong style={{ fontSize: 15, color: '#1a1a1a' }}>结构化知识（流水线→机械类别→机械→问题类别→问题→原因）</Text>
+            <Select
+              style={{ width: 220 }}
+              value={itemsPipeline}
+              onChange={setItemsPipeline}
+              options={pipelines.map(p => ({ value: p, label: p }))}
+            />
+          </Space>
+          <Space>
+            <Button onClick={() => loadItems(itemsPipeline)} loading={itemsLoading}>刷新</Button>
+            <Button
+              loading={reextractSubmitting}
+              disabled={itemsLoading || reextractSubmitting}
+              onClick={() => {
+                Modal.confirm({
+                  title: '整理已上传的结构化知识？',
+                  content: '会对当前流水线下已上传的手册重新调用AI抽取并过滤无用信息，生成新的结构化知识条目。',
+                  okText: '开始整理',
+                  cancelText: '取消',
+                  onOk: async () => {
+                    try {
+                      setReextractSubmitting(true)
+                      const res = await api.reextractKnowledgeItems(itemsPipeline, 'replace')
+                      const inserted = res?.result?.inserted ?? 0
+                      const extracted = res?.result?.extracted ?? 0
+                      const deleted = res?.deleted ?? 0
+                      message.success(`已整理：删除${deleted}条，抽取${extracted}条，写入${inserted}条`)
+                      await loadItems(itemsPipeline)
+                    } catch (e) {
+                      message.error(e.response?.data?.detail || e.message || '整理失败')
+                    }
+                    setReextractSubmitting(false)
+                  }
+                })
+              }}
+            >
+              整理历史
+            </Button>
+            <Button
+              disabled={itemsLoading || reextractSubmitting}
+              onClick={() => {
+                Modal.confirm({
+                  title: '清理无用条目并补齐机械类别？',
+                  content: '会删除“操作说明/目录/参数表”等非故障条目，并对保留条目补齐机械类别与问题类别（仅保留有导致原因的条目）。',
+                  okText: '开始清理',
+                  cancelText: '取消',
+                  onOk: async () => {
+                    try {
+                      setReextractSubmitting(true)
+                      const res = await api.cleanupKnowledgeItems(itemsPipeline, { delete_unknown_cause: true, delete_noise: true, dry_run: false })
+                      message.success(`已清理：删除${res?.deleted ?? 0}条，更新${res?.updated ?? 0}条`)
+                      await loadItems(itemsPipeline)
+                    } catch (e) {
+                      message.error(e.response?.data?.detail || e.message || '清理失败')
+                    }
+                    setReextractSubmitting(false)
+                  }
+                })
+              }}
+            >
+              清理无用
+            </Button>
+            <Button
+              type="primary"
+              icon={<PlusOutlined />}
+              onClick={() => {
+                itemForm.resetFields()
+                itemForm.setFieldsValue({ pipeline: itemsPipeline })
+                setItemModalOpen(true)
+              }}
+            >
+              新增结构化知识
+            </Button>
+          </Space>
+        </div>
+
+        <Table
+          columns={itemColumns}
+          dataSource={items}
+          rowKey="item_id"
+          loading={itemsLoading}
+          pagination={{ pageSize: 8 }}
+          locale={{ emptyText: <Empty description="暂无结构化知识，请新增" /> }}
+        />
+      </Card>
+
+      <Modal
+        open={itemModalOpen}
+        title="新增结构化知识"
+        onCancel={() => setItemModalOpen(false)}
+        okText="保存"
+        confirmLoading={itemSubmitting}
+        onOk={async () => {
+          try {
+            const values = await itemForm.validateFields()
+            setItemSubmitting(true)
+            await api.createKnowledgeItem(values)
+            setItemModalOpen(false)
+            await loadItems(values.pipeline || itemsPipeline)
+            message.success('已新增')
+          } catch (e) {
+            if (e?.errorFields) return
+            message.error(e.response?.data?.detail || e.message || '保存失败')
+          }
+          setItemSubmitting(false)
+        }}
+      >
+        <Form form={itemForm} layout="vertical" initialValues={{ pipeline: itemsPipeline }}>
+          <Form.Item name="pipeline" label="流水线" rules={[{ required: true, message: '请输入流水线' }]}>
+            <Input placeholder="例如：流水线1" />
+          </Form.Item>
+          <Form.Item name="machine_category" label="机械类别">
+            <Input placeholder="例如：变频器" />
+          </Form.Item>
+          <Form.Item name="machine" label="机械">
+            <Input placeholder="例如：1FT7 电机" />
+          </Form.Item>
+          <Form.Item name="problem_category" label="问题类别">
+            <Input placeholder="例如：运行异常" />
+          </Form.Item>
+          <Form.Item name="problem" label="问题" rules={[{ required: true, message: '请输入问题' }]}>
+            <Input.TextArea placeholder="例如：电机有异响" autoSize={{ minRows: 2, maxRows: 4 }} />
+          </Form.Item>
+          <Form.Item name="root_cause" label="导致原因">
+            <Input.TextArea placeholder="例如：转子不平衡" autoSize={{ minRows: 2, maxRows: 4 }} />
+          </Form.Item>
+          <Form.Item name="solution" label="解决方法">
+            <Input.TextArea placeholder="例如：重新做动平衡校正" autoSize={{ minRows: 2, maxRows: 4 }} />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        open={expertWeightModalOpen}
+        title="调整专家权重"
+        onCancel={() => setExpertWeightModalOpen(false)}
+        okText="保存"
+        confirmLoading={expertWeightSubmitting}
+        onOk={async () => {
+          if (!expertWeightItem?.item_id) return
+          setExpertWeightSubmitting(true)
+          try {
+            const v = expertWeightValue
+            await api.setKnowledgeItemExpertWeight(expertWeightItem.item_id, v == null ? null : Number(v) / 100)
+            await loadItems()
+            message.success('已更新专家权重')
+            setExpertWeightModalOpen(false)
+          } catch (e) {
+            message.error(e.response?.data?.detail || e.message || '更新失败')
+          }
+          setExpertWeightSubmitting(false)
+        }}
+      >
+        <Space direction="vertical" size={16} style={{ width: '100%' }}>
+          <div>
+            <Text strong style={{ display: 'block', marginBottom: 8 }}>问题</Text>
+            <Text type="secondary">{expertWeightItem?.problem || '-'}</Text>
+          </div>
+          <div>
+            <Text strong style={{ display: 'block', marginBottom: 8 }}>专家权重</Text>
+            <Space style={{ width: '100%' }}>
+              <Slider
+                style={{ flex: 1 }}
+                value={expertWeightValue}
+                onChange={setExpertWeightValue}
+                min={0}
+                max={100}
+                step={1}
+                marks={{ 0: '0%', 50: '50%', 100: '100%' }}
+              />
+              <Tag color="geekblue" style={{ minWidth: 48, textAlign: 'center' }}>{expertWeightValue ?? 0}%</Tag>
+            </Space>
+            <div style={{ marginTop: 10 }}>
+              <Button
+                size="small"
+                danger
+                onClick={async () => {
+                  if (!expertWeightItem?.item_id) return
+                  setExpertWeightSubmitting(true)
+                  try {
+                    await api.setKnowledgeItemExpertWeight(expertWeightItem.item_id, null)
+                    await loadItems()
+                    message.success('已清除专家权重')
+                    setExpertWeightModalOpen(false)
+                  } catch (e) {
+                    message.error(e.response?.data?.detail || e.message || '清除失败')
+                  }
+                  setExpertWeightSubmitting(false)
+                }}
+              >
+                清除专家权重（回到反馈权重）
+              </Button>
+            </div>
+          </div>
+        </Space>
+      </Modal>
     </div>
   )
 }

@@ -194,6 +194,59 @@ body {
   color: var(--text-muted) !important;
 }
 
+.kb-upload-card .ant-card-body {
+  position: relative;
+  overflow: hidden;
+}
+
+.kb-upload-steps .ant-steps-item-tail,
+.kb-upload-steps .ant-steps-item-tail::after,
+.kb-upload-card .ant-steps-item-tail,
+.kb-upload-card .ant-steps-item-tail::after {
+  display: none !important;
+}
+
+.kb-upload-dragger {
+  background: transparent !important;
+  border: none !important;
+}
+
+.kb-upload-dragger .ant-upload-drag {
+  background: rgba(24,144,255,0.05) !important;
+  border: 2px dashed rgba(24,144,255,0.3) !important;
+  border-radius: 12px !important;
+  padding: 24px 0 !important;
+}
+
+.kb-upload-dragger.is-uploading .ant-upload-drag {
+  border: 1px solid #1890ff !important;
+}
+
+.kb-upload-card .ant-upload,
+.kb-upload-card .ant-upload-wrapper,
+.kb-upload-card .ant-upload-drag,
+.kb-upload-card .ant-upload-btn {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+.kb-upload-card .ant-upload-drag:focus,
+.kb-upload-card .ant-upload-drag:focus-visible,
+.kb-upload-card .ant-upload-drag:focus-within,
+.kb-upload-card .ant-upload-btn:focus,
+.kb-upload-card .ant-upload-btn:focus-visible,
+.kb-upload-card .ant-upload-btn:focus-within {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+.kb-upload-card .ant-upload-drag::before,
+.kb-upload-card .ant-upload-drag::after,
+.kb-upload-card .ant-upload-btn::before,
+.kb-upload-card .ant-upload-btn::after {
+  display: none !important;
+}
+
 /* 表格样式 */
 .table-glass .ant-table {
   background: transparent !important;

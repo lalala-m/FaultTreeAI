@@ -231,8 +231,12 @@ CREATE TABLE IF NOT EXISTS knowledge_item_weights (
     misleading_weight DOUBLE PRECISION NOT NULL DEFAULT 0,
     feedback_count   INTEGER NOT NULL DEFAULT 0,
     current_weight   DOUBLE PRECISION NOT NULL DEFAULT 0.5,
+    expert_weight    DOUBLE PRECISION,
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE knowledge_item_weights
+    ADD COLUMN IF NOT EXISTS expert_weight DOUBLE PRECISION;
 
 CREATE INDEX IF NOT EXISTS idx_knowledge_item_weights_weight
     ON knowledge_item_weights(current_weight DESC);

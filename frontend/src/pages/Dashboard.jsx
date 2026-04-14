@@ -7,6 +7,7 @@ const { Title, Text } = Typography
 const FaultTreeViewer = lazy(() => import('../components/FaultTreeViewer.jsx'))
 const TreeEditor = lazy(() => import('../components/TreeEditor.jsx'))
 const QUESTION_WEIGHT_STORAGE_KEY = 'faulttreeai_troubleshooting_question_weights_v1'
+const DASHBOARD_PIPELINE_STORAGE_KEY = 'faulttreeai_dashboard_pipeline_v1'
 
 const loadQuestionWeightMemory = () => {
   try {
@@ -23,6 +24,59 @@ const saveQuestionWeightMemory = (memory) => {
     localStorage.setItem(QUESTION_WEIGHT_STORAGE_KEY, JSON.stringify(memory || {}))
   } catch {
   }
+}
+
+const sanitizeExampleInput = (raw, maxLen = 20) => {
+  const src = String(raw || '').replace(/[\r\n\t]+/g, ' ').trim()
+  if (!src) return ''
+  const withoutBullets = src.replace(/^[\s•·\u2022\u25CF\u25A0\u25A1\u25E6\-–—]+/g, '')
+  const withoutBrackets = withoutBullets
+    .replace(/（[^）]{0,40}）/g, ' ')
+    .replace(/\([^)]{0,40}\)/g, ' ')
+    .replace(/【[^】]{0,40}】/g, ' ')
+    .replace(/\[[^\]]{0,40}\]/g, ' ')
+  const cleaned = withoutBrackets
+    .replace(/[^0-9a-zA-Z\u4e00-\u9fff ]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!cleaned) return ''
+  const compact = cleaned.replace(/\s+/g, '')
+  const faultHints = [
+    '故障', '异常', '报警', '失效', '损坏', '泄漏', '过热', '过温', '振动', '异响',
+    '堵塞', '磨损', '卡滞', '偏差', '无法', '不能', '不启动', '不动作', '不亮',
+    '短路', '断路', '跳闸', '停机', '压力不足', '温度过高', '噪声', '误报警', '动作缓慢',
+  ]
+  const solutionHints = [
+    '检查', '确认', '确保', '更换', '清理', '维修', '修复', '调整', '校准', '紧固', '润滑',
+    '重启', '测试', '测量', '插拔', '拆卸', '按压', '建议', '需要', '使用', '必须', '应当', '避免',
+  ]
+  const badPrefixes = ['确保', '确认', '如果', '当', '建议', '检查', '避免', '需要', '必须', '应当']
+  const hasFaultHint = faultHints.some(k => compact.includes(k))
+  if (!hasFaultHint) return ''
+  if (badPrefixes.some(p => compact.startsWith(p))) return ''
+  if (solutionHints.some(k => compact.includes(k)) && !compact.includes('无法')) return ''
+
+  const hasChinese = /[\u4e00-\u9fff]/.test(cleaned)
+  const normalized = hasChinese ? cleaned.replace(/\s+/g, '') : cleaned
+  const sliced = normalized.length > maxLen ? normalized.slice(0, maxLen).trim() : normalized
+  if (sliced.length < 4) return ''
+  return sliced
+}
+
+const buildExampleSuggestions = (items, limit = 8) => {
+  const out = []
+  const seen = new Set()
+  const arr = Array.isArray(items) ? items : []
+  for (const item of arr) {
+    const v = sanitizeExampleInput(item)
+    if (!v) continue
+    const key = v.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(v)
+    if (out.length >= limit) break
+  }
+  return out
 }
 
 const extractTerms = (value) => {
@@ -182,6 +236,14 @@ export default function Dashboard({ onNavigate }) {
   const [loading, setLoading] = useState(false)
   const [docs, setDocs] = useState([])
   const [selectedDoc, setSelectedDoc] = useState(null)
+  const [pipelines, setPipelines] = useState([])
+  const [selectedPipeline, setSelectedPipeline] = useState(() => {
+    try {
+      return (localStorage.getItem(DASHBOARD_PIPELINE_STORAGE_KEY) || '').trim() || '流水线1'
+    } catch {
+      return '流水线1'
+    }
+  })
   const [providers, setProviders] = useState([])
   const [selectedProvider, setSelectedProvider] = useState('minimax')
   const [manualWeight, setManualWeight] = useState(50)
@@ -211,6 +273,20 @@ export default function Dashboard({ onNavigate }) {
         setDocs([])
       }
     }
+    const loadPipelines = async () => {
+      try {
+        const vals = await api.listPipelines()
+        const uniq = Array.from(new Set((Array.isArray(vals) ? vals : []).filter(Boolean)))
+        if (uniq.length === 0) uniq.push('流水线1')
+        setPipelines(uniq)
+        if (!uniq.includes(selectedPipeline)) {
+          setSelectedPipeline(uniq[0])
+          try { localStorage.setItem(DASHBOARD_PIPELINE_STORAGE_KEY, uniq[0]) } catch {}
+        }
+      } catch {
+        setPipelines(['流水线1'])
+      }
+    }
     const loadProviders = async () => {
       try {
         const data = await api.getProviders()
@@ -225,18 +301,48 @@ export default function Dashboard({ onNavigate }) {
       }
     }
     loadDocs()
+    loadPipelines()
     loadProviders()
   }, [])
 
+  useEffect(() => {
+    const applyPayload = (payload) => {
+      const text = String(payload?.fault_description || '').trim()
+      if (!text) return
+      setInput(text)
+      message.info('已从视觉识别结果填充故障描述')
+    }
+
+    const tryConsume = () => {
+      try {
+        const raw = sessionStorage.getItem('faulttreeai_pending_vision_to_generate')
+        if (!raw) return
+        const payload = JSON.parse(raw)
+        sessionStorage.removeItem('faulttreeai_pending_vision_to_generate')
+        applyPayload(payload)
+      } catch {
+      }
+    }
+
+    const onInject = (e) => {
+      if (e?.detail) applyPayload(e.detail)
+      tryConsume()
+    }
+
+    tryConsume()
+    window.addEventListener('dashboard-inject', onInject)
+    return () => window.removeEventListener('dashboard-inject', onInject)
+  }, [])
+
   const fallbackSuggestions = useMemo(() => ([
-    '设备通电后无法启动，伴随异响',
-    '电机运行时过热并触发保护',
-    '伺服驱动器报警，无法复位',
-    '设备运行异常：振动增大，噪声变大',
-    '设备无法开机，电源指示灯不亮',
-    '运行过程中频繁跳闸，疑似短路',
-    '气动系统压力不足，动作缓慢',
-    '传感器信号不稳定，误报警频发',
+    '设备通电后无法启动伴随异响',
+    '电机运行过热触发保护',
+    '伺服驱动器报警无法复位',
+    '设备运行振动增大噪声变大',
+    '设备无法开机电源指示灯不亮',
+    '运行过程中频繁跳闸疑似短路',
+    '气动系统压力不足动作缓慢',
+    '传感器信号不稳定误报警频发',
   ]), [])
 
   const [suggestions, setSuggestions] = useState([])
@@ -244,17 +350,20 @@ export default function Dashboard({ onNavigate }) {
   useEffect(() => {
     const load = async () => {
       try {
-        const selectedDocItem = docs.find(item => item.doc_id === selectedDoc)
-        const activeDoc = docs.find(d => d.status === 'active')
-        const pipeline = (selectedDocItem?.pipeline || activeDoc?.pipeline || '流水线1')
-        const list = await api.listKnowledgeItemSuggestions(pipeline, 8)
-        setSuggestions(Array.isArray(list) ? list.filter(Boolean) : [])
+        const pipeline = (selectedPipeline || '').trim() || '流水线1'
+        const list = await api.listKnowledgeItemSuggestions(pipeline, 12)
+        const cleaned = buildExampleSuggestions(list, 8)
+        setSuggestions(cleaned)
       } catch {
         setSuggestions([])
       }
     }
     if (messages.length === 0) load()
-  }, [docs, selectedDoc, messages.length])
+  }, [selectedPipeline, messages.length])
+
+  useEffect(() => {
+    try { localStorage.setItem(DASHBOARD_PIPELINE_STORAGE_KEY, (selectedPipeline || '').trim() || '流水线1') } catch {}
+  }, [selectedPipeline])
 
   useEffect(() => {
     try {
@@ -423,49 +532,91 @@ export default function Dashboard({ onNavigate }) {
   const submitTroubleshootingFinalFeedback = async (sessionId) => {
     const session = troubleshootingSessionsRef.current?.[sessionId]
     if (!session) return
-    if (!session.doc_id) {
-      message.warning('当前未绑定知识文档，无法反馈到知识库权重')
+    if (feedbackSubmittingSession) return
+
+    const pipeline = (docs.find(d => d.doc_id === selectedDoc)?.pipeline || '流水线1').trim() || '流水线1'
+    const candidates = Array.isArray(session.candidates) ? session.candidates : []
+    const options = candidates
+      .slice()
+      .sort((a, b) => Number(b.score || 0) - Number(a.score || 0))
+      .slice(0, 8)
+
+    if (!options.length) {
+      message.warning('当前排查会话没有可反馈的候选原因')
       return
     }
-    if (feedbackSubmittingSession) return
-    setFeedbackSubmittingSession(sessionId)
-    try {
-      await api.feedbackKnowledgeWeight({
-        doc_id: session.doc_id,
-        feedback_type: 'helpful',
-        amount: 1,
-      })
-      setMessages(prev => [...prev, { role: 'assistant', text: '已反馈最终结果，知识库权重已更新。' }])
-      message.success('反馈成功，知识库权重已更新')
-    } catch (e) {
-      message.error(e.response?.data?.detail || e.message || '反馈失败')
-    }
-    setFeedbackSubmittingSession(null)
-  }
 
-  const loadToGenerate = (data) => {
-    try {
-      const payload = {
-        topEvent: data?.fault_tree?.top_event || '',
-        systemName: '',
-        selectedDoc,
-        selectedProvider,
-        result: {
-          tree_id: data.tree_id,
-          fault_tree: data.fault_tree,
-          nodes_json: data.fault_tree?.nodes,
-          gates_json: data.fault_tree?.gates,
-          mcs: data.mcs,
-          importance: data.importance,
-          validation_issues: data.validation_issues,
-          provider: data.provider,
-        },
-        viewMode: 'view',
-        savedAt: Date.now(),
+    let chosenNodeId = options[0]?.node_id
+    Modal.confirm({
+      title: '反馈最终结果',
+      content: (
+        <div style={{ marginTop: 8 }}>
+          <div style={{ marginBottom: 8, color: '#555' }}>请选择最终确认的根因（将更新知识库“问题→原因”的权重）</div>
+          <Select
+            style={{ width: '100%' }}
+            defaultValue={chosenNodeId}
+            options={options.map(o => ({ value: o.node_id, label: o.name }))}
+            onChange={(v) => { chosenNodeId = v }}
+          />
+          <div style={{ marginTop: 8, fontSize: 12, color: '#888' }}>流水线：{pipeline}</div>
+        </div>
+      ),
+      okText: '确认反馈',
+      cancelText: '取消',
+      onOk: async () => {
+        const chosen = options.find(o => o.node_id === chosenNodeId) || options[0]
+        if (!chosen?.name) return
+        setFeedbackSubmittingSession(sessionId)
+        try {
+          const query = `${session.top_event || ''} ${chosen.name}`.trim()
+          const resp = await api.searchKnowledgeItems({ query, pipeline, top_k: 8 })
+          const results = Array.isArray(resp?.results) ? resp.results : []
+          const best = results
+            .map((r) => {
+              const rootCause = String(r.root_cause || '')
+              const problem = String(r.problem || '')
+              const score = textOverlapScore(chosen.name, rootCause) * 0.7 + textOverlapScore(session.top_event || '', problem) * 0.3
+              return { r, score }
+            })
+            .sort((a, b) => b.score - a.score)[0]?.r
+
+          if (!best?.item_id) {
+            const fallbackDoc = docs.find(d => d.doc_id === selectedDoc)
+            const filename = String(fallbackDoc?.filename || '')
+            const inferredMachine = (filename.replace(/\.[^.]+$/, '').match(/([\u4e00-\u9fff]{2,20})(维修保养手册|维修手册|保养手册)?/) || [])[1] || ''
+            const createResp = await api.createKnowledgeItem({
+              pipeline,
+              machine: inferredMachine,
+              problem: String(session.top_event || '').trim() || '设备故障',
+              root_cause: String(chosen.name || '').trim(),
+              solution: '',
+              metadata: {
+                source: 'troubleshooting_feedback_autocreate',
+                tree_id: session.tree_id || null,
+                node_id: chosen.node_id || null,
+              }
+            })
+            const newItemId = createResp?.item_id
+            if (!newItemId) {
+              message.error('自动创建知识库条目失败')
+              return
+            }
+            await api.feedbackKnowledgeItemWeight({ item_id: newItemId, feedback_type: 'helpful', amount: 1 })
+            setMessages(prev => [...prev, { role: 'assistant', text: `未匹配到知识库条目，已自动创建并反馈：${chosen.name}。` }])
+            message.success('已自动创建知识库条目并更新权重')
+            return
+          }
+
+          await api.feedbackKnowledgeItemWeight({ item_id: best.item_id, feedback_type: 'helpful', amount: 1 })
+          setMessages(prev => [...prev, { role: 'assistant', text: `已反馈最终结果：${chosen.name}，知识库权重已更新。` }])
+          message.success('反馈成功，知识库权重已更新')
+        } catch (e) {
+          message.error(e.response?.data?.detail || e.message || '反馈失败')
+        } finally {
+          setFeedbackSubmittingSession(null)
+        }
       }
-      sessionStorage.setItem('faulttreeai_generate_state_v1', JSON.stringify(payload))
-    } catch {}
-    onNavigate?.('generate')
+    })
   }
 
   const openFullScreen = (data, mode = 'view') => {
@@ -575,7 +726,7 @@ export default function Dashboard({ onNavigate }) {
               <div style={{ marginTop: 8, color: '#666' }}>从下方输入故障现象，我会生成故障树并提供排查建议</div>
             </div>
             <div style={{ maxWidth: 980, padding: '0 12px', display: 'flex', flexWrap: 'wrap', gap: 10, justifyContent: 'center' }}>
-              {(suggestions.length > 0 ? suggestions : fallbackSuggestions).map((s) => (
+              {(suggestions.length > 0 ? suggestions : buildExampleSuggestions(fallbackSuggestions, 8)).map((s) => (
                 <Button
                   key={s}
                   shape="round"
@@ -633,7 +784,7 @@ export default function Dashboard({ onNavigate }) {
                                     size="small"
                                     type={opt.value === 'yes' ? 'primary' : 'default'}
                                     onClick={() => submitTroubleshootingAnswer(m.session_id, opt.value)}
-                                    disabled={troubleshootingSessionsRef.current?.[m.session_id]?.currentQuestionId !== m.question_id}
+                                    disabled={troubleshootingSessions?.[m.session_id]?.currentQuestionId !== m.question_id}
                                   >
                                     {opt.label}
                                   </Button>
@@ -693,18 +844,12 @@ export default function Dashboard({ onNavigate }) {
                           </Suspense>
                         </div>
                         <div style={{ marginTop: 8 }}>
-                          <Button size="small" onClick={() => loadToGenerate(m.result)}>
-                            载入到生成页并编辑
-                          </Button>
-                        </div>
-                        <div style={{ marginTop: 8 }}>
                           <Space wrap>
                             <Button size="small" type="primary" onClick={() => startTroubleshooting(m)}>
                               帮我排查故障
                             </Button>
                             <Button size="small" onClick={() => openNativeFullScreen(m.result, 'view')}>系统全屏查看</Button>
                             <Button size="small" type="primary" onClick={() => openFullScreen(m.result, 'edit')}>主页专家编辑</Button>
-                            <Button size="small" onClick={() => loadToGenerate(m.result)}>载入到生成页并编辑</Button>
                           </Space>
                         </div>
                       </div>
@@ -737,9 +882,16 @@ export default function Dashboard({ onNavigate }) {
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>
               <Space size={8} wrap>
-                <Button size="small" icon={<ThunderboltOutlined />} onClick={() => setInput('设备运行异常：')}>
+                <Button size="small" icon={<ThunderboltOutlined />} onClick={() => setInput('设备运行异常')}>
                   快速
                 </Button>
+                <Select
+                  size="small"
+                  value={selectedPipeline}
+                  onChange={setSelectedPipeline}
+                  style={{ width: 124 }}
+                  options={(pipelines.length ? pipelines : ['流水线1']).map(v => ({ value: v, label: v }))}
+                />
               </Space>
               <Popover content={composerSettings} trigger="click" placement="topRight">
                 <Button size="small" icon={<SettingOutlined />}>
