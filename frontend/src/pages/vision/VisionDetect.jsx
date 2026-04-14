@@ -595,22 +595,22 @@ export default function VisionDetect({ onNavigate }) {
 
   return (
     <Layout className="vision-detect-page">
+      {visibleResult?.anomaly_count > 0 && (
+        <div style={{ position: 'fixed', top: 80, left: '50%', transform: 'translateX(-50%)', zIndex: 1000, width: '90%', maxWidth: 800, boxShadow: '0 4px 12px rgba(0,0,0,0.15)', borderRadius: 8 }}>
+          <Alert
+            message="检测到异常"
+            description={`发现 ${visibleResult.anomaly_count} 个异常部位，建议生成故障树进行深入分析`}
+            type="warning"
+            showIcon
+            action={<Button type="primary" icon={<RocketOutlined />} onClick={handleGenerateFaultTree} danger>生成故障树</Button>}
+          />
+        </div>
+      )}
       <Content>
         <div className="vision-detect-shell">
           <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
             <Button icon={<SyncOutlined />} onClick={handleReset} disabled={loading}>重置</Button>
           </div>
-
-          {visibleResult?.anomaly_count > 0 && (
-            <Alert
-              message="检测到异常"
-              description={`发现 ${visibleResult.anomaly_count} 个异常部位，建议生成故障树进行深入分析`}
-              type="warning"
-              showIcon
-              action={<Button type="primary" icon={<RocketOutlined />} onClick={handleGenerateFaultTree} danger>生成故障树</Button>}
-              style={{ marginBottom: 16 }}
-            />
-          )}
 
           <Row gutter={24}>
             <Col span={activeTab === 'camera' ? 14 : 10}>

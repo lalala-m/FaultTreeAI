@@ -125,8 +125,8 @@ export const listKnowledgeItems = async (params = {}) => {
   return data
 }
 
-export const createKnowledgeItem = async (payload) => {
-  const { data } = await api.post('/knowledge/items', payload)
+export const createKnowledgeItem = async (payload, params = {}) => {
+  const { data } = await api.post('/knowledge/items', payload, { params: params || {} })
   invalidateCache(['knowledgeItems'])
   return data
 }
@@ -163,6 +163,15 @@ export const setKnowledgeItemExpertWeight = async (itemId, expertWeight) => {
 export const listKnowledgeItemSuggestions = async (pipeline, limit = 8) => {
   const { data } = await api.get('/knowledge/items/suggestions', { params: { pipeline, limit } })
   return Array.isArray(data?.suggestions) ? data.suggestions : []
+}
+
+export const listManualEntries = async (pipeline = '流水线1', params = {}) => {
+  const { data } = await api.get('/knowledge/manual/entries', { params: { pipeline, ...(params || {}) } })
+  return data
+}
+
+export const exportManualWord = async (pipeline = '流水线1', params = {}) => {
+  return api.get('/knowledge/manual/export/word', { params: { pipeline, ...(params || {}) }, responseType: 'blob' })
 }
 
 export const reextractKnowledgeItems = async (pipeline = '流水线1', mode = 'replace', docIds = null) => {
@@ -301,6 +310,8 @@ api.searchKnowledgeItems = searchKnowledgeItems
 api.feedbackKnowledgeItemWeight = feedbackKnowledgeItemWeight
 api.setKnowledgeItemExpertWeight = setKnowledgeItemExpertWeight
 api.listKnowledgeItemSuggestions = listKnowledgeItemSuggestions
+api.listManualEntries = listManualEntries
+api.exportManualWord = exportManualWord
 api.reextractKnowledgeItems = reextractKnowledgeItems
 api.cleanupKnowledgeItems = cleanupKnowledgeItems
 api.generateFaultTree = generateFaultTree

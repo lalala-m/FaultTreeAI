@@ -53,6 +53,11 @@ const sanitizeExampleInput = (raw, maxLen = 20) => {
   const badPrefixes = ['确保', '确认', '如果', '当', '建议', '检查', '避免', '需要', '必须', '应当']
   const hasFaultHint = faultHints.some(k => compact.includes(k))
   if (!hasFaultHint) return ''
+  const unsafeHints = [
+    '人员伤亡', '危险电压', '触电', '安全须知', '注意事项', '警告',
+    '操作说明', '使用说明', '说明书', '安装指南', '安装说明', '错误操作'
+  ]
+  if (unsafeHints.some(k => compact.includes(k))) return ''
   if (badPrefixes.some(p => compact.startsWith(p))) return ''
   if (solutionHints.some(k => compact.includes(k)) && !compact.includes('无法')) return ''
 
@@ -547,16 +552,27 @@ export default function Dashboard({ onNavigate }) {
     }
 
     let chosenNodeId = options[0]?.node_id
+    let customRootCause = ''
     Modal.confirm({
       title: '反馈最终结果',
       content: (
         <div style={{ marginTop: 8 }}>
           <div style={{ marginBottom: 8, color: '#555' }}>请选择最终确认的根因（将更新知识库“问题→原因”的权重）</div>
+          <div style={{ marginBottom: 8, fontSize: 12, color: '#888' }}>
+            现象（自动）：{String(session.top_event || '').trim() || '设备故障'}
+          </div>
           <Select
             style={{ width: '100%' }}
             defaultValue={chosenNodeId}
             options={options.map(o => ({ value: o.node_id, label: o.name }))}
             onChange={(v) => { chosenNodeId = v }}
+          />
+          <div style={{ marginTop: 12, marginBottom: 6, color: '#555' }}>可选：自定义根因/结论（用于补充或纠正）</div>
+          <Input.TextArea
+            allowClear
+            placeholder="根因/结论（填写后将优先采用；不填则使用上面选择）"
+            autoSize={{ minRows: 2, maxRows: 4 }}
+            onChange={(e) => { customRootCause = e.target.value }}
           />
           <div style={{ marginTop: 8, fontSize: 12, color: '#888' }}>流水线：{pipeline}</div>
         </div>
@@ -565,17 +581,22 @@ export default function Dashboard({ onNavigate }) {
       cancelText: '取消',
       onOk: async () => {
         const chosen = options.find(o => o.node_id === chosenNodeId) || options[0]
-        if (!chosen?.name) return
+        const finalProblem = String(session.top_event || '').trim() || '设备故障'
+        const finalRootCause = String(customRootCause || chosen?.name || '').trim()
+        if (!finalRootCause) {
+          message.warning('请输入根因/结论或选择一项候选原因')
+          return Promise.reject(new Error('missing root cause'))
+        }
         setFeedbackSubmittingSession(sessionId)
         try {
-          const query = `${session.top_event || ''} ${chosen.name}`.trim()
+          const query = `${finalProblem} ${finalRootCause}`.trim()
           const resp = await api.searchKnowledgeItems({ query, pipeline, top_k: 8 })
           const results = Array.isArray(resp?.results) ? resp.results : []
           const best = results
             .map((r) => {
               const rootCause = String(r.root_cause || '')
               const problem = String(r.problem || '')
-              const score = textOverlapScore(chosen.name, rootCause) * 0.7 + textOverlapScore(session.top_event || '', problem) * 0.3
+              const score = textOverlapScore(finalRootCause, rootCause) * 0.7 + textOverlapScore(finalProblem, problem) * 0.3
               return { r, score }
             })
             .sort((a, b) => b.score - a.score)[0]?.r
@@ -587,28 +608,29 @@ export default function Dashboard({ onNavigate }) {
             const createResp = await api.createKnowledgeItem({
               pipeline,
               machine: inferredMachine,
-              problem: String(session.top_event || '').trim() || '设备故障',
-              root_cause: String(chosen.name || '').trim(),
+              problem: finalProblem,
+              root_cause: finalRootCause,
               solution: '',
               metadata: {
                 source: 'troubleshooting_feedback_autocreate',
                 tree_id: session.tree_id || null,
-                node_id: chosen.node_id || null,
+                node_id: chosen?.node_id || null,
+                custom_root_cause: Boolean(String(customRootCause || '').trim()),
               }
-            })
+            }, { enrich: 1 })
             const newItemId = createResp?.item_id
             if (!newItemId) {
               message.error('自动创建知识库条目失败')
               return
             }
             await api.feedbackKnowledgeItemWeight({ item_id: newItemId, feedback_type: 'helpful', amount: 1 })
-            setMessages(prev => [...prev, { role: 'assistant', text: `未匹配到知识库条目，已自动创建并反馈：${chosen.name}。` }])
+            setMessages(prev => [...prev, { role: 'assistant', text: `未匹配到知识库条目，已自动创建并反馈：${finalProblem} → ${finalRootCause}。` }])
             message.success('已自动创建知识库条目并更新权重')
             return
           }
 
           await api.feedbackKnowledgeItemWeight({ item_id: best.item_id, feedback_type: 'helpful', amount: 1 })
-          setMessages(prev => [...prev, { role: 'assistant', text: `已反馈最终结果：${chosen.name}，知识库权重已更新。` }])
+          setMessages(prev => [...prev, { role: 'assistant', text: `已反馈最终结果：${finalProblem} → ${finalRootCause}，知识库权重已更新。` }])
           message.success('反馈成功，知识库权重已更新')
         } catch (e) {
           message.error(e.response?.data?.detail || e.message || '反馈失败')

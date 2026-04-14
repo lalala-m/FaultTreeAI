@@ -120,72 +120,16 @@ SYSTEM_PROMPT = """你是工业设备故障分析专家，精通IEC 61025和GB/T
     {"id": "N003", "type": "intermediate", "name": "电机本体故障", "description": "电机机械或电气部件损坏", "source_ref": null},
     {"id": "N004", "type": "basic", "name": "电源开关未闭合", "description": "主电源开关处于断开状态", "source_ref": null},
     {"id": "N005", "type": "basic", "name": "缺相运行", "description": "三相电源某一相缺失", "source_ref": null},
-    {"id": "N006", "type": "basic", "name": "电压不足", "description": "供电电压低于额定值", "source_ref": null},
-    {"id": "N007", "type": "basic", "name": "轴承损坏", "description": "电机轴承磨损或破裂", "source_ref": null},
-    {"id": "N008", "type": "basic", "name": "绕组短路", "description": "电机绕组发生短路故障", "source_ref": null},
-    {"id": "N009", "type": "basic", "name": "转子卡死", "description": "转子被异物卡住或变形", "source_ref": null}
+    {"id": "N006", "type": "basic", "name": "轴承损坏", "description": "电机轴承磨损或破裂", "source_ref": null},
+    {"id": "N007", "type": "basic", "name": "绕组短路", "description": "电机绕组发生短路故障", "source_ref": null}
   ],
   "gates": [
     {"id": "G001", "type": "OR", "output_node": "N001", "input_nodes": ["N002", "N003"]},
-    {"id": "G002", "type": "OR", "output_node": "N002", "input_nodes": ["N004", "N005", "N006"]},
-    {"id": "G003", "type": "OR", "output_node": "N003", "input_nodes": ["N007", "N008", "N009"]}
+    {"id": "G002", "type": "OR", "output_node": "N002", "input_nodes": ["N004", "N005"]},
+    {"id": "G003", "type": "OR", "output_node": "N003", "input_nodes": ["N006", "N007"]}
   ],
   "confidence": 0.92,
   "analysis_summary": "电机无法启动主要分为电源供电异常和电机本体故障两大类原因。"
-}
-
-### 示例2：液压系统无压力
-输入：顶事件="液压系统无压力"
-输出：
-{
-  "top_event": "液压系统无压力",
-  "nodes": [
-    {"id": "N001", "type": "top", "name": "液压系统无压力", "description": "液压系统无法建立工作压力", "source_ref": null},
-    {"id": "N002", "type": "intermediate", "name": "液压泵故障", "description": "液压泵无法正常工作", "source_ref": null},
-    {"id": "N003", "type": "intermediate", "name": "油箱故障", "description": "油箱油液异常", "source_ref": null},
-    {"id": "N004", "type": "intermediate", "name": "控制阀组故障", "description": "控制阀组无法正常工作", "source_ref": null},
-    {"id": "N005", "type": "basic", "name": "泵内磨损", "description": "液压泵内部零件磨损", "source_ref": null},
-    {"id": "N006", "type": "basic", "name": "泵电机故障", "description": "驱动泵的电机故障", "source_ref": null},
-    {"id": "N007", "type": "basic", "name": "油量不足", "description": "油箱油液位过低", "source_ref": null},
-    {"id": "N008", "type": "basic", "name": "油液污染", "description": "油液含有杂质或水分", "source_ref": null},
-    {"id": "N009", "type": "basic", "name": "阀芯卡滞", "description": "控制阀阀芯卡住", "source_ref": null},
-    {"id": "N010", "type": "basic", "name": "阀内泄漏", "description": "控制阀内部泄漏", "source_ref": null}
-  ],
-  "gates": [
-    {"id": "G001", "type": "OR", "output_node": "N001", "input_nodes": ["N002", "N003", "N004"]},
-    {"id": "G002", "type": "OR", "output_node": "N002", "input_nodes": ["N005", "N006"]},
-    {"id": "G003", "type": "OR", "output_node": "N003", "input_nodes": ["N007", "N008"]},
-    {"id": "G004", "type": "OR", "output_node": "N004", "input_nodes": ["N009", "N010"]}
-  ],
-  "confidence": 0.88,
-  "analysis_summary": "液压系统无压力主要源于泵故障、油箱故障和阀组故障三大方面。"
-}
-
-### 示例3：控制系统通讯中断
-输入：顶事件="控制系统通讯中断"
-输出：
-{
-  "top_event": "控制系统通讯中断",
-  "nodes": [
-    {"id": "N001", "type": "top", "name": "控制系统通讯中断", "description": "控制系统与现场设备之间通讯中断", "source_ref": null},
-    {"id": "N002", "type": "intermediate", "name": "网络硬件故障", "description": "通讯网络硬件设备故障", "source_ref": null},
-    {"id": "N003", "type": "intermediate", "name": "软件配置错误", "description": "通讯参数配置不当", "source_ref": null},
-    {"id": "N004", "type": "intermediate", "name": "供电异常", "description": "通讯设备供电不正常", "source_ref": null},
-    {"id": "N005", "type": "basic", "name": "网线损坏", "description": "以太网网线断裂或损坏", "source_ref": null},
-    {"id": "N006", "type": "basic", "name": "交换机故障", "description": "网络交换机无法正常工作", "source_ref": null},
-    {"id": "N007", "type": "basic", "name": "IP地址冲突", "description": "设备IP地址配置冲突", "source_ref": null},
-    {"id": "N008", "type": "basic", "name": "波特率不匹配", "description": "通讯双方波特率设置不一致", "source_ref": null},
-    {"id": "N009", "type": "basic", "name": "电源模块损坏", "description": "通讯设备电源模块故障", "source_ref": null},
-    {"id": "N010", "type": "basic", "name": "供电线路断开", "description": "通讯设备供电线路断开", "source_ref": null}
-  ],
-  "gates": [
-    {"id": "G001", "type": "OR", "output_node": "N001", "input_nodes": ["N002", "N003", "N004"]},
-    {"id": "G002", "type": "OR", "output_node": "N002", "input_nodes": ["N005", "N006"]},
-    {"id": "G003", "type": "OR", "output_node": "N003", "input_nodes": ["N007", "N008"]},
-    {"id": "G004", "type": "OR", "output_node": "N004", "input_nodes": ["N009", "N010"]}
-  ],
-  "confidence": 0.85,
-  "analysis_summary": "控制系统通讯中断主要由网络硬件、软件配置和供电异常三方面原因导致。"
 }
 
 ## 重要提醒

@@ -73,3 +73,6 @@ node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Windows 特殊文件名（避免误生成导致 Git 报错）
+NUL

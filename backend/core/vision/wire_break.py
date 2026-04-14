@@ -166,10 +166,11 @@ def annotate_wire_break(img_bgr: np.ndarray, wr: WireBreakResult) -> np.ndarray:
     canvas = img_bgr.copy()
     h, w = canvas.shape[:2]
 
-    if isinstance(wr.wire_mask, np.ndarray) and wr.wire_mask.shape[:2] == (h, w) and wr.wire_mask.any():
-        overlay = canvas.copy()
-        overlay[wr.wire_mask > 0] = (255, 0, 0)
-        canvas = cv2.addWeighted(overlay, 0.35, canvas, 0.65, 0)
+    # 不再绘制蓝色的 wire_mask，因为这个粗略的 mask 经常会包含背景噪点（蓝线）
+    # if isinstance(wr.wire_mask, np.ndarray) and wr.wire_mask.shape[:2] == (h, w) and wr.wire_mask.any():
+    #     overlay = canvas.copy()
+    #     overlay[wr.wire_mask > 0] = (255, 0, 0)
+    #     canvas = cv2.addWeighted(overlay, 0.35, canvas, 0.65, 0)
 
     if wr.wire_bbox is not None:
         x1, y1, x2, y2 = [int(v) for v in wr.wire_bbox]
