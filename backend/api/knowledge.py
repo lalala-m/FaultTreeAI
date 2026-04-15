@@ -3,15 +3,20 @@
 支持文档上传、列表查询、删除、搜索
 """
 
+import time
 import uuid
 import tiktoken
 import re
 import json
+import tempfile
+from datetime import datetime
 from collections import Counter
 from pathlib import Path
 from fastapi import APIRouter, UploadFile, File, HTTPException, Form
+from fastapi.responses import FileResponse
 import aiofiles
 from pydantic import BaseModel
+from docx import Document
 
 from backend.core.parser.document import parse_document
 from backend.core.rag.pgvector_retriever import add_chunks_to_db, retrieve
@@ -165,6 +170,70 @@ class KnowledgeItemCreateRequest(BaseModel):
     root_cause: str = ""
     solution: str = ""
     metadata: dict | None = None
+
+
+def _clean_single_line_text(raw: str, max_len: int) -> str:
+    s = str(raw or "").replace("\r", " ").replace("\n", " ").replace("\t", " ")
+    s = re.sub(r"\s+", " ", s).strip()
+    if not s:
+        return ""
+    return s[:max_len].strip()
+
+
+def _validate_knowledge_item_fields(pipeline: str, machine_category: str, machine: str, problem_category: str, problem: str, root_cause: str, solution: str):
+    if not pipeline:
+        raise HTTPException(status_code=400, detail="pipeline 不能为空")
+    if not problem:
+        raise HTTPException(status_code=400, detail="problem 不能为空")
+    if not root_cause:
+        raise HTTPException(status_code=400, detail="root_cause 不能为空")
+    if len(problem) > 240:
+        raise HTTPException(status_code=400, detail="problem 太长（最多240字）")
+    if len(root_cause) > 320:
+        raise HTTPException(status_code=400, detail="root_cause 太长（最多320字）")
+    if len(machine) > 160:
+        raise HTTPException(status_code=400, detail="machine 太长（最多160字）")
+    if len(machine_category) > 120:
+        raise HTTPException(status_code=400, detail="machine_category 太长（最多120字）")
+    if len(problem_category) > 120:
+        raise HTTPException(status_code=400, detail="problem_category 太长（最多120字）")
+    if len(solution) > 800:
+        raise HTTPException(status_code=400, detail="solution 太长（最多800字）")
+    if any(k in problem for k in ["来源：", "来源:", "doc_id", "chunk_id"]):
+        raise HTTPException(status_code=400, detail="problem 包含不允许的来源信息")
+    if any(k in root_cause for k in ["来源：", "来源:", "doc_id", "chunk_id"]):
+        raise HTTPException(status_code=400, detail="root_cause 包含不允许的来源信息")
+
+
+async def _ai_enrich_categories(pipeline: str, machine: str, problem: str, root_cause: str) -> dict:
+    prompt = f"""
+你是工业知识库结构化助手。请根据输入内容，为知识库条目补全分类字段。
+
+要求：
+1) 严格只输出 JSON，不要任何解释文字
+2) machine_category 与 problem_category 必须尽量简短（1~6个字），若无法判断返回空字符串
+3) 不要输出来源/文件名/页码/doc_id 等信息
+
+输出 JSON 结构：
+{{
+  "machine_category": "例如 电机/变频器/PLC/传感器/液压/气动/轴承/传送带/其他 或 空",
+  "problem_category": "例如 电气/机械/控制/液压/气动/传感器/其他 或 空"
+}}
+
+流水线：{pipeline}
+设备：{machine}
+现象：{problem}
+根因：{root_cause}
+"""
+    manager = get_llm_manager()
+    resp, _provider = await manager.generate_with_fallback(prompt)
+    parsed = _extract_json_dict(resp.content if resp else "")
+    if not isinstance(parsed, dict):
+        return {}
+    out = {}
+    out["machine_category"] = _clean_single_line_text(parsed.get("machine_category", ""), 120)
+    out["problem_category"] = _clean_single_line_text(parsed.get("problem_category", ""), 120)
+    return out
 
 
 class KnowledgeItemUpdateRequest(BaseModel):
@@ -475,11 +544,26 @@ def _infer_machine_category_from_machine(machine: str) -> str:
     v = re.sub(r"\s+", "", str(machine or "")).lower()
     if not v:
         return ""
+    return _canonicalize_machine_category("", v)
+
+
+def _canonicalize_machine_category(category: str | None, machine: str | None = None) -> str:
+    raw = re.sub(r"\s+", "", str(category or "")).lower()
+    machine_text = re.sub(r"\s+", "", str(machine or "")).lower()
+    text = raw or machine_text
+    if not text:
+        return ""
+
+    motor_keys = [
+        "伺服电机", "同步电机", "异步电机", "步进电机", "直流电机", "交流电机",
+        "减速电机", "力矩电机", "主轴电机", "马达", "motor", "servo", "同步机", "异步机"
+    ]
+    if any(k in text for k in motor_keys) or ("电机" in text):
+        return "电机"
+
     mapping = [
-        ("伺服", ["伺服", "servo"]),
         ("变频器", ["变频", "inverter"]),
         ("PLC", ["plc"]),
-        ("电机", ["电机", "motor"]),
         ("传送带", ["传送带", "输送带"]),
         ("传感器", ["传感器", "sensor"]),
         ("轴承", ["轴承", "bearing"]),
@@ -487,7 +571,7 @@ def _infer_machine_category_from_machine(machine: str) -> str:
         ("气动", ["气动", "pneumatic"]),
     ]
     for cat, keys in mapping:
-        if any(k in v for k in keys):
+        if any(k in text for k in keys):
             return cat
     return ""
 
@@ -1413,11 +1497,38 @@ async def search_knowledge(query: str, top_k: int = 5):
 
 
 @router.post("/items")
-async def create_knowledge_item(payload: KnowledgeItemCreateRequest):
+async def create_knowledge_item(payload: KnowledgeItemCreateRequest, enrich: bool = False):
     pipeline = _normalize_pipeline(payload.pipeline)
-    problem = str(payload.problem or "").strip()
+    problem = _clean_single_line_text(payload.problem, 240)
     if not problem:
         raise HTTPException(status_code=400, detail="problem 不能为空")
+    root_cause = _clean_single_line_text(payload.root_cause, 320)
+    if not root_cause:
+        raise HTTPException(status_code=400, detail="root_cause 不能为空")
+
+    machine = _clean_single_line_text(payload.machine, 160)
+    machine_category = _clean_single_line_text(payload.machine_category, 120)
+    problem_category = _clean_single_line_text(payload.problem_category, 120)
+    solution = _clean_single_line_text(payload.solution, 800)
+
+    if enrich:
+        if not machine_category:
+            machine_category = _infer_machine_category_from_machine(machine) if machine else _infer_machine_category_from_machine(root_cause)
+        if not problem_category:
+            problem_category = _infer_problem_category_from_problem(problem)
+
+        if (not machine_category) or (not problem_category):
+            try:
+                ai_out = await _ai_enrich_categories(pipeline, machine, problem, root_cause)
+                if not machine_category:
+                    machine_category = _canonicalize_machine_category(ai_out.get("machine_category", ""), machine)
+                if not problem_category:
+                    problem_category = _clean_single_line_text(ai_out.get("problem_category", ""), 120)
+            except Exception:
+                pass
+
+    machine_category = _canonicalize_machine_category(machine_category, machine)
+    _validate_knowledge_item_fields(pipeline, machine_category, machine, problem_category, problem, root_cause, solution)
 
     with psycopg2.connect(
         host=settings.DB_HOST, port=settings.DB_PORT,
@@ -1433,16 +1544,24 @@ async def create_knowledge_item(payload: KnowledgeItemCreateRequest):
                     problem, root_cause, solution, metadata, status
                 )
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, 'active')
+                ON CONFLICT (pipeline, machine, problem, root_cause)
+                DO UPDATE SET
+                    machine_category = EXCLUDED.machine_category,
+                    problem_category = EXCLUDED.problem_category,
+                    solution = CASE WHEN COALESCE(knowledge_items.solution, '') = '' THEN EXCLUDED.solution ELSE knowledge_items.solution END,
+                    metadata = COALESCE(knowledge_items.metadata, '{}'::jsonb) || EXCLUDED.metadata,
+                    status = 'active',
+                    updated_at = NOW()
                 RETURNING item_id::text
                 """,
                 (
                     pipeline,
-                    str(payload.machine_category or "").strip(),
-                    str(payload.machine or "").strip(),
-                    str(payload.problem_category or "").strip(),
+                    machine_category,
+                    machine,
+                    problem_category,
                     problem,
-                    str(payload.root_cause or "").strip(),
-                    str(payload.solution or "").strip(),
+                    root_cause,
+                    solution,
                     json.dumps(payload.metadata or {}, ensure_ascii=False),
                 ),
             )
@@ -1516,7 +1635,7 @@ async def list_knowledge_items(pipeline: str | None = None, status: str = "activ
     for r in rows:
         metadata = r[8] if isinstance(r[8], dict) else {}
         machine = str(r[3] or "").strip()
-        machine_category = str(r[2] or "").strip()
+        machine_category = _canonicalize_machine_category(r[2], machine)
         problem_category = str(r[4] or "").strip()
         if not machine:
             machine = _infer_device_from_filename(str((metadata or {}).get("filename") or "")) if metadata else ""
@@ -1670,6 +1789,7 @@ async def cleanup_knowledge_items(payload: KnowledgeItemCleanupRequest):
 
             if not machine:
                 machine = _infer_device_from_filename(str((metadata or {}).get("filename") or "")) if metadata else ""
+            machine_category = _canonicalize_machine_category(machine_category, machine)
             if not machine_category and machine:
                 machine_category = _infer_machine_category_from_machine(machine)
             if not problem_category and problem:
@@ -1743,6 +1863,8 @@ async def update_knowledge_item(item_id: str, payload: KnowledgeItemUpdateReques
             continue
         if col == "pipeline":
             v = _normalize_pipeline(v)
+        if col == "machine_category":
+            v = _canonicalize_machine_category(v, payload.machine)
         fields.append(f"{col} = %s")
         params.append(v)
     if payload.metadata is not None:
@@ -1842,7 +1964,7 @@ async def search_knowledge_items(payload: KnowledgeItemSearchRequest):
             {
                 "item_id": r[0],
                 "pipeline": r[1],
-                "machine_category": r[2],
+                "machine_category": _canonicalize_machine_category(r[2], r[3]),
                 "machine": r[3],
                 "problem_category": r[4],
                 "problem": r[5],
@@ -1966,6 +2088,30 @@ async def list_knowledge_item_suggestions(pipeline: str = "流水线1", limit: i
     pipeline = _normalize_pipeline(pipeline)
     limit = max(1, min(int(limit or 8), 20))
 
+    def sanitize_fault_suggestion(raw: str, max_len: int = 24) -> str:
+        src = str(raw or "").strip()
+        if not src:
+            return ""
+        src = re.sub(r"[\r\n\t]+", " ", src)
+        src = re.sub(r"\s+", " ", src).strip()
+        compact = re.sub(r"\s+", "", src)
+        if len(compact) < 4:
+            return ""
+        unsafe = ["人员伤亡", "危险电压", "触电", "警告", "安全须知", "注意事项", "操作说明", "使用说明", "说明书", "安装指南", "安装说明", "错误操作"]
+        if any(k in compact for k in unsafe):
+            return ""
+        has_fault = any(k in compact for k in (FAULT_HINTS + ["无法", "不能", "不亮", "不动作", "不通电", "过温", "误报警", "动作缓慢"]))
+        if not has_fault:
+            return ""
+        if any(k in compact for k in SOLUTION_HINTS) and ("无法" not in compact):
+            return ""
+        cleaned = re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff ]+", " ", src)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        if not cleaned:
+            return ""
+        normalized = cleaned.replace(" ", "") if re.search(r"[\u4e00-\u9fff]", cleaned) else cleaned
+        return normalized[:max_len].strip()
+
     with psycopg2.connect(
         host=settings.DB_HOST, port=settings.DB_PORT,
         user=settings.DB_USER, password=settings.DB_PASSWORD,
@@ -1994,7 +2140,7 @@ async def list_knowledge_item_suggestions(pipeline: str = "流水线1", limit: i
     seen = set()
     out = []
     for problem, _, _ in rows:
-        p = str(problem or "").strip()
+        p = sanitize_fault_suggestion(problem)
         if not p:
             continue
         key = p.lower()
@@ -2005,6 +2151,306 @@ async def list_knowledge_item_suggestions(pipeline: str = "流水线1", limit: i
         if len(out) >= limit:
             break
     return {"pipeline": pipeline, "suggestions": out}
+
+
+def _extract_manual_entries(pipeline: str, limit: int = 400) -> list[dict]:
+    pipeline = _normalize_pipeline(pipeline)
+    limit = max(50, min(int(limit or 400), 1200))
+
+    safety_keys = [
+        "安全", "警告", "注意", "危险", "触电", "高压", "电压", "防护", "佩戴", "护目镜", "手套",
+        "断电", "锁定挂牌", "防火", "爆炸", "烫伤", "烧伤", "夹伤", "挤压", "坠落", "泄漏",
+    ]
+    op_keys = [
+        "操作", "步骤", "流程", "启动", "停止", "开机", "关机", "复位", "设置", "调试", "校准",
+        "安装", "拆卸", "更换", "清理", "连接", "按下", "打开", "关闭", "检查", "确认",
+    ]
+    norm_keys = [
+        "规范", "要求", "标准", "应", "必须", "不得", "严禁", "禁止", "允许", "范围", "参数", "扭矩",
+        "力矩", "公差", "验收", "检验", "维护周期", "保养周期",
+    ]
+    unsafe = [
+        "目录", "更新日期", "查询热线", "本手册", "官方完整手册", "标准化模板", "产品结构图示",
+        "技术参数", "参数表",
+    ]
+
+    def norm_line(s: str) -> str:
+        v = str(s or "").strip()
+        v = re.sub(r"[\r\n\t]+", " ", v)
+        v = re.sub(r"\s+", " ", v).strip()
+        v = re.sub(r"^[\s·\-•\d\.\、]+", "", v).strip()
+        v = re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff ]+", " ", v)
+        v = re.sub(r"\s+", " ", v).strip()
+        return v
+
+    def pick_category(compact: str) -> str:
+        if any(k in compact for k in safety_keys):
+            return "安全"
+        if any(k in compact for k in op_keys):
+            return "操作"
+        if any(k in compact for k in norm_keys):
+            return "规范"
+        return ""
+
+    with psycopg2.connect(
+        host=settings.DB_HOST, port=settings.DB_PORT,
+        user=settings.DB_USER, password=settings.DB_PASSWORD,
+        database=settings.DB_NAME
+    ) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    d.doc_id::text,
+                    d.filename,
+                    COALESCE(c.page_num, 0) AS page_num,
+                    COALESCE(c.chunk_index, 0) AS chunk_index,
+                    c.text
+                FROM documents d
+                JOIN document_chunks c ON c.doc_id = d.doc_id
+                WHERE d.status = 'active'
+                  AND COALESCE(d.metadata->>'pipeline', '流水线1') = %s
+                  AND LENGTH(TRIM(COALESCE(c.text, ''))) > 0
+                ORDER BY d.upload_time DESC, c.chunk_index ASC
+                LIMIT 2000
+                """,
+                (pipeline,),
+            )
+            rows = cur.fetchall() or []
+
+    out: list[dict] = []
+    seen = set()
+    for doc_id, filename, page_num, chunk_index, text in rows:
+        raw = str(text or "")
+        for part in re.split(r"[\n\r]+", raw):
+            v = norm_line(part)
+            if not v:
+                continue
+            compact = re.sub(r"\s+", "", v)
+            if len(compact) < 6 or len(compact) > 120:
+                continue
+            if any(k in compact for k in unsafe):
+                continue
+            if len(compact) <= 10 and (_is_noise_phrase(v) or _is_noise_phrase(compact)):
+                continue
+            cat = pick_category(compact)
+            if not cat:
+                continue
+            k = (cat, _norm_text(compact))
+            if k in seen:
+                continue
+            seen.add(k)
+            out.append(
+                {
+                    "category": cat,
+                    "text": v[:240],
+                    "source": {
+                        "doc_id": doc_id,
+                        "filename": filename,
+                        "page": int(page_num or 0),
+                        "chunk_index": int(chunk_index or 0),
+                    },
+                }
+            )
+            if len(out) >= limit:
+                return out
+    return out
+
+
+@router.get("/manual/entries")
+async def list_manual_entries(pipeline: str = "流水线1", category: str | None = None, limit: int = 400, use_ai: bool = True):
+    pipeline = _normalize_pipeline(pipeline)
+    cat = str(category or "").strip()
+    if use_ai:
+        manual = await _build_manual_with_ai(pipeline)
+        entries = _flatten_manual_entries(manual)
+    else:
+        entries = [{"category": x.get("category"), "topic": "", "text": x.get("text")} for x in _extract_manual_entries(pipeline, limit=limit)]
+    if cat:
+        entries = [x for x in entries if str((x or {}).get("category") or "") == cat]
+    return {"pipeline": pipeline, "category": cat, "count": len(entries), "entries": entries}
+
+
+@router.get("/manual/export/word")
+async def export_manual_word(pipeline: str = "流水线1", use_ai: bool = True):
+    pipeline = _normalize_pipeline(pipeline)
+    if use_ai:
+        manual = await _build_manual_with_ai(pipeline)
+    else:
+        manual = {"pipeline": pipeline, "sections": _group_fallback_manual(_extract_manual_entries(pipeline, limit=1200))}
+
+    doc = Document()
+    doc.add_heading("规范手册", 0)
+    doc.add_paragraph(f"流水线：{pipeline}")
+    doc.add_paragraph(f"导出时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    doc.add_paragraph("")
+
+    for sec in (manual or {}).get("sections", []) or []:
+        cat = str((sec or {}).get("category") or "").strip()
+        title = "安全规范" if cat == "安全" else "操作规范" if cat == "操作" else "通用规范"
+        doc.add_heading(title, level=1)
+        topics = (sec or {}).get("topics", []) or []
+        if not topics:
+            doc.add_paragraph("暂无条目")
+            doc.add_paragraph("")
+            continue
+        for t in topics:
+            t_title = str((t or {}).get("title") or "").strip()
+            if t_title:
+                doc.add_heading(t_title, level=2)
+            items = (t or {}).get("items", []) or []
+            for it in items:
+                v = str(it or "").strip()
+                if v:
+                    doc.add_paragraph(v[:320], style="List Bullet")
+        doc.add_paragraph("")
+
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".docx")
+    doc.save(tmp.name)
+    filename = f"规范手册_{pipeline}.docx"
+    return FileResponse(
+        tmp.name,
+        filename=filename,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+
+
+def _group_fallback_manual(entries: list[dict]) -> list[dict]:
+    grouped: dict[str, list[str]] = {"安全": [], "操作": [], "规范": []}
+    for e in entries or []:
+        c = str((e or {}).get("category") or "").strip()
+        t = str((e or {}).get("text") or "").strip()
+        if c in grouped and t:
+            grouped[c].append(t)
+    sections = []
+    for cat in ["安全", "操作", "规范"]:
+        items = grouped.get(cat) or []
+        sections.append({"category": cat, "topics": [{"title": "", "items": items[:400]}]})
+    return sections
+
+
+def _flatten_manual_entries(manual: dict) -> list[dict]:
+    out: list[dict] = []
+    for sec in (manual or {}).get("sections", []) or []:
+        cat = str((sec or {}).get("category") or "").strip()
+        for t in (sec or {}).get("topics", []) or []:
+            topic = str((t or {}).get("title") or "").strip()
+            for it in (t or {}).get("items", []) or []:
+                text = str(it or "").strip()
+                if cat and text:
+                    out.append({"category": cat, "topic": topic, "text": text})
+    return out
+
+
+_MANUAL_CACHE = {}
+_MANUAL_CACHE_TTL = 3600  # 1 hour
+
+async def _build_manual_with_ai(pipeline: str) -> dict:
+    global _MANUAL_CACHE
+    now = time.time()
+    if pipeline in _MANUAL_CACHE:
+        cached_data, timestamp = _MANUAL_CACHE[pipeline]
+        if now - timestamp < _MANUAL_CACHE_TTL:
+            return cached_data
+
+    pipeline = _normalize_pipeline(pipeline)
+    base = _extract_manual_entries(pipeline, limit=420)
+    grouped: dict[str, list[str]] = {"安全": [], "操作": [], "规范": []}
+    for e in base:
+        cat = str((e or {}).get("category") or "").strip()
+        text = str((e or {}).get("text") or "").strip()
+        if cat in grouped and text:
+            grouped[cat].append(text)
+    safety = "\n".join(f"- {x}" for x in grouped["安全"][:80])
+    operation = "\n".join(f"- {x}" for x in grouped["操作"][:80])
+    standard = "\n".join(f"- {x}" for x in grouped["规范"][:80])
+    safety = safety[:2500]
+    operation = operation[:2500]
+    standard = standard[:2500]
+
+    prompt = f"""
+你是工业现场“规范手册”编写助手。请基于给定的材料，整理输出一份更详细、更规范、可直接执行的《规范手册》。
+
+要求
+1) 严格只输出 JSON，不要任何解释文字
+2) 手册按三个大章输出：安全、操作、规范
+3) 每章必须包含 3~6 个主题（topics），每个主题包含 3~5 条可执行条目（items）
+4) items 必须是“动作/约束句”，如：必须/不得/应/严禁/确认/佩戴/断电/锁定挂牌/检查/校准/记录
+5) 去掉来源信息：不得出现“来源/文件名/页码/doc_id/第X页”等字样
+6) 去掉空泛重复：合并同义条目，避免重复句式
+7) 允许合理补全细节，但不得编造具体型号/数值/标准编号；若需要数值，写成“按现场标准/按设备铭牌/按工艺要求”
+
+输出结构（严格遵循）：
+{{
+  "pipeline": "{pipeline}",
+  "sections": [
+    {{
+      "category": "安全",
+      "topics": [
+        {{
+          "title": "主题标题",
+          "items": ["条目1", "条目2"]
+        }}
+      ]
+    }},
+    {{
+      "category": "操作",
+      "topics": [{{"title":"主题标题","items":["条目1"]}}]
+    }},
+    {{
+      "category": "规范",
+      "topics": [{{"title":"主题标题","items":["条目1"]}}]
+    }}
+  ]
+}}
+
+材料（安全）：
+{safety}
+
+材料（操作）：
+{operation}
+
+材料（规范）：
+{standard}
+"""
+    try:
+        manager = get_llm_manager()
+        resp, _provider = await manager.generate_with_fallback(prompt)
+        parsed = _extract_json_dict(resp.content if resp else "")
+        sections = parsed.get("sections", []) if isinstance(parsed, dict) else []
+        cleaned_sections = []
+        allowed = {"安全", "操作", "规范"}
+        for sec in (sections or [])[:3]:
+            cat = str((sec or {}).get("category") or "").strip()
+            if cat not in allowed:
+                continue
+            topics = []
+            for t in (sec or {}).get("topics", []) or []:
+                title = str((t or {}).get("title") or "").strip()
+                items = []
+                for it in (t or {}).get("items", []) or []:
+                    v = str(it or "").strip()
+                    if not v:
+                        continue
+                    if any(k in v for k in ["来源", "文件名", "页", "doc_id", "chunk"]):
+                        continue
+                    items.append(v[:120])
+                if items:
+                    topics.append({"title": title[:30], "items": items[:10]})
+                if len(topics) >= 12:
+                    break
+            cleaned_sections.append({"category": cat, "topics": topics[:12]})
+
+        if cleaned_sections:
+            res = {"pipeline": pipeline, "sections": cleaned_sections}
+            _MANUAL_CACHE[pipeline] = (res, time.time())
+            return res
+    except Exception:
+        pass
+
+    res = {"pipeline": pipeline, "sections": _group_fallback_manual(base)}
+    _MANUAL_CACHE[pipeline] = (res, time.time())
+    return res
 
 
 @router.get("/graph")
@@ -2067,6 +2513,7 @@ async def knowledge_graph(pipeline: str = "流水线1"):
                 mc = str(machine_category or "").strip()
                 if not mc:
                     mc = _infer_machine_category_from_machine(dev)
+                mc = _canonicalize_machine_category(mc, dev)
                 pc = str(problem_category or "").strip()
                 if not pc:
                     pc = _infer_problem_category_from_problem(fault)

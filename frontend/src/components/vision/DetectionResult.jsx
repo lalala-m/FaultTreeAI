@@ -28,6 +28,8 @@ export default function DetectionResult({
   loading = false, 
   onGenerateFaultTree,
   hideImage = false,
+  style,
+  className,
 }) {
   const [showConfidence, setShowConfidence] = useState(0.3);
   const [selectedTab, setSelectedTab] = useState('annotated'); // annotated | original | list
@@ -209,7 +211,7 @@ export default function DetectionResult({
   // 无结果时显示空状态
   if (!activeResult) {
     return (
-      <Card className="detection-result">
+      <Card className={`detection-result${className ? ` ${className}` : ''}`} style={style}>
         <Empty 
           image={Empty.PRESENTED_IMAGE_SIMPLE}
           description="暂无识别结果"
@@ -224,7 +226,8 @@ export default function DetectionResult({
 
   return (
     <Card 
-      className="detection-result"
+      className={`detection-result${className ? ` ${className}` : ''}`}
+      style={style}
       loading={loading}
       title={
         <Space>

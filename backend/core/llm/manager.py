@@ -19,7 +19,7 @@ from backend.core.llm.base_provider import (
     EmbedResult,
     BenchmarkResult,
 )
-from backend.core.llm.providers import OllamaProvider, MiniMaxProvider
+from backend.core.llm.providers import OllamaProvider, MiniMaxProvider, OpenAIProvider
 
 
 # ─────────────────────────────────────────────
@@ -29,6 +29,7 @@ from backend.core.llm.providers import OllamaProvider, MiniMaxProvider
 _PROVIDER_REGISTRY: dict[str, type[BaseLLMProvider]] = {
     "ollama": OllamaProvider,
     "minimax": MiniMaxProvider,
+    "openai": OpenAIProvider,
 }
 
 

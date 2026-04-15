@@ -72,9 +72,9 @@ async def _generate_with_chain(req: GenerateRequest) -> tuple[FaultTree, list, s
     from backend.core.langchain.chains.fault_tree_chain import generate_fault_tree_with_chain, get_fault_tree_chain
     from backend.core.llm.manager import ProviderFactory
 
-    # 获取 ChatModel
-    chat_model = ProviderFactory.get_chat_model()
-    chain = get_fault_tree_chain()
+    provider = (req.provider or settings.LLM_PROVIDER or "minimax").lower()
+    ProviderFactory.get_chat_model(provider)
+    chain = get_fault_tree_chain(provider=provider, recreate=True)
 
     # 执行生成
     fault_tree, validation_issues = await generate_fault_tree_with_chain(
@@ -88,7 +88,6 @@ async def _generate_with_chain(req: GenerateRequest) -> tuple[FaultTree, list, s
     )
 
     # 获取 provider 名称
-    provider = getattr(chat_model, '_llm_type', str(settings.LLM_PROVIDER))
     return fault_tree, validation_issues, provider
 
 

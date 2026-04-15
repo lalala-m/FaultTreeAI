@@ -26,11 +26,26 @@ def _infer_machine_category(machine: str) -> str:
     v = re.sub(r"\s+", "", str(machine or "")).lower()
     if not v:
         return ""
+    return _canonicalize_machine_category("", v) or "通用设备"
+
+
+def _canonicalize_machine_category(category: str | None, machine: str | None = None) -> str:
+    raw = re.sub(r"\s+", "", str(category or "")).lower()
+    machine_text = re.sub(r"\s+", "", str(machine or "")).lower()
+    text = raw or machine_text
+    if not text:
+        return ""
+
+    motor_keys = [
+        "伺服电机", "同步电机", "异步电机", "步进电机", "直流电机", "交流电机",
+        "减速电机", "力矩电机", "主轴电机", "马达", "motor", "servo", "同步机", "异步机"
+    ]
+    if any(k in text for k in motor_keys) or ("电机" in text):
+        return "电机"
+
     mapping = [
-        ("伺服", ["伺服", "servo"]),
         ("变频器", ["变频", "inverter"]),
         ("PLC", ["plc"]),
-        ("电机", ["电机", "motor"]),
         ("传送带", ["传送带", "输送带"]),
         ("传感器", ["传感器", "sensor"]),
         ("轴承", ["轴承", "bearing"]),
@@ -38,7 +53,7 @@ def _infer_machine_category(machine: str) -> str:
         ("气动", ["气动", "pneumatic"]),
     ]
     for cat, keys in mapping:
-        if any(k in v for k in keys):
+        if any(k in text for k in keys):
             return cat
     return "通用设备"
 
@@ -195,7 +210,7 @@ async def _extract_items_with_llm(filename: str, content: str) -> tuple[list[dic
         if not isinstance(it, dict):
             continue
         machine = _clean_phrase(it.get("machine") or device_hint, 60) or _clean_phrase(device_hint, 60) or "设备"
-        machine_category = _clean_phrase(it.get("machine_category") or _infer_machine_category(machine), 30) or _infer_machine_category(machine)
+        machine_category = _canonicalize_machine_category(_clean_phrase(it.get("machine_category"), 30), machine) or _infer_machine_category(machine)
         problem = _clean_phrase(it.get("problem"), 40)
         if not _is_useful_problem(problem):
             continue
@@ -352,7 +367,7 @@ async def extract_knowledge_items_with_ai(pipeline: str = "流水线1", doc_ids:
                 with conn.cursor() as cur:
                     for it in items:
                         machine = str(it.get("machine") or device).strip() or device
-                        machine_category = str(it.get("machine_category") or _infer_machine_category(machine)).strip()
+                        machine_category = _canonicalize_machine_category(it.get("machine_category"), machine) or _infer_machine_category(machine)
                         problem_category = str(it.get("problem_category") or _infer_problem_category(it.get("problem"))).strip()
                         problem = str(it.get("problem") or "").strip()
                         root_cause = str(it.get("root_cause") or "").strip() or "未明确"
