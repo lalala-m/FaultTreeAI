@@ -136,6 +136,26 @@ def _ensure_structured_knowledge_tables(conn) -> None:
         conn.commit()
 
 
+def _ensure_pipeline_registry_table(conn) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS pipeline_registry (
+                pipeline VARCHAR(64) PRIMARY KEY,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        cur.execute(
+            """
+            INSERT INTO pipeline_registry(pipeline)
+            VALUES ('流水线1')
+            ON CONFLICT (pipeline) DO NOTHING
+            """
+        )
+        conn.commit()
+
+
 class KnowledgeItemCreateRequest(BaseModel):
     pipeline: str = "流水线1"
     machine_category: str = ""
@@ -187,6 +207,10 @@ class KnowledgeItemCleanupRequest(BaseModel):
     dry_run: bool = False
     delete_unknown_cause: bool = True
     delete_noise: bool = True
+
+
+class PipelineCreateRequest(BaseModel):
+    pipeline: str
 
 
 def _extract_terms_from_text(text: str, top_k: int = 5) -> list[str]:
@@ -1304,6 +1328,7 @@ async def list_pipelines():
         database=settings.DB_NAME
     ) as conn:
         _ensure_structured_knowledge_tables(conn)
+        _ensure_pipeline_registry_table(conn)
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -1315,6 +1340,9 @@ async def list_pipelines():
                     SELECT pipeline
                     FROM knowledge_items
                     WHERE status <> 'deleted'
+                    UNION ALL
+                    SELECT pipeline
+                    FROM pipeline_registry
                 ) t
                 WHERE pipeline IS NOT NULL AND pipeline <> ''
                 ORDER BY pipeline
@@ -1325,6 +1353,29 @@ async def list_pipelines():
     if "流水线1" not in vals:
         vals.insert(0, "流水线1")
     return {"pipelines": vals}
+
+
+@router.post("/pipelines")
+async def create_pipeline(payload: PipelineCreateRequest):
+    pipeline = _normalize_pipeline(payload.pipeline)
+    with psycopg2.connect(
+        host=settings.DB_HOST, port=settings.DB_PORT,
+        user=settings.DB_USER, password=settings.DB_PASSWORD,
+        database=settings.DB_NAME
+    ) as conn:
+        _ensure_structured_knowledge_tables(conn)
+        _ensure_pipeline_registry_table(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO pipeline_registry(pipeline)
+                VALUES (%s)
+                ON CONFLICT (pipeline) DO NOTHING
+                """,
+                (pipeline,),
+            )
+            conn.commit()
+    return {"pipeline": pipeline, "message": "流水线已创建"}
 
 
 @router.get("/stats")
@@ -1975,7 +2026,8 @@ async def knowledge_graph(pipeline: str = "流水线1"):
                         COALESCE(NULLIF(TRIM(machine), ''), '设备') AS machine,
                         TRIM(COALESCE(problem_category, '')) AS problem_category,
                         TRIM(COALESCE(problem, '')) AS problem,
-                        TRIM(COALESCE(root_cause, '')) AS root_cause
+                        TRIM(COALESCE(root_cause, '')) AS root_cause,
+                        TRIM(COALESCE(solution, '')) AS solution
                     FROM knowledge_items
                     WHERE status = 'active'
                       AND pipeline = %s
@@ -1997,7 +2049,7 @@ async def knowledge_graph(pipeline: str = "流水线1"):
             cat_map: dict[str, dict] = {}
             device_map: dict[str, dict] = {}
 
-            for machine_category, machine, problem_category, problem, root_cause in item_rows:
+            for machine_category, machine, problem_category, problem, root_cause, solution in item_rows:
                 dev = str(machine or "").strip() or "设备"
                 dev_norm = _norm_text(dev)
                 if not dev_norm or dev_norm in machine_noise_norm:
@@ -2006,6 +2058,9 @@ async def knowledge_graph(pipeline: str = "流水线1"):
                 if not fault or _is_noise_phrase(fault):
                     continue
                 root = str(root_cause or "").strip()
+                sol = str(solution or "").strip()
+                if not root or _norm_text(root) in unknown_root_norm:
+                    root = sol
                 if not root or _norm_text(root) in unknown_root_norm:
                     continue
 

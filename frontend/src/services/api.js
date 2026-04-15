@@ -114,6 +114,12 @@ export const listPipelines = async () => {
   })
 }
 
+export const createPipeline = async (pipeline) => {
+  const { data } = await api.post('/knowledge/pipelines', { pipeline })
+  invalidateCache(['pipelines'])
+  return data
+}
+
 export const rebuildKnowledgeGraph = async (pipeline = '流水线1') => {
   const { data } = await api.post('/knowledge/graph/rebuild', null, { params: { pipeline } })
   invalidateCache(['documents'])
@@ -292,6 +298,7 @@ api.searchKnowledge = searchKnowledge
 api.getKnowledgeStats = getKnowledgeStats
 api.getKnowledgeGraph = getKnowledgeGraph
 api.listPipelines = listPipelines
+api.createPipeline = createPipeline
 api.rebuildKnowledgeGraph = rebuildKnowledgeGraph
 api.listKnowledgeItems = listKnowledgeItems
 api.createKnowledgeItem = createKnowledgeItem

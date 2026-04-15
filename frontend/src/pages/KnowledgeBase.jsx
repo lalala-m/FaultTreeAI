@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import {
-  Card, Upload, Table, Button, Space, Tag, Typography, message, Progress, Empty, Popconfirm, Steps, Alert, Select, AutoComplete, Input, Modal, Form, Slider
+  Card, Upload, Table, Button, Space, Tag, Typography, message, Progress, Empty, Popconfirm, Steps, Alert, Select, Input, Modal, Form, Slider
 } from 'antd'
 import { 
   UploadOutlined, 
@@ -27,6 +27,8 @@ export default function KnowledgeBase() {
   const [uploadStep, setUploadStep] = useState(0)
   const [uploadPipeline, setUploadPipeline] = useState('流水线1')
   const [pipelines, setPipelines] = useState([])
+  const [newPipelineName, setNewPipelineName] = useState('')
+  const [creatingPipeline, setCreatingPipeline] = useState(false)
 
   const [items, setItems] = useState([])
   const [itemsLoading, setItemsLoading] = useState(false)
@@ -132,15 +134,25 @@ export default function KnowledgeBase() {
     }
   }
 
-  const handlePipelineChange = async (docId, pipeline) => {
-    try {
-      await api.updateDocumentPipeline(docId, pipeline)
-      message.success('流水线分组已更新')
-      await loadDocs()
-      await loadPipelines()
-    } catch (err) {
-      message.error('更新失败: ' + (err.response?.data?.detail || err.message))
+  const handleCreatePipeline = async () => {
+    const p = String(newPipelineName || '').trim()
+    if (!p) {
+      message.warning('请输入流水线名称')
+      return
     }
+    try {
+      setCreatingPipeline(true)
+      const ret = await api.createPipeline(p)
+      await loadPipelines()
+      const created = ret?.pipeline || p
+      setUploadPipeline(created)
+      setItemsPipeline(created)
+      setNewPipelineName('')
+      message.success(`已创建流水线：${created}`)
+    } catch (e) {
+      message.error(e.response?.data?.detail || e.message || '创建流水线失败')
+    }
+    setCreatingPipeline(false)
   }
 
   // 获取文件图标 - 使用 FileTextOutlined 代替不存在的 FileTxtOutlined
@@ -182,14 +194,8 @@ export default function KnowledgeBase() {
       title: '流水线',
       dataIndex: 'pipeline',
       key: 'pipeline',
-      render: (p, row) => (
-        <Select
-          size="small"
-          style={{ width: 120 }}
-          value={p || '流水线1'}
-          onChange={(v) => handlePipelineChange(row.doc_id, v)}
-          options={pipelines.map(v => ({ value: v, label: v }))}
-        />
+      render: (p) => (
+        <Tag color="blue">{p || '流水线1'}</Tag>
       ),
     },
     {
@@ -378,14 +384,31 @@ export default function KnowledgeBase() {
 
         <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 12 }}>
           <Text strong>上传到流水线：</Text>
-          <AutoComplete
+          <Select
             style={{ width: 160 }}
             value={uploadPipeline}
             onChange={setUploadPipeline}
-            options={pipelines.map(v => ({ value: v }))}
-            filterOption={(inputValue, option) => (option?.value || '').toLowerCase().includes(inputValue.toLowerCase())}
+            options={pipelines.map(v => ({ value: v, label: v }))}
             disabled={uploading}
+            showSearch
+            optionFilterProp="label"
           />
+          <Input
+            style={{ width: 180 }}
+            placeholder="新流水线名称"
+            value={newPipelineName}
+            onChange={(e) => setNewPipelineName(e.target.value)}
+            disabled={uploading || creatingPipeline}
+            onPressEnter={handleCreatePipeline}
+          />
+          <Button
+            icon={<PlusOutlined />}
+            onClick={handleCreatePipeline}
+            loading={creatingPipeline}
+            disabled={uploading}
+          >
+            新建流水线
+          </Button>
           <Text type="secondary" style={{ fontSize: 12 }}>已上传旧文档自动归为流水线1</Text>
         </div>
 
