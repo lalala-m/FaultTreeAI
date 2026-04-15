@@ -612,8 +612,8 @@ export default function VisionDetect({ onNavigate }) {
             <Button icon={<SyncOutlined />} onClick={handleReset} disabled={loading}>重置</Button>
           </div>
 
-          <Row gutter={24}>
-            <Col span={activeTab === 'camera' ? 14 : 10}>
+          <Row gutter={24} align="stretch">
+            <Col span={activeTab === 'camera' ? 14 : 10} style={{ display: 'flex', flexDirection: 'column' }}>
               <div ref={tabsWrapRef}>
                 <Tabs activeKey={activeTab} onChange={setActiveTab} size="small" items={tabItems} />
               </div>
@@ -661,7 +661,7 @@ export default function VisionDetect({ onNavigate }) {
               </Card>
             </Col>
 
-            <Col span={activeTab === 'camera' ? 10 : 14} style={{ paddingTop: tabsOffset }}>
+            <Col span={activeTab === 'camera' ? 10 : 14} style={{ paddingTop: tabsOffset, display: 'flex', flexDirection: 'column' }}>
               {activeTab === 'camera' && (
                 <Card size="small" style={{ marginBottom: 12 }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
@@ -695,7 +695,15 @@ export default function VisionDetect({ onNavigate }) {
                   )}
                 </Card>
               )}
-              <DetectionResult result={visibleResult} loading={loading} onGenerateFaultTree={handleGenerateFaultTree} hideImage={activeTab === 'camera'} />
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+                <DetectionResult
+                  result={visibleResult}
+                  loading={loading}
+                  onGenerateFaultTree={handleGenerateFaultTree}
+                  hideImage={activeTab === 'camera'}
+                  style={activeTab === 'camera' ? undefined : { flex: 1 }}
+                />
+              </div>
             </Col>
           </Row>
         </div>

@@ -453,7 +453,8 @@ export default function Dashboard({ onNavigate }) {
             disabled: !p.available,
             label: (
               <Space>
-                <span style={{ textTransform: 'capitalize' }}>{p.name}</span>
+                <span>{p.display_name || (String(p.name || '').slice(0, 1).toUpperCase() + String(p.name || '').slice(1))}</span>
+                {p.model ? <Tag color="geekblue">{String(p.model)}</Tag> : null}
                 <Badge status={p.available ? 'success' : 'error'} text={p.available ? '可用' : (p.reason || '不可用')} />
               </Space>
             )
