@@ -779,8 +779,9 @@ export default function KnowledgeGraph() {
     const problem = findFlatProblem(machine, pKey)
     const problemName = problem?.name || '问题'
     const problemId = `p-${mKey}-${pKey}`
+    addNode(machineId, machineName, 'device', base.x - 340, base.y, false, { level: 'm', key: mKey, disableLayoutTween: true })
     addNode(problemId, problemName, 'fault', base.x, base.y, false, { level: 'p', mKey, key: pKey })
-    const focusCenter = { x: base.x + FAULT_NODE_W / 2, y: base.y + CLOUD_CENTER_Y_OFFSET }
+    addEdge(machineId, problemId, '#ffd666')
     const roots = (problem?.rootCauses || []).slice(0, 12)
     const ring = ringRadius(roots.length || 1, SOLUTION_NODE_W, 34, 260)
     const angles = faultAngles(Math.max(roots.length, 1))
@@ -788,20 +789,20 @@ export default function KnowledgeGraph() {
       let x
       let y
       if (visualPreset === 'v1') {
-        x = focusCenter.x + 250 - SOLUTION_NODE_W / 2
-        y = focusCenter.y - ((roots.length - 1) * 84) / 2 + i * 84 - CLOUD_CENTER_Y_OFFSET
+        x = baseCenter.x + 250 - SOLUTION_NODE_W / 2
+        y = baseCenter.y - ((roots.length - 1) * 84) / 2 + i * 84 - CLOUD_CENTER_Y_OFFSET
       } else if (visualPreset === 'v3') {
         const a = i * 2.3999632297
         const rr = 170 + i * 28
-        x = focusCenter.x + Math.cos(a) * rr - SOLUTION_NODE_W / 2
-        y = focusCenter.y + Math.sin(a) * rr - CLOUD_CENTER_Y_OFFSET
+        x = baseCenter.x + Math.cos(a) * rr - SOLUTION_NODE_W / 2
+        y = baseCenter.y + Math.sin(a) * rr - CLOUD_CENTER_Y_OFFSET
       } else if (visualPreset === 'v4') {
-        x = focusCenter.x + 360 - SOLUTION_NODE_W / 2
-        y = focusCenter.y - ((roots.length - 1) * 84) / 2 + i * 84 - CLOUD_CENTER_Y_OFFSET
+        x = baseCenter.x + 360 - SOLUTION_NODE_W / 2
+        y = baseCenter.y - ((roots.length - 1) * 84) / 2 + i * 84 - CLOUD_CENTER_Y_OFFSET
       } else {
         const a = angles[i] ?? ((Math.PI * 2 * i) / Math.max(roots.length, 1))
-        x = focusCenter.x + Math.cos(a) * ring - SOLUTION_NODE_W / 2
-        y = focusCenter.y + Math.sin(a) * ring - CLOUD_CENTER_Y_OFFSET
+        x = baseCenter.x + Math.cos(a) * ring - SOLUTION_NODE_W / 2
+        y = baseCenter.y + Math.sin(a) * ring - CLOUD_CENTER_Y_OFFSET
       }
       const id = `rc-${mKey}-${pKey}-${keyOf(r)}`
       addNode(id, r, 'solution', x, y, !structuredShowChildren, { level: 'rc', mKey, pKey, key: keyOf(r) })
@@ -903,7 +904,17 @@ export default function KnowledgeGraph() {
           draggable: false
         })
         if (transitionPhase === 'faultExpanded') {
+          const devX = ax + (side === 'right' ? -360 : 360)
           const solX = ax + (side === 'right' ? 360 : -360)
+          const devId = `dev-${dev.name}`
+          ns.push({
+            id: devId,
+            type: 'cloud',
+            data: { label: dev.name, kind: 'device', preset: visualPreset, hidden: false },
+            position: { x: devX, y: ay },
+            draggable: false
+          })
+          es.push({ id: `e-${devId}-${faultId}`, source: devId, target: faultId, animated: true, style: { stroke: '#faad14' } })
           const sols = fault.solutions || []
           const startY = ay - ((sols.length - 1) * 120) / 2
           sols.forEach((s, i) => {
