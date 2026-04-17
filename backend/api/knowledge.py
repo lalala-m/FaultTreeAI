@@ -12,11 +12,12 @@ import tempfile
 from datetime import datetime
 from collections import Counter
 from pathlib import Path
-from fastapi import APIRouter, UploadFile, File, HTTPException, Form
+from fastapi import APIRouter, UploadFile, File, HTTPException, Form, Depends
 from fastapi.responses import FileResponse
 import aiofiles
 from pydantic import BaseModel
 from docx import Document
+from backend.api.auth import require_expert, get_current_user
 
 from backend.core.parser.document import parse_document
 from backend.core.rag.pgvector_retriever import add_chunks_to_db, retrieve
@@ -1130,6 +1131,7 @@ async def upload_document(
     file: UploadFile = File(...),
     pipeline: str = Form("流水线1"),
     auto_extract: bool = Form(True),
+    user: dict = Depends(require_expert),
 ):
     """上传设备文档，自动解析分块并存入 PostgreSQL 向量库"""
     # 文件大小校验
@@ -1328,7 +1330,7 @@ async def upload_document(
 
 
 @router.get("/list")
-async def list_documents():
+async def list_documents(user: dict = Depends(get_current_user)):
     """列出已上传的文档"""
     import psycopg2.extras
     with psycopg2.connect(
@@ -1359,7 +1361,7 @@ async def list_documents():
 
 
 @router.delete("/{doc_id}")
-async def delete_document(doc_id: str):
+async def delete_document(doc_id: str, user: dict = Depends(require_expert)):
     """软删除文档（将 status 改为 deleted，向量数据通过外键级联删除）"""
     import psycopg2.extras
     with psycopg2.connect(
@@ -1380,7 +1382,7 @@ async def delete_document(doc_id: str):
 
 
 @router.put("/{doc_id}/pipeline")
-async def update_document_pipeline(doc_id: str, pipeline: str):
+async def update_document_pipeline(doc_id: str, pipeline: str, user: dict = Depends(require_expert)):
     pipeline = _normalize_pipeline(pipeline)
 
     with psycopg2.connect(
@@ -1440,7 +1442,7 @@ async def list_pipelines():
 
 
 @router.post("/pipelines")
-async def create_pipeline(payload: PipelineCreateRequest):
+async def create_pipeline(payload: PipelineCreateRequest, user: dict = Depends(require_expert)):
     pipeline = _normalize_pipeline(payload.pipeline)
     with psycopg2.connect(
         host=settings.DB_HOST, port=settings.DB_PORT,
@@ -1580,7 +1582,7 @@ async def create_knowledge_item(payload: KnowledgeItemCreateRequest, enrich: boo
 
 
 @router.get("/items")
-async def list_knowledge_items(pipeline: str | None = None, status: str = "active", limit: int = 100, offset: int = 0):
+async def list_knowledge_items(pipeline: str | None = None, status: str = "active", limit: int = 100, offset: int = 0, user: dict = Depends(require_expert)):
     limit = max(1, min(int(limit or 100), 500))
     offset = max(0, int(offset or 0))
     pipeline_value = _normalize_pipeline(pipeline) if pipeline else None
@@ -1669,7 +1671,7 @@ async def list_knowledge_items(pipeline: str | None = None, status: str = "activ
 
 
 @router.post("/items/reextract")
-async def reextract_knowledge_items(payload: KnowledgeItemReextractRequest):
+async def reextract_knowledge_items(payload: KnowledgeItemReextractRequest, user: dict = Depends(require_expert)):
     pipeline = _normalize_pipeline(payload.pipeline)
     mode = (payload.mode or "replace").strip().lower()
     if mode not in {"replace", "append"}:
@@ -1735,7 +1737,7 @@ async def reextract_knowledge_items(payload: KnowledgeItemReextractRequest):
 
 
 @router.post("/items/cleanup")
-async def cleanup_knowledge_items(payload: KnowledgeItemCleanupRequest):
+async def cleanup_knowledge_items(payload: KnowledgeItemCleanupRequest, user: dict = Depends(require_expert)):
     pipeline = _normalize_pipeline(payload.pipeline)
     dry_run = bool(payload.dry_run)
     delete_unknown_cause = bool(payload.delete_unknown_cause)
@@ -1849,7 +1851,7 @@ async def cleanup_knowledge_items(payload: KnowledgeItemCleanupRequest):
 
 
 @router.put("/items/{item_id}")
-async def update_knowledge_item(item_id: str, payload: KnowledgeItemUpdateRequest):
+async def update_knowledge_item(item_id: str, payload: KnowledgeItemUpdateRequest, user: dict = Depends(require_expert)):
     try:
         item_uuid = uuid.UUID(str(item_id))
     except Exception:
@@ -1892,7 +1894,7 @@ async def update_knowledge_item(item_id: str, payload: KnowledgeItemUpdateReques
 
 
 @router.delete("/items/{item_id}")
-async def delete_knowledge_item(item_id: str):
+async def delete_knowledge_item(item_id: str, user: dict = Depends(require_expert)):
     try:
         item_uuid = uuid.UUID(str(item_id))
     except Exception:
@@ -2043,7 +2045,7 @@ async def feedback_knowledge_item_weight(payload: KnowledgeItemWeightFeedbackReq
 
 
 @router.post("/items/expert-weight")
-async def set_knowledge_item_expert_weight(payload: KnowledgeItemExpertWeightRequest):
+async def set_knowledge_item_expert_weight(payload: KnowledgeItemExpertWeightRequest, user: dict = Depends(require_expert)):
     try:
         item_uuid = uuid.UUID(str(payload.item_id))
     except Exception:

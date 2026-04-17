@@ -68,10 +68,13 @@ class Settings(BaseSettings):
     # ??? ???? ???
     LLM_TEMPERATURE: float = 0.1
     LLM_MAX_TOKENS: int = 4096
-    RAG_TOP_K: int = 5
+    RAG_TOP_K: int = 3
     RAG_SIMILARITY_THRESHOLD: float = 0.7
     RAG_USE_HYBRID: bool = False           # ???????�?    RAG_VECTOR_WEIGHT: float = 0.5          # ?????�?(0-1)
     MAX_RETRY: int = 3
+
+    JWT_SECRET: str = ""
+    JWT_EXPIRE_MINUTES: int = 60 * 24 * 7
 
     # ??? ???? ???
     MANUALS_PATH: str = "data/manuals"

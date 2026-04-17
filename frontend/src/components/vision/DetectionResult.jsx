@@ -34,6 +34,7 @@ export default function DetectionResult({
   const [showConfidence, setShowConfidence] = useState(0.3);
   const [selectedTab, setSelectedTab] = useState('annotated'); // annotated | original | list
   const [selectedFrameIndex, setSelectedFrameIndex] = useState(0)
+  const [canvasDim, setCanvasDim] = useState({ w: 0, h: 0 })
   const canvasRef = useRef(null)
   const imgRef = useRef(null)
 
@@ -56,6 +57,7 @@ export default function DetectionResult({
     img.onload = () => {
       canvas.width = img.naturalWidth || img.width || 0
       canvas.height = img.naturalHeight || img.height || 0
+      setCanvasDim({ w: canvas.width || 0, h: canvas.height || 0 })
       const ctx = canvas.getContext('2d')
       if (!ctx || !canvas.width || !canvas.height) return
       ctx.clearRect(0, 0, canvas.width, canvas.height)
@@ -324,7 +326,18 @@ export default function DetectionResult({
                       className="result-image"
                     />
                   ) : activeResult?.original_image_url ? (
-                    <canvas ref={canvasRef} className="result-image" />
+                    <canvas
+                      ref={canvasRef}
+                      className="result-image"
+                      style={{
+                        width: '100%',
+                        height: 'auto',
+                        maxHeight: '62vh',
+                        display: 'block',
+                        borderRadius: 6,
+                        aspectRatio: canvasDim.w > 0 && canvasDim.h > 0 ? `${canvasDim.w} / ${canvasDim.h}` : undefined,
+                      }}
+                    />
                   ) : (
                     <Empty description="暂无标注图片" />
                   )

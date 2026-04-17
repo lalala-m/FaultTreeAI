@@ -5,6 +5,42 @@ const api = axios.create({
   timeout: 120000,
 })
 
+const _TOKEN_KEY = 'faulttreeai_token_v1'
+
+export const getAuthToken = () => {
+  try { return localStorage.getItem(_TOKEN_KEY) || '' } catch { return '' }
+}
+
+export const setAuthToken = (token) => {
+  const t = String(token || '').trim()
+  try {
+    if (t) localStorage.setItem(_TOKEN_KEY, t)
+    else localStorage.removeItem(_TOKEN_KEY)
+  } catch {
+  }
+  if (t) api.defaults.headers.common.Authorization = `Bearer ${t}`
+  else delete api.defaults.headers.common.Authorization
+}
+
+export const clearAuthToken = () => setAuthToken('')
+
+setAuthToken(getAuthToken())
+
+api.interceptors.response.use(
+  (r) => r,
+  (err) => {
+    const status = err?.response?.status
+    if (status === 401) {
+      clearAuthToken()
+      try { window.dispatchEvent(new CustomEvent('auth-expired')) } catch {
+      }
+    }
+    return Promise.reject(err)
+  }
+)
+
+api.clearAuthToken = clearAuthToken
+
 const _cachePrefix = 'faulttreeai_api_cache_v1:'
 const _memCache = new Map()
 
@@ -52,6 +88,37 @@ const _cached = async (key, ttlMs, fetcher) => {
   const value = await fetcher()
   _setCached(key, value)
   return value
+}
+
+// ── Auth ──────────────────────────────────────────
+
+export const register = async (payload) => {
+  const { data } = await api.post('/auth/register', payload)
+  if (data?.token) setAuthToken(data.token)
+  return data
+}
+
+export const login = async (payload) => {
+  const { data } = await api.post('/auth/login', payload)
+  if (data?.token) setAuthToken(data.token)
+  return data
+}
+
+export const getMe = async () => {
+  const { data } = await api.get('/auth/me')
+  return data
+}
+
+export const updateMe = async (payload) => {
+  const { data } = await api.put('/auth/me', payload)
+  return data
+}
+
+export const uploadMyAvatar = async (file) => {
+  const form = new FormData()
+  form.append('file', file)
+  const { data } = await api.post('/auth/me/avatar', form, { headers: { 'Content-Type': 'multipart/form-data' } })
+  return data
 }
 
 // ── 知识库 ──────────────────────────────────────────
@@ -285,15 +352,19 @@ export const getTemplateBasicEvents = async (templateId) => {
   return data
 }
 
-export const prefetchBootstrap = async () => {
+export const prefetchBootstrap = async (opts = {}) => {
+  const role = String(opts?.role || '').trim()
+  const isExpert = role === 'expert'
   try {
-    await Promise.all([
-      getKnowledgeStats(),
+    const tasks = [
       listFaultTrees(),
-      listDocuments(),
       listTemplates(),
       getProviders(),
-    ])
+    ]
+    if (isExpert) {
+      tasks.push(getKnowledgeStats(), listDocuments())
+    }
+    await Promise.all(tasks)
   } catch {
   }
 }
@@ -336,5 +407,10 @@ api.getTemplateTopEvents = getTemplateTopEvents
 api.getTemplateBasicEvents = getTemplateBasicEvents
 api.prefetchBootstrap = prefetchBootstrap
 api.invalidateCache = invalidateCache
+api.register = register
+api.login = login
+api.getMe = getMe
+api.updateMe = updateMe
+api.uploadMyAvatar = uploadMyAvatar
 
 export default api

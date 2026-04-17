@@ -26,7 +26,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 
-from backend.api import knowledge, generate, validate, export, edit, template, feedback
+from backend.api import knowledge, generate, validate, export, edit, template, feedback, auth
 from backend.api import llm
 from backend.api import vision  # 视觉识别 API
 from backend.core.database.connection import init_db, close_db
@@ -66,6 +66,7 @@ app.add_middleware(GZipMiddleware, minimum_size=500)
 
 # 注册路由
 app.include_router(knowledge.router, prefix="/api/knowledge", tags=["knowledge"])
+app.include_router(auth.router, tags=["auth"])
 app.include_router(generate.router, prefix="/api/generate", tags=["generate"])
 app.include_router(validate.router, prefix="/api/validate", tags=["validate"])
 app.include_router(export.router, prefix="/api/export", tags=["export"])
