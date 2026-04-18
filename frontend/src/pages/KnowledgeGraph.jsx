@@ -690,6 +690,8 @@ export default function KnowledgeGraph() {
           key: structuredFocus.kind === 'fault' ? structuredFocus.pKey : structuredFocus.mKey,
           pipeline: structuredFocus.kind === 'pipeline' ? structuredFocus.pipeline : undefined,
           disableLayoutTween: true,
+          raiseAbove: true,
+          emphasis: structuredFocus.kind === 'fault' ? 1.05 : 1.02,
         }
       )
       return { nodes: ns, edges: es }

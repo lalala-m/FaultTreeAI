@@ -27,8 +27,17 @@ const textUnits = (value) => Array.from(String(value || '')).reduce((sum, ch) =>
   if (/\s/.test(ch)) return sum + 0.35
   return sum + (/[\u4e00-\u9fff]/.test(ch) ? 1 : 0.58)
 }, 0)
+const estimateNodeWidth = (label, kind) => {
+  const minWidth = NODE_W[kind] || 220
+  const fontSize = 14
+  const paddingX = 28
+  const unitPx = fontSize * 0.92
+  const rawWidth = Math.ceil(textUnits(label) * unitPx + paddingX)
+  const maxWidth = kind === 'solution' ? 420 : 360
+  return Math.max(minWidth, Math.min(maxWidth, rawWidth))
+}
 const estimateNodeHeight = (label, kind) => {
-  const width = NODE_W[kind] || 220
+  const width = estimateNodeWidth(label, kind)
   const minHeight = NODE_H[kind] || 86
   const fontSize = 14
   const innerWidth = Math.max(80, width - 24)
@@ -58,7 +67,7 @@ export default function PixiCloudGraph({ nodes, edges, onNodeClick, onPaneClick,
     if (!visibleNodes.length) return { minX: 0, minY: 0, boxW: 1, boxH: 1 }
     const minX = Math.min(...visibleNodes.map((n) => n.position?.x ?? 0))
     const minY = Math.min(...visibleNodes.map((n) => n.position?.y ?? 0))
-    const maxX = Math.max(...visibleNodes.map((n) => (n.position?.x ?? 0) + (NODE_W[n.data?.kind || 'device'] || 220)))
+    const maxX = Math.max(...visibleNodes.map((n) => (n.position?.x ?? 0) + estimateNodeWidth(n.data?.label, n.data?.kind || 'device')))
     const maxY = Math.max(...visibleNodes.map((n) => (n.position?.y ?? 0) + estimateNodeHeight(n.data?.label, n.data?.kind || 'device')))
     return { minX, minY, boxW: Math.max(1, maxX - minX), boxH: Math.max(1, maxY - minY) }
   }, [visibleNodes])
@@ -81,8 +90,9 @@ export default function PixiCloudGraph({ nodes, edges, onNodeClick, onPaneClick,
   const scale = activeFrame.scale
   const centeredNode = centerNodeId ? byId.get(centerNodeId) : null
   const centeredNodeHeight = centeredNode ? estimateNodeHeight(centeredNode.data?.label, centeredNode.data?.kind || 'device') : null
+  const centeredNodeWidth = centeredNode ? estimateNodeWidth(centeredNode.data?.label, centeredNode.data?.kind || 'device') : null
   const offsetX = centeredNode
-    ? (viewW / 2) - (((centeredNode.position?.x ?? 0) + (NODE_W[centeredNode.data?.kind || 'device'] || 220) / 2) * scale)
+    ? (viewW / 2) - (((centeredNode.position?.x ?? 0) + (centeredNodeWidth || NODE_W[centeredNode.data?.kind || 'device'] || 220) / 2) * scale)
     : activeFrame.offsetX
   const offsetY = centeredNode
     ? (height / 2) - (((centeredNode.position?.y ?? 0) + (centeredNodeHeight || NODE_H[centeredNode.data?.kind || 'device'] || 86) / 2) * scale)
@@ -102,7 +112,7 @@ export default function PixiCloudGraph({ nodes, edges, onNodeClick, onPaneClick,
     const kind = n.data?.kind || 'device'
     const preset = n.data?.preset || 'v2'
     const emphasis = Number.isFinite(n.data?.emphasis) ? n.data.emphasis : 1
-    const baseWidth = (NODE_W[kind] || 220) * scale
+    const baseWidth = estimateNodeWidth(n.data?.label, kind) * scale
     const baseHeight = estimateNodeHeight(n.data?.label, kind) * scale
     const width = baseWidth * emphasis
     const nodeHeight = baseHeight * emphasis
@@ -300,6 +310,7 @@ export default function PixiCloudGraph({ nodes, edges, onNodeClick, onPaneClick,
                 top,
                 width,
                 height: nodeHeight,
+                zIndex: node?.data?.raiseAbove ? 5 : 1,
                 borderRadius: radius,
                 border: `1.4px solid ${hex(style.stroke)}`,
                 background: hex(style.fill),
