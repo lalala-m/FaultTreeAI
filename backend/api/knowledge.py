@@ -12,7 +12,7 @@ import tempfile
 from datetime import datetime
 from collections import Counter
 from pathlib import Path
-from fastapi import APIRouter, UploadFile, File, HTTPException, Form, Depends
+from fastapi import APIRouter, UploadFile, File, HTTPException, Form, Depends, BackgroundTasks
 from fastapi.responses import FileResponse
 import aiofiles
 from pydantic import BaseModel
@@ -213,12 +213,13 @@ async def _ai_enrich_categories(pipeline: str, machine: str, problem: str, root_
 要求：
 1) 严格只输出 JSON，不要任何解释文字
 2) machine_category 与 problem_category 必须尽量简短（1~6个字），若无法判断返回空字符串
+3) problem_category 必须优先从这些大类中选择：电气/机械/控制/液压/气动/传感器/环境/维护/使用/配件/性能/其他
 3) 不要输出来源/文件名/页码/doc_id 等信息
 
 输出 JSON 结构：
 {{
   "machine_category": "例如 电机/变频器/PLC/传感器/液压/气动/轴承/传送带/其他 或 空",
-  "problem_category": "例如 电气/机械/控制/液压/气动/传感器/其他 或 空"
+  "problem_category": "例如 电气/机械/控制/液压/气动/传感器/环境/维护/使用/配件/性能/其他 或 空"
 }}
 
 流水线：{pipeline}
@@ -234,6 +235,54 @@ async def _ai_enrich_categories(pipeline: str, machine: str, problem: str, root_
     out = {}
     out["machine_category"] = _clean_single_line_text(parsed.get("machine_category", ""), 120)
     out["problem_category"] = _clean_single_line_text(parsed.get("problem_category", ""), 120)
+    return out
+
+
+async def _ai_fill_item_blanks(pipeline: str, machine_category: str, machine: str, problem_category: str, problem: str, root_cause: str, solution: str, metadata: dict) -> dict:
+    meta = metadata if isinstance(metadata, dict) else {}
+    meta_text = json.dumps(meta, ensure_ascii=False)
+    if len(meta_text) > 1200:
+        meta_text = meta_text[:1200]
+    prompt = f"""
+你是工业知识库条目补全助手。请根据已知信息，补全缺失字段。
+
+要求：
+1) 严格只输出 JSON，不要任何解释文字
+2) 字段尽量简洁、可落地
+3) 不要输出来源/文件名/页码/doc_id/chunk_id 等信息
+4) 对于无法判断的字段，返回空字符串
+
+输出 JSON 结构：
+{{
+  "machine_category": "",
+  "machine": "",
+  "problem_category": "",
+  "problem": "",
+  "root_cause": "",
+  "solution": ""
+}}
+
+流水线：{pipeline}
+machine_category：{machine_category}
+machine：{machine}
+problem_category：{problem_category}
+problem：{problem}
+root_cause：{root_cause}
+solution：{solution}
+metadata：{meta_text}
+"""
+    manager = get_llm_manager()
+    resp, _provider = await manager.generate_with_fallback(prompt)
+    parsed = _extract_json_dict(resp.content if resp else "")
+    if not isinstance(parsed, dict):
+        return {}
+    out = {}
+    out["machine_category"] = _clean_single_line_text(parsed.get("machine_category", ""), 120)
+    out["machine"] = _clean_single_line_text(parsed.get("machine", ""), 160)
+    out["problem_category"] = _clean_single_line_text(parsed.get("problem_category", ""), 120)
+    out["problem"] = _clean_single_line_text(parsed.get("problem", ""), 240)
+    out["root_cause"] = _clean_single_line_text(parsed.get("root_cause", ""), 320)
+    out["solution"] = _clean_single_line_text(parsed.get("solution", ""), 800)
     return out
 
 
@@ -279,6 +328,12 @@ class KnowledgeItemCleanupRequest(BaseModel):
     delete_noise: bool = True
 
 
+class KnowledgeItemAutoFillRequest(BaseModel):
+    pipeline: str = "流水线1"
+    limit: int = 60
+    dry_run: bool = False
+
+
 class PipelineCreateRequest(BaseModel):
     pipeline: str
 
@@ -317,11 +372,25 @@ def _machine_dedupe_key(name: str) -> str:
     return _norm_text(raw) or raw.lower()
 
 
+def _normalize_machine_name(name: str) -> str:
+    raw = str(name or "").strip()
+    if not raw:
+        return ""
+    compact = re.sub(r"\s+", "", raw).upper()
+    if "1FT7" in compact:
+        return "SIMOTICS S-1FT7"
+    return raw
+
+
 def _pick_preferred_machine_name(names) -> str:
     arr = [str(x or "").strip() for x in (names or [])]
     arr = [x for x in arr if x]
     if not arr:
         return "设备"
+
+    normalized = [_normalize_machine_name(x) for x in arr]
+    if any(x == "SIMOTICS S-1FT7" for x in normalized):
+        return "SIMOTICS S-1FT7"
 
     def score(v: str) -> tuple[int, int, str]:
         lo = v.lower()
@@ -338,7 +407,7 @@ def _pick_preferred_machine_name(names) -> str:
             s -= 2
         return (s, len(v), v)
 
-    return min(arr, key=score)
+    return max(arr, key=score)
 
 
 def _is_noise_phrase(s: str) -> bool:
@@ -549,7 +618,8 @@ def _infer_machine_category_from_machine(machine: str) -> str:
 
 
 def _canonicalize_machine_category(category: str | None, machine: str | None = None) -> str:
-    raw = re.sub(r"\s+", "", str(category or "")).lower()
+    raw_input = str(category or "").strip()
+    raw = re.sub(r"\s+", "", raw_input).lower()
     machine_text = re.sub(r"\s+", "", str(machine or "")).lower()
     text = raw or machine_text
     if not text:
@@ -561,6 +631,14 @@ def _canonicalize_machine_category(category: str | None, machine: str | None = N
     ]
     if any(k in text for k in motor_keys) or ("电机" in text):
         return "电机"
+
+    if not raw:
+        for canonical, aliases in CANONICAL_DEVICE_ALIASES:
+            if canonical and canonical in machine_text:
+                return canonical
+            for a in (aliases or []):
+                if a and (re.sub(r"\s+", "", str(a)).lower() in machine_text):
+                    return canonical
 
     mapping = [
         ("变频器", ["变频", "inverter"]),
@@ -574,6 +652,8 @@ def _canonicalize_machine_category(category: str | None, machine: str | None = N
     for cat, keys in mapping:
         if any(k in text for k in keys):
             return cat
+    if raw:
+        return _clean_single_line_text(raw_input, 120)
     return ""
 
 
@@ -581,19 +661,43 @@ def _infer_problem_category_from_problem(problem: str) -> str:
     v = re.sub(r"\s+", "", str(problem or "")).lower()
     if not v:
         return ""
-    if any(k in v for k in ["短路", "断路", "漏电", "跳闸", "过流", "过压", "欠压", "电源", "接线"]):
+    return _canonicalize_problem_category("", problem, "")
+
+
+def _canonicalize_problem_category(category: str | None, problem: str | None = None, root_cause: str | None = None) -> str:
+    raw_input = str(category or "").strip()
+    raw = _norm_text(raw_input)
+    p = _norm_text(problem or "")
+    rc = _norm_text(root_cause or "")
+    text = raw or (p + rc)
+    if not text:
+        return ""
+
+    if any(k in text for k in ["短路", "断路", "漏电", "跳闸", "过流", "过压", "欠压", "电源", "接线", "电池", "充电", "电路", "电机", "烧毁", "保险丝"]):
         return "电气"
-    if any(k in v for k in ["振动", "异响", "磨损", "断裂", "卡滞", "堵塞", "松动", "轴承"]):
-        return "机械"
-    if any(k in v for k in ["报警", "通讯", "通信", "程序", "参数", "plc", "伺服", "驱动器", "编码器"]):
+    if any(k in text for k in ["报警", "通讯", "通信", "程序", "参数", "plc", "伺服", "驱动器", "编码器", "控制器", "协议"]):
         return "控制"
-    if any(k in v for k in ["液压", "油", "泄漏", "压力", "泵", "阀"]):
+    if any(k in text for k in ["液压", "油", "泄漏", "压力", "泵", "阀", "油温"]):
         return "液压"
-    if any(k in v for k in ["气动", "气压", "气缸", "电磁阀"]):
+    if any(k in text for k in ["气动", "气压", "气缸", "电磁阀", "漏气"]):
         return "气动"
-    if any(k in v for k in ["传感器", "信号", "误报警"]):
+    if any(k in text for k in ["传感器", "信号", "误报警", "漂移", "采样", "探头"]):
         return "传感器"
-    return ""
+    if any(k in text for k in ["温度", "湿度", "粉尘", "盐雾", "腐蚀", "环境", "高温", "低温", "振动环境"]):
+        return "环境"
+    if any(k in text for k in ["保养", "维护", "清洁", "清理", "更换", "润滑", "检修", "校准", "清洗"]):
+        return "维护"
+    if any(k in text for k in ["使用", "误操作", "操作", "未关机", "不规范", "违规", "安装错误", "接错", "未按"]):
+        return "使用"
+    if any(k in text for k in ["配件", "非原装", "不匹配", "型号不对", "规格不对", "兼容", "替代件"]):
+        return "配件"
+    if any(k in text for k in ["吸力", "效率", "性能", "功率下降", "无力", "速度慢"]):
+        return "性能"
+    if any(k in text for k in ["振动", "异响", "磨损", "断裂", "卡滞", "堵塞", "松动", "轴承", "摩擦", "碰撞", "变形", "裂纹", "刮擦"]):
+        return "机械"
+    if raw:
+        return _clean_single_line_text(raw_input, 120)
+    return "其他"
 
 
 def _pick_reliable_main_device(base: dict, content: str, title_hint: str = "") -> str:
@@ -1131,6 +1235,7 @@ async def upload_document(
     file: UploadFile = File(...),
     pipeline: str = Form("流水线1"),
     auto_extract: bool = Form(True),
+    background_tasks: BackgroundTasks = None,
     user: dict = Depends(require_expert),
 ):
     """上传设备文档，自动解析分块并存入 PostgreSQL 向量库"""
@@ -1240,50 +1345,76 @@ async def upload_document(
                 conn.commit()
 
         if auto_extract:
-            try:
-                r = await extract_knowledge_items_with_ai(pipeline=pipeline, doc_ids=[str(doc_id)])
-                with psycopg2.connect(
-                    host=settings.DB_HOST, port=settings.DB_PORT,
-                    user=settings.DB_USER, password=settings.DB_PASSWORD,
-                    database=settings.DB_NAME
-                ) as conn:
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            """
-                            UPDATE documents
-                            SET metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb
-                            WHERE doc_id = %s
-                            """,
-                            (
-                                psycopg2.extras.Json({
-                                    "structured_kb": "ok",
-                                    "structured_extracted": int(getattr(r, "extracted", 0)),
-                                    "structured_inserted": int(getattr(r, "inserted", 0)),
-                                    "structured_skipped": int(getattr(r, "skipped", 0)),
-                                }),
-                                str(doc_id),
-                            ),
-                        )
-                        conn.commit()
-            except Exception as e:
-                try:
+            async def _structured_extract_task(_doc_id: str, _pipeline: str):
+                import psycopg2.extras
+                if (settings.LLM_PROVIDER or "").lower() == "minimax" and (not settings.MINIMAX_API_KEY or not settings.MINIMAX_GROUP_ID):
                     with psycopg2.connect(
                         host=settings.DB_HOST, port=settings.DB_PORT,
                         user=settings.DB_USER, password=settings.DB_PASSWORD,
                         database=settings.DB_NAME
-                    ) as conn:
-                        with conn.cursor() as cur:
-                            cur.execute(
+                    ) as conn2:
+                        with conn2.cursor() as cur2:
+                            cur2.execute(
                                 """
                                 UPDATE documents
                                 SET metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb
                                 WHERE doc_id = %s
                                 """,
-                                (psycopg2.extras.Json({"structured_kb": "failed", "structured_error": str(e)[:200]}), str(doc_id)),
+                                (psycopg2.extras.Json({"structured_kb": "failed", "structured_error": "LLM 未配置"}), _doc_id),
                             )
-                            conn.commit()
+                            conn2.commit()
+                    return
+
+                try:
+                    r = await extract_knowledge_items_with_ai(pipeline=_pipeline, doc_ids=[_doc_id])
+                    payload = {
+                        "structured_kb": "ok",
+                        "structured_extracted": int(getattr(r, "extracted", 0)),
+                        "structured_inserted": int(getattr(r, "inserted", 0)),
+                        "structured_skipped": int(getattr(r, "skipped", 0)),
+                    }
+                except Exception as e:
+                    payload = {"structured_kb": "failed", "structured_error": str(e)[:200]}
+
+                try:
+                    with psycopg2.connect(
+                        host=settings.DB_HOST, port=settings.DB_PORT,
+                        user=settings.DB_USER, password=settings.DB_PASSWORD,
+                        database=settings.DB_NAME
+                    ) as conn2:
+                        with conn2.cursor() as cur2:
+                            cur2.execute(
+                                """
+                                UPDATE documents
+                                SET metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb
+                                WHERE doc_id = %s
+                                """,
+                                (psycopg2.extras.Json(payload), _doc_id),
+                            )
+                            conn2.commit()
                 except Exception:
                     pass
+
+            with psycopg2.connect(
+                host=settings.DB_HOST, port=settings.DB_PORT,
+                user=settings.DB_USER, password=settings.DB_PASSWORD,
+                database=settings.DB_NAME
+            ) as conn2:
+                with conn2.cursor() as cur2:
+                    cur2.execute(
+                        """
+                        UPDATE documents
+                        SET metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb
+                        WHERE doc_id = %s
+                        """,
+                        (psycopg2.extras.Json({"structured_kb": "pending"}), str(doc_id)),
+                    )
+                    conn2.commit()
+
+            if background_tasks is not None:
+                background_tasks.add_task(_structured_extract_task, str(doc_id), pipeline)
+            else:
+                await _structured_extract_task(str(doc_id), pipeline)
     except ValueError as e:
         with psycopg2.connect(
             host=settings.DB_HOST, port=settings.DB_PORT,
@@ -1355,6 +1486,11 @@ async def list_documents(user: dict = Depends(get_current_user)):
             "upload_time": row[4].isoformat() if row[4] else None,
             "status": row[5],
             "pipeline": (row[6] or {}).get("pipeline", "流水线1"),
+            "structured_kb": (row[6] or {}).get("structured_kb", ""),
+            "structured_extracted": (row[6] or {}).get("structured_extracted", 0),
+            "structured_inserted": (row[6] or {}).get("structured_inserted", 0),
+            "structured_skipped": (row[6] or {}).get("structured_skipped", 0),
+            "structured_error": (row[6] or {}).get("structured_error", ""),
         }
         for row in rows
     ]
@@ -1530,6 +1666,7 @@ async def create_knowledge_item(payload: KnowledgeItemCreateRequest, enrich: boo
                 pass
 
     machine_category = _canonicalize_machine_category(machine_category, machine)
+    problem_category = _canonicalize_problem_category(problem_category, problem, root_cause)
     _validate_knowledge_item_fields(pipeline, machine_category, machine, problem_category, problem, root_cause, solution)
 
     with psycopg2.connect(
@@ -1638,9 +1775,10 @@ async def list_knowledge_items(pipeline: str | None = None, status: str = "activ
         metadata = r[8] if isinstance(r[8], dict) else {}
         machine = str(r[3] or "").strip()
         machine_category = _canonicalize_machine_category(r[2], machine)
-        problem_category = str(r[4] or "").strip()
+        problem_category = _canonicalize_problem_category(str(r[4] or "").strip(), str(r[5] or ""), str(r[6] or ""))
         if not machine:
             machine = _infer_device_from_filename(str((metadata or {}).get("filename") or "")) if metadata else ""
+        machine = _normalize_machine_name(machine) or machine
         if not machine_category:
             machine_category = _infer_machine_category_from_machine(machine)
         if not problem_category:
@@ -1720,7 +1858,16 @@ async def reextract_knowledge_items(payload: KnowledgeItemReextractRequest, user
                 deleted = int(cur.rowcount or 0)
                 conn.commit()
 
-    result = await extract_knowledge_items_with_ai(pipeline=pipeline, doc_ids=doc_ids)
+    if (settings.LLM_PROVIDER or "").lower() == "minimax" and (not settings.MINIMAX_API_KEY or not settings.MINIMAX_GROUP_ID):
+        raise HTTPException(status_code=503, detail="LLM 未配置：缺少 MINIMAX_API_KEY 或 MINIMAX_GROUP_ID，无法整理。")
+
+    try:
+        result = await extract_knowledge_items_with_ai(pipeline=pipeline, doc_ids=doc_ids)
+    except HTTPException:
+        raise
+    except Exception as e:
+        detail = str(e).strip() or e.__class__.__name__
+        raise HTTPException(status_code=500, detail=f"整理失败: {detail}")
     return {
         "pipeline": pipeline,
         "mode": mode,
@@ -1847,6 +1994,152 @@ async def cleanup_knowledge_items(payload: KnowledgeItemCleanupRequest, user: di
             updated = len(to_update)
 
     return {"pipeline": pipeline, "dry_run": dry_run, "deleted": deleted, "updated": updated, "total": len(rows)}
+
+
+@router.post("/items/autofill")
+async def autofill_knowledge_items(payload: KnowledgeItemAutoFillRequest, user: dict = Depends(require_expert)):
+    pipeline = _normalize_pipeline(payload.pipeline)
+    limit = max(1, min(int(payload.limit or 60), 300))
+    dry_run = bool(payload.dry_run)
+
+    with psycopg2.connect(
+        host=settings.DB_HOST, port=settings.DB_PORT,
+        user=settings.DB_USER, password=settings.DB_PASSWORD,
+        database=settings.DB_NAME
+    ) as conn:
+        _ensure_structured_knowledge_tables(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    ki.item_id::text,
+                    ki.machine_category,
+                    ki.machine,
+                    ki.problem_category,
+                    ki.problem,
+                    ki.root_cause,
+                    ki.solution,
+                    ki.metadata
+                FROM knowledge_items ki
+                WHERE ki.status = 'active'
+                  AND ki.pipeline = %s
+                  AND (
+                    COALESCE(ki.machine_category, '') = ''
+                    OR COALESCE(ki.machine, '') = ''
+                    OR COALESCE(ki.problem_category, '') = ''
+                    OR COALESCE(ki.problem, '') = ''
+                    OR COALESCE(ki.root_cause, '') = ''
+                    OR COALESCE(ki.solution, '') = ''
+                  )
+                ORDER BY ki.updated_at DESC
+                LIMIT %s
+                """,
+                (pipeline, limit),
+            )
+            rows = cur.fetchall() or []
+
+    updated_rows: list[tuple] = []
+    errors: list[dict] = []
+    scanned = len(rows)
+
+    for item_id, mc, m, pc, p, rc, sol, meta in rows:
+        metadata = meta if isinstance(meta, dict) else {}
+        machine = str(m or "").strip()
+        machine_category = str(mc or "").strip()
+        problem_category = str(pc or "").strip()
+        problem = str(p or "").strip()
+        root_cause = str(rc or "").strip()
+        solution = str(sol or "").strip()
+
+        if not machine:
+            machine = _infer_device_from_filename(str((metadata or {}).get("filename") or "")) if metadata else ""
+
+        if not machine_category:
+            machine_category = _infer_machine_category_from_machine(machine) if machine else _infer_machine_category_from_machine(root_cause)
+        if not problem_category and problem:
+            problem_category = _infer_problem_category_from_problem(problem)
+
+        need_ai = (not machine_category) or (not problem_category) or (not machine) or (not problem) or (not root_cause) or (not solution)
+        if need_ai:
+            try:
+                ai_out = await _ai_fill_item_blanks(pipeline, machine_category, machine, problem_category, problem, root_cause, solution, metadata)
+                if not machine and ai_out.get("machine"):
+                    machine = ai_out.get("machine", "")
+                if not problem and ai_out.get("problem"):
+                    problem = ai_out.get("problem", "")
+                if not root_cause and ai_out.get("root_cause"):
+                    root_cause = ai_out.get("root_cause", "")
+                if not solution and ai_out.get("solution"):
+                    solution = ai_out.get("solution", "")
+
+                if not machine_category and ai_out.get("machine_category"):
+                    machine_category = ai_out.get("machine_category", "")
+                if not problem_category and ai_out.get("problem_category"):
+                    problem_category = ai_out.get("problem_category", "")
+
+                if (not machine_category) or (not problem_category):
+                    try:
+                        ai_cat = await _ai_enrich_categories(pipeline, machine, problem, root_cause)
+                        if not machine_category:
+                            machine_category = ai_cat.get("machine_category", "") or machine_category
+                        if not problem_category:
+                            problem_category = ai_cat.get("problem_category", "") or problem_category
+                    except Exception:
+                        pass
+            except Exception as e:
+                errors.append({"item_id": str(item_id), "error": str(e) or e.__class__.__name__})
+                continue
+
+        machine_category = _canonicalize_machine_category(machine_category, machine)
+        if not machine_category and machine:
+            machine_category = _infer_machine_category_from_machine(machine)
+        if not problem_category and problem:
+            problem_category = _infer_problem_category_from_problem(problem)
+
+        machine = _clean_single_line_text(machine, 160)
+        machine_category = _clean_single_line_text(machine_category, 120)
+        problem_category = _clean_single_line_text(problem_category, 120)
+        problem = _clean_single_line_text(problem, 240)
+        root_cause = _clean_single_line_text(root_cause, 320)
+        solution = _clean_single_line_text(solution, 800)
+
+        updated_rows.append((machine_category, machine, problem_category, problem, root_cause, solution, str(item_id)))
+
+    updated = 0
+    if not dry_run and updated_rows:
+        with psycopg2.connect(
+            host=settings.DB_HOST, port=settings.DB_PORT,
+            user=settings.DB_USER, password=settings.DB_PASSWORD,
+            database=settings.DB_NAME
+        ) as conn:
+            _ensure_structured_knowledge_tables(conn)
+            with conn.cursor() as cur:
+                cur.executemany(
+                    """
+                    UPDATE knowledge_items
+                    SET machine_category = %s,
+                        machine = %s,
+                        problem_category = %s,
+                        problem = %s,
+                        root_cause = %s,
+                        solution = %s,
+                        updated_at = NOW()
+                    WHERE item_id = %s::uuid
+                    """,
+                    updated_rows,
+                )
+                updated = int(cur.rowcount or 0)
+                conn.commit()
+    else:
+        updated = len(updated_rows)
+
+    return {
+        "pipeline": pipeline,
+        "dry_run": dry_run,
+        "scanned": scanned,
+        "updated": updated,
+        "errors": errors[:50],
+    }
 
 
 
@@ -2498,7 +2791,7 @@ async def knowledge_graph(pipeline: str = "流水线1"):
             device_map: dict[str, dict] = {}
 
             for machine_category, machine, problem_category, problem, root_cause, solution in item_rows:
-                dev = str(machine or "").strip() or "设备"
+                dev = _normalize_machine_name(str(machine or "").strip()) or (str(machine or "").strip() or "设备")
                 dev_norm = _norm_text(dev)
                 if not dev_norm or dev_norm in machine_noise_norm:
                     continue

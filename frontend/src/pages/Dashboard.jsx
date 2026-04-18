@@ -97,6 +97,20 @@ const textOverlapScore = (a, b) => {
   return hit / Math.max(termsA.length, 1)
 }
 
+const inferMachineFromText = (text) => {
+  const raw = String(text || '').trim()
+  if (!raw) return ''
+  const compact = raw.replace(/\s+/g, '').toUpperCase()
+  if (compact.includes('1FT7')) return 'SIMOTICS S-1FT7'
+  const m1 = raw.match(/^(.*?)(故障|异常|报警|报错|不工作|无法|不能|无反应|过热|异响|振动|吸力|充电|掉电|断电|停机|卡滞|堵塞)/)
+  const head = String(m1?.[1] || '').trim()
+  if (head && head.length <= 40) return head
+  const m2 = raw.match(/([A-Za-z0-9][A-Za-z0-9\-\s]{2,30}\d)/)
+  const code = String(m2?.[1] || '').trim()
+  if (code) return code
+  return ''
+}
+
 const normalizeValue = (value, min, max, fallback = 0.5) => {
   const v = Number(value)
   if (!Number.isFinite(v)) return fallback
@@ -235,7 +249,7 @@ const applyTroubleshootingAnswer = (state, answerValue) => {
   }
 }
 
-export default function Dashboard({ onNavigate }) {
+export default function Dashboard({ onNavigate, user }) {
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -271,6 +285,10 @@ export default function Dashboard({ onNavigate }) {
 
   useEffect(() => {
     const loadDocs = async () => {
+      if (String(user?.role || '') !== 'expert') {
+        setDocs([])
+        return
+      }
       try {
         const data = await api.listDocuments()
         setDocs(Array.isArray(data) ? data : [])
@@ -308,7 +326,7 @@ export default function Dashboard({ onNavigate }) {
     loadDocs()
     loadPipelines()
     loadProviders()
-  }, [])
+  }, [user?.role])
 
   useEffect(() => {
     const applyPayload = (payload) => {
@@ -393,13 +411,56 @@ export default function Dashboard({ onNavigate }) {
   const send = async () => {
     const text = input.trim()
     if (!text || loading) return
+
+    const normalized = text.replace(/\s+/g, '')
+    const isTroubleshootingCmd = /^(帮我排查故障|排查故障|开始排查|继续排查|帮我排查)$/.test(normalized)
+    if (isTroubleshootingCmd) {
+      setMessages((prev) => {
+        const lastTreeMsg = [...prev].reverse().find((m) => m?.result?.fault_tree || m?.result?.tree_id)
+        if (!lastTreeMsg) {
+          return [...prev, { role: 'user', text }, { role: 'assistant', text: '请先生成故障树，再开始排查。' }]
+        }
+        queueMicrotask(() => startTroubleshooting(lastTreeMsg))
+        return [...prev, { role: 'user', text }]
+      })
+      setInput('')
+      return
+    }
+
     const now = Date.now()
     const typingId = `typing_${now}_${Math.random().toString(16).slice(2, 8)}`
     setMessages(prev => [...prev, { role: 'user', text }, { role: 'assistant', kind: 'typing', id: typingId }])
     setInput('')
     setLoading(true)
     try {
-      const data = await api.generateFaultTree({
+      let data = null
+      try {
+        const hit = await api.lookupFaultTree(text)
+        if (hit?.found && hit?.tree_id) {
+          const reused = await api.getFaultTree(hit.tree_id)
+          data = reused
+          const msgText = reused?.fault_tree?.analysis_summary || '已从历史记录匹配到故障树。'
+          const selectedDocItem = docs.find(item => item.doc_id === selectedDoc)
+          setMessages(prev => prev.map(m => (m.id === typingId ? {
+            role: 'assistant',
+            text: msgText,
+            result: data,
+            meta: {
+              doc_id: selectedDoc || null,
+              doc_weight: Number(selectedDocItem?.current_weight ?? 0.5),
+              manual_weight: manualWeight,
+              provider: selectedProvider || null,
+              reused: true,
+              similarity: Number(hit?.similarity || 0),
+            },
+          } : m)))
+          setLoading(false)
+          return
+        }
+      } catch {
+      }
+
+      data = await api.generateFaultTree({
         top_event: text,
         user_prompt: '',
         rag_top_k: 5,
@@ -427,6 +488,19 @@ export default function Dashboard({ onNavigate }) {
       )))
     }
     setLoading(false)
+  }
+
+  const rateFromDashboard = async (msgId, treeId, vote) => {
+    if (!treeId) return
+    setMessages((prev) => prev.map((m) => (m.id === msgId ? { ...m, meta: { ...(m.meta || {}), ratingSubmitting: true } } : m)))
+    try {
+      await api.rateFaultTree(treeId, vote)
+      setMessages((prev) => prev.map((m) => (m.id === msgId ? { ...m, meta: { ...(m.meta || {}), rated: vote, ratingSubmitting: false } } : m)))
+      message.success(vote === 'up' ? '已反馈：有用' : '已反馈：无用')
+    } catch (e) {
+      setMessages((prev) => prev.map((m) => (m.id === msgId ? { ...m, meta: { ...(m.meta || {}), ratingSubmitting: false } } : m)))
+      message.error(e?.response?.data?.detail || e?.message || '反馈失败')
+    }
   }
 
   const composerSettings = (
@@ -605,7 +679,9 @@ export default function Dashboard({ onNavigate }) {
           if (!best?.item_id) {
             const fallbackDoc = docs.find(d => d.doc_id === selectedDoc)
             const filename = String(fallbackDoc?.filename || '')
-            const inferredMachine = (filename.replace(/\.[^.]+$/, '').match(/([\u4e00-\u9fff]{2,20})(维修保养手册|维修手册|保养手册)?/) || [])[1] || ''
+            const fromTopEvent = inferMachineFromText(finalProblem)
+            const fromFilename = (filename.replace(/\.[^.]+$/, '').match(/([\u4e00-\u9fffA-Za-z0-9\-\s]{2,40})(维修保养手册|维修手册|保养手册|用户手册|说明书)?/) || [])[1] || ''
+            const inferredMachine = String(fromTopEvent || fromFilename || '').trim()
             const createResp = await api.createKnowledgeItem({
               pipeline,
               machine: inferredMachine,
@@ -617,6 +693,7 @@ export default function Dashboard({ onNavigate }) {
                 tree_id: session.tree_id || null,
                 node_id: chosen?.node_id || null,
                 custom_root_cause: Boolean(String(customRootCause || '').trim()),
+                machine_inferred_from: fromTopEvent ? 'top_event' : (fromFilename ? 'filename' : ''),
               }
             }, { enrich: 1 })
             const newItemId = createResp?.item_id
@@ -873,6 +950,22 @@ export default function Dashboard({ onNavigate }) {
                             </Button>
                             <Button size="small" onClick={() => openNativeFullScreen(m.result, 'view')}>系统全屏查看</Button>
                             <Button size="small" type="primary" onClick={() => openFullScreen(m.result, 'edit')}>主页专家编辑</Button>
+                            <Button
+                              size="small"
+                              disabled={!!m.meta?.rated}
+                              loading={!!m.meta?.ratingSubmitting}
+                              onClick={() => rateFromDashboard(m.id, m.result?.tree_id, 'up')}
+                            >
+                              有用
+                            </Button>
+                            <Button
+                              size="small"
+                              disabled={!!m.meta?.rated}
+                              loading={!!m.meta?.ratingSubmitting}
+                              onClick={() => rateFromDashboard(m.id, m.result?.tree_id, 'down')}
+                            >
+                              无用
+                            </Button>
                           </Space>
                         </div>
                       </div>

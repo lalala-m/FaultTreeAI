@@ -24,7 +24,18 @@ export default function VisionDetect({ onNavigate }) {
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState('image');
   const tabsWrapRef = useRef(null)
+  const rowRef = useRef(null)
+  const leftColRef = useRef(null)
+  const leftBottomCardRef = useRef(null)
+  const imagePanelRef = useRef(null)
+  const cameraPanelRef = useRef(null)
+  const videoPanelRef = useRef(null)
+  const rightResultWrapRef = useRef(null)
   const [tabsOffset, setTabsOffset] = useState(0)
+  const [rightTopOffset, setRightTopOffset] = useState(0)
+  const [cameraPanelHeight, setCameraPanelHeight] = useState(0)
+  const [activeLeftPanelHeight, setActiveLeftPanelHeight] = useState(0)
+  const [rightResultHeight, setRightResultHeight] = useState(0)
   const [cameraDevices, setCameraDevices] = useState([])
   const [cameraSlots, setCameraSlots] = useState([null, null, null, null])
   const [cameraShots, setCameraShots] = useState([])
@@ -433,136 +444,142 @@ export default function VisionDetect({ onNavigate }) {
       key: 'image',
       label: <span><PictureOutlined /> 图片上传</span>,
       children: (
-        <Card size="small">
-          <ImageUploader onUpload={handleImageUpload} onDetect={handleDetect} loading={loading} maxCount={9} />
-        </Card>
+        <div ref={imagePanelRef}>
+          <Card size="small">
+            <ImageUploader onUpload={handleImageUpload} onDetect={handleDetect} loading={loading} maxCount={9} />
+          </Card>
+        </div>
       )
     },
     {
       key: 'camera',
       label: <span><CameraOutlined /> 摄像头</span>,
       children: (
-        <Card size="small">
-          <Row gutter={[12, 12]}>
-            {Array.from({ length: 4 }).map((_, idx) => (
-              <Col key={idx} xs={12} sm={12}>
-                <div style={{ marginBottom: 8, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-                  <div style={{ fontWeight: 600 }}>摄像头{idx + 1}</div>
-                  <Select
-                    size="small"
-                    value={cameraSlots[idx]}
-                    placeholder="选择设备"
-                    style={{ width: 220, maxWidth: '100%' }}
-                    options={cameraDevices.map((d, i) => ({
-                      value: d.deviceId,
-                      label: d.label || `摄像头设备${i + 1}`,
-                    }))}
-                    onChange={(v) => {
-                      setCameraSlots((prev) => {
-                        const next = Array.isArray(prev) && prev.length === 4 ? [...prev] : [null, null, null, null]
-                        next[idx] = v
-                        return next
-                      })
+        <div ref={cameraPanelRef}>
+          <Card size="small">
+            <Row gutter={[12, 12]}>
+              {Array.from({ length: 4 }).map((_, idx) => (
+                <Col key={idx} xs={12} sm={12}>
+                  <div style={{ marginBottom: 8, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                    <div style={{ fontWeight: 600 }}>摄像头{idx + 1}</div>
+                    <Select
+                      size="small"
+                      value={cameraSlots[idx]}
+                      placeholder="选择设备"
+                      style={{ width: 220, maxWidth: '100%' }}
+                      options={cameraDevices.map((d, i) => ({
+                        value: d.deviceId,
+                        label: d.label || `摄像头设备${i + 1}`,
+                      }))}
+                      onChange={(v) => {
+                        setCameraSlots((prev) => {
+                          const next = Array.isArray(prev) && prev.length === 4 ? [...prev] : [null, null, null, null]
+                          next[idx] = v
+                          return next
+                        })
+                      }}
+                      allowClear
+                    />
+                  </div>
+                  <CameraCapture
+                    key={`${idx}:${cameraSlots[idx] || 'default'}`}
+                    title={`摄像头${idx + 1}实时识别`}
+                    active={activeTab === 'camera'}
+                    autoStart={false}
+                    initialDeviceId={cameraSlots[idx]}
+                    cameraIndex={idx + 1}
+                    hideRecords
+                    externalCapture
+                    onRecord={(record) => {
+                      if (!record?.image) return
+                      setCameraShots((prev) => [record, ...(Array.isArray(prev) ? prev : [])].slice(0, 40))
                     }}
-                    allowClear
+                    onCapture={(base64) => {
+                      setCameraImage(base64)
+                      handleCameraCapture(base64)
+                    }}
+                    onResult={(r) => { setResults(r); setResultsSource('camera') }}
+                    disabled={loading}
+                    modelKey={settings.modelKey}
+                    confThreshold={settings.confThreshold}
+                    iouThreshold={settings.iouThreshold}
+                    returnAnnotated={settings.returnAnnotated}
+                    intervalMs={260}
                   />
-                </div>
-                <CameraCapture
-                  key={`${idx}:${cameraSlots[idx] || 'default'}`}
-                  title={`摄像头${idx + 1}实时识别`}
-                  active={activeTab === 'camera'}
-                  autoStart={false}
-                  initialDeviceId={cameraSlots[idx]}
-                  cameraIndex={idx + 1}
-                  hideRecords
-                  externalCapture
-                  onRecord={(record) => {
-                    if (!record?.image) return
-                    setCameraShots((prev) => [record, ...(Array.isArray(prev) ? prev : [])].slice(0, 40))
-                  }}
-                  onCapture={(base64) => {
-                    setCameraImage(base64)
-                    handleCameraCapture(base64)
-                  }}
-                  onResult={(r) => { setResults(r); setResultsSource('camera') }}
-                  disabled={loading}
-                  modelKey={settings.modelKey}
-                  confThreshold={settings.confThreshold}
-                  iouThreshold={settings.iouThreshold}
-                  returnAnnotated={settings.returnAnnotated}
-                  intervalMs={260}
-                />
-              </Col>
-            ))}
-          </Row>
-        </Card>
+                </Col>
+              ))}
+            </Row>
+          </Card>
+        </div>
       )
     },
     {
       key: 'video',
       label: <span><VideoCameraOutlined /> 视频</span>,
       children: (
-        <Card size="small">
-          <VideoUploader
-            onFrameCapture={(frame) => setVideoFrames(prev => [...prev, { id: frame.id, image: frame.image, time: frame.time }])}
-            onDetect={async (frames) => {
-              setVideoFrames(frames.map(f => ({ id: f.id, image: f.image, time: f.time })))
-              setLoading(true)
-              try {
-                const imgs = frames.map(f => ({ id: `video-${f.id}`, source: 'video', base64: f.image }))
-                const API_URL = import.meta.env.VITE_API_URL || ''
-                const resultsList = []
-                let firstError = null
-                for (const img of imgs) {
-                  const formData = new FormData()
-                  const base64Data = (img.base64 || '').split(',')[1] || img.base64
-                  formData.append('image_data', base64Data)
-                  formData.append('conf_threshold', settings.confThreshold.toString())
-                  formData.append('iou_threshold', settings.iouThreshold.toString())
-                  formData.append('return_annotated', 'false')
-                  formData.append('model_key', settings.modelKey)
-                  formData.append('suppress_overlay', 'true')
-                  const endpoint = '/api/vision/detect/base64'
-                  const response = await fetch(`${API_URL}${endpoint}`, { method: 'POST', body: formData })
-                  if (!response.ok) {
-                    if (!firstError) {
-                      try {
-                        const errJson = await response.json()
-                        firstError = errJson?.detail || errJson?.error || response.statusText
-                      } catch {
-                        firstError = response.statusText
+        <div ref={videoPanelRef}>
+          <Card size="small">
+            <VideoUploader
+              onFrameCapture={(frame) => setVideoFrames(prev => [...prev, { id: frame.id, image: frame.image, time: frame.time }])}
+              onDetect={async (frames) => {
+                setVideoFrames(frames.map(f => ({ id: f.id, image: f.image, time: f.time })))
+                setLoading(true)
+                try {
+                  const imgs = frames.map(f => ({ id: `video-${f.id}`, source: 'video', base64: f.image }))
+                  const API_URL = import.meta.env.VITE_API_URL || ''
+                  const resultsList = []
+                  let firstError = null
+                  for (const img of imgs) {
+                    const formData = new FormData()
+                    const base64Data = (img.base64 || '').split(',')[1] || img.base64
+                    formData.append('image_data', base64Data)
+                    formData.append('conf_threshold', settings.confThreshold.toString())
+                    formData.append('iou_threshold', settings.iouThreshold.toString())
+                    formData.append('return_annotated', 'false')
+                    formData.append('model_key', settings.modelKey)
+                    formData.append('suppress_overlay', 'true')
+                    const endpoint = '/api/vision/detect/base64'
+                    const response = await fetch(`${API_URL}${endpoint}`, { method: 'POST', body: formData })
+                    if (!response.ok) {
+                      if (!firstError) {
+                        try {
+                          const errJson = await response.json()
+                          firstError = errJson?.detail || errJson?.error || response.statusText
+                        } catch {
+                          firstError = response.statusText
+                        }
                       }
+                      continue
                     }
-                    continue
+                    const data = await response.json()
+                    resultsList.push({ ...data, source: img.source, original_image_url: img.base64 })
                   }
-                  const data = await response.json()
-                  resultsList.push({ ...data, source: img.source, original_image_url: img.base64 })
+                  if (resultsList.length === 0) {
+                    message.error(firstError ? `视频关键帧识别失败：${firstError}` : '视频关键帧识别失败')
+                    return
+                  }
+                  const totalDetections = resultsList.reduce((sum, r) => sum + (r.total_detections || 0), 0)
+                  const totalAnomalies = resultsList.reduce((sum, r) => sum + (r.anomaly_count || 0), 0)
+                  setResults({
+                    ...resultsList[0],
+                    total_detections: totalDetections,
+                    anomaly_count: totalAnomalies,
+                    batch_results: resultsList,
+                    source: 'video',
+                  })
+                  setResultsSource('video')
+                  message.success(`视频关键帧识别完成！共处理 ${resultsList.length} 帧`)
+                } catch (e) {
+                  console.error('视频关键帧识别失败:', e)
+                  message.error('视频关键帧识别失败')
+                } finally {
+                  setLoading(false)
                 }
-                if (resultsList.length === 0) {
-                  message.error(firstError ? `视频关键帧识别失败：${firstError}` : '视频关键帧识别失败')
-                  return
-                }
-                const totalDetections = resultsList.reduce((sum, r) => sum + (r.total_detections || 0), 0)
-                const totalAnomalies = resultsList.reduce((sum, r) => sum + (r.anomaly_count || 0), 0)
-                setResults({
-                  ...resultsList[0],
-                  total_detections: totalDetections,
-                  anomaly_count: totalAnomalies,
-                  batch_results: resultsList,
-                  source: 'video',
-                })
-                setResultsSource('video')
-                message.success(`视频关键帧识别完成！共处理 ${resultsList.length} 帧`)
-              } catch (e) {
-                console.error('视频关键帧识别失败:', e)
-                message.error('视频关键帧识别失败')
-              } finally {
-                setLoading(false)
-              }
-            }}
-            disabled={loading}
-          />
-        </Card>
+              }}
+              disabled={loading}
+            />
+          </Card>
+        </div>
       )
     }
   ]), [handleImageUpload, handleDetect, loading, handleCameraCapture, setVideoFrames, settings, activeTab]);
@@ -593,6 +610,81 @@ export default function VisionDetect({ onNavigate }) {
     }
   }, [])
 
+  useLayoutEffect(() => {
+    if (activeTab !== 'camera') return
+    const el = cameraPanelRef.current
+    if (!el) return
+
+    const apply = () => {
+      const h = Math.round(el.getBoundingClientRect().height || 0)
+      if (h > 0) setCameraPanelHeight(h)
+    }
+
+    apply()
+
+    let ro
+    try {
+      ro = new ResizeObserver(() => apply())
+      ro.observe(el)
+    } catch {
+      window.addEventListener('resize', apply)
+    }
+
+    return () => {
+      if (ro) ro.disconnect()
+      else window.removeEventListener('resize', apply)
+    }
+  }, [activeTab, cameraSlots, loading, tabsOffset])
+
+  useLayoutEffect(() => {
+    const rowEl = rowRef.current
+    if (!rowEl) return
+
+    const apply = () => {
+      const panelEl = activeTab === 'camera'
+        ? cameraPanelRef.current
+        : activeTab === 'video'
+          ? videoPanelRef.current
+          : imagePanelRef.current
+      if (!panelEl) {
+        setRightTopOffset(Math.max(0, tabsOffset))
+        return
+      }
+      const rowTop = rowEl.getBoundingClientRect().top || 0
+      const panelTop = panelEl.getBoundingClientRect().top || 0
+      const panelHeight = Math.round(panelEl.getBoundingClientRect().height || 0)
+      const offset = Math.max(0, Math.round(panelTop - rowTop))
+      setRightTopOffset(offset)
+      if (panelHeight > 0) setActiveLeftPanelHeight(panelHeight)
+
+      const leftRect = leftBottomCardRef.current?.getBoundingClientRect?.() || leftColRef.current?.getBoundingClientRect?.()
+      const leftBottom = Math.round(leftRect?.bottom || 0)
+      const resultTop = Math.round(rightResultWrapRef.current?.getBoundingClientRect?.().top || (rowTop + offset))
+      const targetH = Math.max(120, leftBottom - resultTop)
+      setRightResultHeight(targetH)
+    }
+
+    apply()
+
+    let ro
+    try {
+      ro = new ResizeObserver(() => apply())
+      ro.observe(rowEl)
+      if (leftColRef.current) ro.observe(leftColRef.current)
+      if (leftBottomCardRef.current) ro.observe(leftBottomCardRef.current)
+      if (imagePanelRef.current) ro.observe(imagePanelRef.current)
+      if (cameraPanelRef.current) ro.observe(cameraPanelRef.current)
+      if (videoPanelRef.current) ro.observe(videoPanelRef.current)
+      if (rightResultWrapRef.current) ro.observe(rightResultWrapRef.current)
+    } catch {
+      window.addEventListener('resize', apply)
+    }
+    return () => {
+      if (ro) ro.disconnect()
+      else window.removeEventListener('resize', apply)
+    }
+  }, [activeTab, tabsOffset, cameraPanelHeight])
+
   return (
     <Layout className="vision-detect-page">
       {visibleResult?.anomaly_count > 0 && (
@@ -608,12 +700,8 @@ export default function VisionDetect({ onNavigate }) {
       )}
       <Content>
         <div className="vision-detect-shell">
-          <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
-            <Button icon={<SyncOutlined />} onClick={handleReset} disabled={loading}>重置</Button>
-          </div>
-
-          <Row gutter={24} align="stretch">
-            <Col span={activeTab === 'camera' ? 14 : 10} style={{ display: 'flex', flexDirection: 'column' }}>
+          <Row ref={rowRef} gutter={24} align="stretch">
+            <Col ref={leftColRef} span={activeTab === 'camera' ? 14 : 10} style={{ display: 'flex', flexDirection: 'column' }}>
               <div ref={tabsWrapRef}>
                 <Tabs activeKey={activeTab} onChange={setActiveTab} size="small" items={tabItems} />
               </div>
@@ -628,7 +716,7 @@ export default function VisionDetect({ onNavigate }) {
                 </div>
               </Card>
 
-              <Card size="small" style={{ marginTop: 16 }}>
+              <Card ref={leftBottomCardRef} size="small" style={{ marginTop: 16 }}>
                 <Space direction="vertical" style={{ width: '100%' }}>
                   <Divider>检测任务</Divider>
                   <Select
@@ -661,47 +749,69 @@ export default function VisionDetect({ onNavigate }) {
               </Card>
             </Col>
 
-            <Col span={activeTab === 'camera' ? 10 : 14} style={{ paddingTop: tabsOffset, display: 'flex', flexDirection: 'column' }}>
+            <Col
+              span={activeTab === 'camera' ? 10 : 14}
+              style={{
+                paddingTop: rightTopOffset,
+                display: 'flex',
+                flexDirection: 'column',
+                position: 'sticky',
+                top: 12,
+                alignSelf: 'flex-start',
+              }}
+            >
               {activeTab === 'camera' && (
-                <Card size="small" style={{ marginBottom: 12 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                <Card
+                  size="small"
+                  style={{ marginBottom: 12, height: cameraPanelHeight ? cameraPanelHeight : undefined }}
+                  styles={{ body: { height: '100%', display: 'flex', flexDirection: 'column' } }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, flex: '0 0 auto' }}>
                     <Space size={8} wrap>
                       <div style={{ fontWeight: 600 }}>摄像头截图</div>
                       <Tag color="blue">{cameraShots.length}</Tag>
                     </Space>
                     <Button size="small" onClick={() => setCameraShots([])} disabled={cameraShots.length === 0}>清空</Button>
                   </div>
-                  {cameraShots.length === 0 ? (
-                    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无截图" />
-                  ) : (
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                      {cameraShots.slice(0, 8).map((s) => (
-                        <div key={s.id} style={{ border: '1px solid #f0f0f0', borderRadius: 8, overflow: 'hidden', background: '#fff' }}>
-                          <div style={{ position: 'relative', width: '100%', aspectRatio: '4 / 3', background: '#000' }}>
-                            <img src={s.image} alt="shot" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain' }} />
-                          </div>
-                          <div style={{ padding: 8 }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-                              <Tag>{`摄像头${s.cameraIndex || '-'}`}</Tag>
-                              <span style={{ fontSize: 12, color: '#999' }}>{new Date(s.ts).toLocaleTimeString('zh-CN')}</span>
+                  <div style={{ flex: 1, overflow: 'auto' }}>
+                    {cameraShots.length === 0 ? (
+                      <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无截图" />
+                      </div>
+                    ) : (
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                        {cameraShots.slice(0, 40).map((s) => (
+                          <div key={s.id} style={{ border: '1px solid #f0f0f0', borderRadius: 8, overflow: 'hidden', background: '#fff' }}>
+                            <div style={{ position: 'relative', width: '100%', aspectRatio: '4 / 3', background: '#000' }}>
+                              <img src={s.image} alt="shot" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain' }} />
                             </div>
-                            <div style={{ fontSize: 12, color: s.type === 'anomaly' ? '#fa8c16' : s.type === 'manual' ? '#1677ff' : '#ff4d4f', marginTop: 4 }}>
-                              {String(s.message || '')}
+                            <div style={{ padding: 8 }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                                <Tag>{`摄像头${s.cameraIndex || '-'}`}</Tag>
+                                <span style={{ fontSize: 12, color: '#999' }}>{new Date(s.ts).toLocaleTimeString('zh-CN')}</span>
+                              </div>
+                              <div style={{ fontSize: 12, color: s.type === 'anomaly' ? '#fa8c16' : s.type === 'manual' ? '#1677ff' : '#ff4d4f', marginTop: 4 }}>
+                                {String(s.message || '')}
+                              </div>
                             </div>
                           </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </Card>
               )}
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+              <div ref={rightResultWrapRef} style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
                 <DetectionResult
                   result={visibleResult}
                   loading={loading}
                   onGenerateFaultTree={handleGenerateFaultTree}
                   hideImage={activeTab === 'camera'}
-                  style={activeTab === 'camera' ? undefined : { flex: 1 }}
+                  hideEmptyUploadAction={activeTab === 'camera'}
+                  style={{
+                    height: rightResultHeight || undefined,
+                    minHeight: rightResultHeight || undefined,
+                  }}
                 />
               </div>
             </Col>

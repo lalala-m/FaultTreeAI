@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import {
-  Card, Upload, Table, Button, Space, Tag, Typography, message, Progress, Empty, Popconfirm, Steps, Alert, Select, Input, Modal, Form, Slider
+  Card, Upload, Table, Button, Space, Tag, Typography, message, Progress, Empty, Popconfirm, Steps, Alert, Select, Input, Modal, Form, Slider, Switch
 } from 'antd'
 import { 
   UploadOutlined, 
@@ -26,6 +26,7 @@ export default function KnowledgeBase() {
   const [loading, setLoading] = useState(true)
   const [uploadStep, setUploadStep] = useState(0)
   const [uploadPipeline, setUploadPipeline] = useState('流水线1')
+  const [uploadAutoExtract, setUploadAutoExtract] = useState(true)
   const [pipelines, setPipelines] = useState([])
   const [newPipelineName, setNewPipelineName] = useState('')
   const [creatingPipeline, setCreatingPipeline] = useState(false)
@@ -107,12 +108,12 @@ export default function KnowledgeBase() {
       setProgress(60)
       
       const p = (uploadPipeline || '').trim() || '流水线1'
-      await api.uploadDocument(file, setProgress, p)
+      await api.uploadDocument(file, setProgress, p, uploadAutoExtract)
       
       // 步骤4: 完成
       setUploadStep(4)
       setProgress(100)
-      message.success('文档上传并处理完成！')
+      message.success(uploadAutoExtract ? '文档上传完成，已触发结构化抽取（后台进行）' : '文档上传并处理完成！')
       await loadDocs()
       await loadPipelines()
     } catch (err) {
@@ -197,6 +198,20 @@ export default function KnowledgeBase() {
       render: (p) => (
         <Tag color="blue">{p || '流水线1'}</Tag>
       ),
+    },
+    {
+      title: '结构化',
+      dataIndex: 'structured_kb',
+      key: 'structured_kb',
+      width: 140,
+      render: (s, row) => {
+        const v = String(s || '')
+        if (!v) return <Text type="secondary">-</Text>
+        if (v === 'ok') return <Tag color="green">已抽取</Tag>
+        if (v === 'pending') return <Tag color="blue">抽取中</Tag>
+        if (v === 'failed') return <Tag color="red">失败</Tag>
+        return <Tag>{v}</Tag>
+      },
     },
     {
       title: '上传时间', 
@@ -393,6 +408,10 @@ export default function KnowledgeBase() {
             showSearch
             optionFilterProp="label"
           />
+          <Space size={8}>
+            <Text type="secondary">上传后自动抽取结构化知识</Text>
+            <Switch checked={uploadAutoExtract} onChange={setUploadAutoExtract} disabled={uploading} />
+          </Space>
           <Input
             style={{ width: 180 }}
             placeholder="新流水线名称"
@@ -492,18 +511,15 @@ export default function KnowledgeBase() {
               disabled={itemsLoading || reextractSubmitting}
               onClick={() => {
                 Modal.confirm({
-                  title: '整理已上传的结构化知识？',
-                  content: '会对当前流水线下已上传的手册重新调用AI抽取并过滤无用信息，生成新的结构化知识条目。',
-                  okText: '开始整理',
+                  title: '整理信息（自动补全空白字段）？',
+                  content: '会对当前流水线下结构化知识条目中缺失的信息（如机械类别/问题类别/原因/解决方案等）调用 AI 自动补全，不会删除条目。',
+                  okText: '开始补全',
                   cancelText: '取消',
                   onOk: async () => {
                     try {
                       setReextractSubmitting(true)
-                      const res = await api.reextractKnowledgeItems(itemsPipeline, 'replace')
-                      const inserted = res?.result?.inserted ?? 0
-                      const extracted = res?.result?.extracted ?? 0
-                      const deleted = res?.deleted ?? 0
-                      message.success(`已整理：删除${deleted}条，抽取${extracted}条，写入${inserted}条`)
+                      const res = await api.autofillKnowledgeItems(itemsPipeline, { limit: 120, dry_run: false })
+                      message.success(`已补全：扫描${res?.scanned ?? 0}条，更新${res?.updated ?? 0}条`)
                       await loadItems(itemsPipeline)
                     } catch (e) {
                       message.error(e.response?.data?.detail || e.message || '整理失败')
@@ -513,7 +529,7 @@ export default function KnowledgeBase() {
                 })
               }}
             >
-              整理历史
+              整理信息
             </Button>
             <Button
               disabled={itemsLoading || reextractSubmitting}

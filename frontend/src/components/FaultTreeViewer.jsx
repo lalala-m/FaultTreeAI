@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import ReactFlow, {
   MarkerType,
   Handle,
@@ -232,6 +232,22 @@ export default function FaultTreeViewer({ tree, height }) {
   }
 
   const containerHeight = (typeof height === 'number' ? `${height}px` : (height || '500px'))
+  const wrapRef = useRef(null)
+  const [ready, setReady] = useState(false)
+
+  useEffect(() => {
+    const el = wrapRef.current
+    if (!el) return
+    const apply = () => {
+      const w = el.clientWidth || 0
+      const h = el.clientHeight || 0
+      setReady(w > 0 && h > 0)
+    }
+    apply()
+    const ro = new ResizeObserver(apply)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [containerHeight])
 
   return (
     <Card
@@ -250,19 +266,21 @@ export default function FaultTreeViewer({ tree, height }) {
       style={{ height: containerHeight }}
       styles={{ body: { padding: 0, height: '100%' } }}
     >
-      <div style={{ height: '100%', width: '100%', background: '#fafafa' }}>
-        <ReactFlow
-          nodes={nodes}
-          edges={edges}
-          nodeTypes={nodeTypes}
-          fitView
-          fitViewOptions={{ padding: 0.2 }}
-          proOptions={{ hideAttribution: true }}
-          style={{ width: '100%', height: '100%' }}
-        >
-          <Background />
-          <Controls />
-        </ReactFlow>
+      <div ref={wrapRef} style={{ height: '100%', width: '100%', background: '#fafafa' }}>
+        {ready && (
+          <ReactFlow
+            nodes={nodes}
+            edges={edges}
+            nodeTypes={nodeTypes}
+            fitView
+            fitViewOptions={{ padding: 0.2 }}
+            proOptions={{ hideAttribution: true }}
+            style={{ width: '100%', height: '100%' }}
+          >
+            <Background />
+            <Controls />
+          </ReactFlow>
+        )}
       </div>
     </Card>
   )

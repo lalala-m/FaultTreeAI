@@ -1,5 +1,5 @@
 import React, { useRef, useState, useEffect, Suspense, lazy } from 'react'
-import { Card, Table, Tag, Typography, Button, Space, Empty, Modal, message } from 'antd'
+import { Card, Table, Tag, Typography, Button, Space, Empty, Modal, message, Tabs } from 'antd'
 import { EyeOutlined, FileWordOutlined } from '@ant-design/icons'
 import api from '../services/api.js'
 
@@ -11,6 +11,8 @@ const { Title } = Typography
 export default function History() {
   const [trees, setTrees] = useState([])
   const [loading, setLoading] = useState(true)
+  const [faqs, setFaqs] = useState([])
+  const [faqLoading, setFaqLoading] = useState(true)
   const [selected, setSelected] = useState(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [mode, setMode] = useState('view')
@@ -25,6 +27,7 @@ export default function History() {
   const fsWrapRef = useRef(null)
   const [fsNativeOpen, setFsNativeOpen] = useState(false)
   const fsLayerRef = useRef(null)
+  const [tabKey, setTabKey] = useState('faq')
 
   useEffect(() => {
     const onKey = (e) => {
@@ -50,7 +53,21 @@ export default function History() {
     setLoading(false)
   }
 
-  useEffect(() => { loadTrees() }, [])
+  const loadFaqs = async () => {
+    setFaqLoading(true)
+    try {
+      const data = await api.listFAQs()
+      setFaqs(Array.isArray(data) ? data : [])
+    } catch {
+      setFaqs([])
+    }
+    setFaqLoading(false)
+  }
+
+  useEffect(() => {
+    loadTrees()
+    loadFaqs()
+  }, [])
 
   const handleExport = async (tree) => {
     try {
@@ -158,21 +175,106 @@ export default function History() {
     },
   ]
 
+  const faqColumns = [
+    {
+      title: '常见问题', dataIndex: 'question', key: 'question',
+      ellipsis: true,
+    },
+    {
+      title: '提问次数', dataIndex: 'count', key: 'count', width: 110,
+      render: (v) => <Tag color={Number(v || 0) >= 5 ? 'gold' : 'blue'}>{Number(v || 0)}</Tag>,
+    },
+    {
+      title: '最近出现', dataIndex: 'last_seen', key: 'last_seen', width: 180,
+      render: (t) => t ? new Date(t).toLocaleString('zh-CN') : '-',
+    },
+    {
+      title: '可能原因', dataIndex: 'possible_causes', key: 'possible_causes',
+      render: (arr) => {
+        const items = Array.isArray(arr) ? arr : []
+        if (!items.length) return '-'
+        const total = items.reduce((s, x) => s + Number(x?.count || 0), 0) || 1
+        return (
+          <Space wrap size={[4, 4]}>
+            {items.slice(0, 6).map((x, i) => {
+              const p = Number.isFinite(Number(x?.probability))
+                ? Number(x?.probability)
+                : (Number(x?.count || 0) / total) * 100
+              return (
+                <Tag key={i} color="green">
+                  {String(x?.name || '').slice(0, 24)}
+                  {`（${p.toFixed(1)}%）`}
+                </Tag>
+              )
+            })}
+          </Space>
+        )
+      },
+    },
+    {
+      title: '反馈', dataIndex: 'rating', key: 'rating', width: 130,
+      render: (r) => {
+        const up = Number(r?.up || 0)
+        const down = Number(r?.down || 0)
+        if (!up && !down) return '-'
+        return <span style={{ fontSize: 12 }}>{up} / {down}</span>
+      }
+    },
+    {
+      title: '操作', key: 'action', width: 120,
+      render: (_, row) => (
+        <Button
+          size="small"
+          icon={<EyeOutlined />}
+          onClick={() => handleView({ tree_id: row.tree_id, top_event: row.question })}
+        >
+          查看
+        </Button>
+      ),
+    },
+  ]
+
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
         <Title level={4} style={{ margin: 0 }}>历史记录</Title>
-        <Button onClick={loadTrees}>刷新</Button>
+        <Button onClick={async () => { await loadTrees(); await loadFaqs() }}>刷新</Button>
       </div>
 
       <Card>
-        <Table
-          rowKey="tree_id"
-          columns={columns}
-          dataSource={trees}
-          loading={loading}
-          locale={{ emptyText: <Empty description="暂无历史记录" /> }}
-          pagination={{ pageSize: 10 }}
+        <Tabs
+          activeKey={tabKey}
+          onChange={setTabKey}
+          items={[
+            {
+              key: 'faq',
+              label: '常见问题（合并）',
+              children: (
+                <Table
+                  rowKey={(r) => `${r.tree_id || ''}-${r.question || ''}`}
+                  columns={faqColumns}
+                  dataSource={faqs}
+                  loading={faqLoading}
+                  locale={{ emptyText: <Empty description="暂无常见问题" /> }}
+                  pagination={{ pageSize: 10 }}
+                />
+              ),
+            },
+            {
+              key: 'history',
+              label: '全部记录',
+              children: (
+                <Table
+                  rowKey="tree_id"
+                  columns={columns}
+                  dataSource={trees}
+                  loading={loading}
+                  locale={{ emptyText: <Empty description="暂无历史记录" /> }}
+                  pagination={{ pageSize: 10 }}
+                />
+              ),
+            },
+          ]}
         />
       </Card>
 

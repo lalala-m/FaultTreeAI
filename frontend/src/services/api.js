@@ -262,10 +262,17 @@ export const cleanupKnowledgeItems = async (pipeline = '流水线1', opts = {}) 
   return data
 }
 
+export const autofillKnowledgeItems = async (pipeline = '流水线1', opts = {}) => {
+  const payload = { pipeline, ...(opts || {}) }
+  const { data } = await api.post('/knowledge/items/autofill', payload, { timeout: 300000 })
+  invalidateCache(['knowledgeItems'])
+  return data
+}
+
 // ── 故障树生成 ──────────────────────────────────────
 
 export const generateFaultTree = async (params) => {
-  const { data } = await api.post('/generate/', params)
+  const { data } = await api.post('/generate/', params, { timeout: 300000 })
   invalidateCache(['faultTrees'])
   return data
 }
@@ -284,6 +291,24 @@ export const listFaultTrees = async () => {
     const { data } = await api.get('/generate/')
     return data
   })
+}
+
+export const listFAQs = async () => {
+  return _cached('faqs', 15_000, async () => {
+    const { data } = await api.get('/generate/faqs')
+    return Array.isArray(data) ? data : []
+  })
+}
+
+export const lookupFaultTree = async (query) => {
+  const { data } = await api.post('/generate/lookup', { query: String(query || '').trim() })
+  return data
+}
+
+export const rateFaultTree = async (treeId, vote) => {
+  const { data } = await api.post('/generate/rate', { tree_id: treeId, vote })
+  invalidateCache(['faqs'])
+  return data
 }
 
 // ── 故障树编辑 ──────────────────────────────────────
@@ -392,10 +417,14 @@ api.listManualEntries = listManualEntries
 api.exportManualWord = exportManualWord
 api.reextractKnowledgeItems = reextractKnowledgeItems
 api.cleanupKnowledgeItems = cleanupKnowledgeItems
+api.autofillKnowledgeItems = autofillKnowledgeItems
 api.generateFaultTree = generateFaultTree
 api.getFaultTree = getFaultTree
 api.getSessionByTree = getSessionByTree
 api.listFaultTrees = listFaultTrees
+api.listFAQs = listFAQs
+api.lookupFaultTree = lookupFaultTree
+api.rateFaultTree = rateFaultTree
 api.saveFaultTree = saveFaultTree
 api.validateFaultTree = validateFaultTree
 api.exportWord = exportWord

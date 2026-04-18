@@ -145,7 +145,7 @@ export default function PixiCloudGraph({ nodes, edges, onNodeClick, onPaneClick,
     const k = neighbors.size
     const nTotal = visibleNodes.length
     const rootDeg = degree.get(rootId) || 0
-    const looksStar = k >= 8 && rootDeg >= Math.max(8, Math.floor(nTotal * 0.45))
+    const looksStar = k >= 6 && rootDeg >= Math.max(6, Math.floor(nTotal * 0.3))
     if (!looksStar) return m
 
     const rootPos = m.get(rootId) || { x: spreadAnchor.x, y: spreadAnchor.y }
@@ -156,11 +156,14 @@ export default function PixiCloudGraph({ nodes, edges, onNodeClick, onPaneClick,
       const angRaw = Math.atan2(dy, dx)
       const ang = angRaw < 0 ? angRaw + Math.PI * 2 : angRaw
       const r = Math.hypot(dx, dy)
-      return { id, ang, r }
+      const node = byId.get(id)
+      const label = node?.data?.label || node?.data?.name || node?.label || ''
+      const units = measureTextUnits(label)
+      const w = 1 + Math.min(2.4, units / 10)
+      return { id, ang, r, w }
     })
 
     items.sort((a, b) => a.ang - b.ang)
-    const step = (Math.PI * 2) / Math.max(items.length, 1)
 
     let startAngle = items[0]?.ang || 0
     if (items.length > 2) {
@@ -178,9 +181,14 @@ export default function PixiCloudGraph({ nodes, edges, onNodeClick, onPaneClick,
       startAngle = items[(maxIdx + 1) % items.length].ang
     }
 
-    const minR = 240 * spreadFactor + Math.min(260, items.length * 6)
-    items.forEach((it, idx) => {
-      const a = startAngle + idx * step
+    const totalW = items.reduce((s, it) => s + (Number(it.w) || 1), 0) || 1
+    const minR = 240 * spreadFactor + Math.min(360, totalW * 12)
+    let acc = 0
+    items.forEach((it) => {
+      const frac = (Number(it.w) || 1) / totalW
+      const step = Math.PI * 2 * frac
+      const a = startAngle + acc + step / 2
+      acc += step
       const r = Math.max(minR, it.r || 0)
       m.set(it.id, {
         x: (rootPos.x ?? 0) + Math.cos(a) * r,

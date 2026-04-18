@@ -85,7 +85,7 @@ export default function App() {
   const isAuth = !user && (active === 'login' || active === 'register')
 
   return (
-    <Layout style={{ minHeight: '100vh' }}>
+    <Layout style={{ minHeight: '100vh', height: '100vh' }}>
       {isAuth ? (
         <div
           style={{
@@ -117,7 +117,11 @@ export default function App() {
         </div>
       ) : (
         <>
-      <Sider breakpoint="lg" collapsedWidth="0" style={{ background: '#001529' }}>
+      <Sider
+        breakpoint="lg"
+        collapsedWidth="0"
+        style={{ background: '#001529', position: 'sticky', top: 0, height: '100vh', overflow: 'auto' }}
+      >
         <div style={{
           height: 60, display: 'flex', alignItems: 'center',
           justifyContent: 'center', borderBottom: '1px solid #ffffff15'
@@ -143,10 +147,11 @@ export default function App() {
         )}
       </Sider>
 
-      <Layout>
+      <Layout style={{ minHeight: 0 }}>
         <Header style={{
           background: '#fff', padding: '0 24px',
-          display: 'flex', alignItems: 'center', boxShadow: '0 1px 4px rgba(0,0,0,0.1)'
+          display: 'flex', alignItems: 'center', boxShadow: '0 1px 4px rgba(0,0,0,0.1)',
+          position: 'sticky', top: 0, zIndex: 20
         }}>
           <Title level={5} style={{ margin: 0, color: '#1f1f1f' }}>
             {items.find(i => i.key === active)?.label}
@@ -178,7 +183,7 @@ export default function App() {
           </div>
         </Header>
 
-        <Content style={{ padding: 24, overflow: 'auto' }}>
+        <Content style={{ padding: 24, overflow: 'auto', minHeight: 0 }}>
           <Suspense fallback={null}>
             {!user && active !== 'register' && (
               <Login onDone={handleAuthDone} onGoRegister={() => setActive('register')} />
@@ -187,7 +192,7 @@ export default function App() {
               <Register onDone={handleAuthDone} onGoLogin={() => setActive('login')} />
             )}
             {user && active === 'profile' && <Profile user={user} onUserChange={setUser} />}
-            {user && active === 'dashboard' && <Dashboard onNavigate={setActive} />}
+            {user && active === 'dashboard' && <Dashboard onNavigate={setActive} user={user} />}
             {user && active === 'knowledge' && <KnowledgeBase />}
             {user && active === 'manual' && <ManualBook />}
             {user && active === 'knowledgeGraph' && <KnowledgeGraph />}

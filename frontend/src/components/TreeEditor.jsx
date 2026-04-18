@@ -1,4 +1,4 @@
-import React, { useCallback, useState, useMemo, forwardRef, useImperativeHandle } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState, forwardRef, useImperativeHandle } from 'react'
 import ReactFlow, {
   useNodesState,
   useEdgesState,
@@ -221,6 +221,22 @@ const TreeEditor = forwardRef(function TreeEditor({ initialTree, onSave, onCance
   const [modalType, setModalType] = useState('addNode')
   const [selectedNode, setSelectedNode] = useState(null)
   const [form] = Form.useForm()
+  const rfWrapRef = useRef(null)
+  const [rfReady, setRfReady] = useState(false)
+
+  useEffect(() => {
+    const el = rfWrapRef.current
+    if (!el) return
+    const apply = () => {
+      const w = el.clientWidth || 0
+      const h = el.clientHeight || 0
+      setRfReady(w > 0 && h > 0)
+    }
+    apply()
+    const ro = new ResizeObserver(apply)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
 
   const wouldCreateCycle = useCallback((sourceId, targetId) => {
     const adj = new Map()
@@ -509,25 +525,29 @@ const TreeEditor = forwardRef(function TreeEditor({ initialTree, onSave, onCance
         overflow: 'hidden',
         background: 'rgba(10, 14, 39, 0.8)',
       }}>
-        <ReactFlow
-          nodes={nodes}
-          edges={edges}
-          onNodesChange={onNodesChange}
-          onEdgesChange={onEdgesChange}
-          onNodeClick={onNodeClick}
-          nodeTypes={nodeTypes}
-          fitView
-          fitViewOptions={{ padding: 0.2 }}
-          style={{ background: 'transparent', width: '100%', height: '100%' }}
-        >
-          <Controls style={{ background: '#141b3a', border: '1px solid rgba(24,144,255,0.2)' }} />
-          <Background color="#1890ff" gap={20} style={{ opacity: 0.1 }} />
-          <MiniMap 
-            nodeColor={(n) => NODE_COLORS[n.type]}
-            maskColor="rgba(10, 14, 39, 0.8)"
-            style={{ background: '#141b3a' }}
-          />
-        </ReactFlow>
+        <div ref={rfWrapRef} style={{ width: '100%', height: '100%' }}>
+          {rfReady && (
+            <ReactFlow
+              nodes={nodes}
+              edges={edges}
+              onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
+              onNodeClick={onNodeClick}
+              nodeTypes={nodeTypes}
+              fitView
+              fitViewOptions={{ padding: 0.2 }}
+              style={{ background: 'transparent', width: '100%', height: '100%' }}
+            >
+              <Controls style={{ background: '#141b3a', border: '1px solid rgba(24,144,255,0.2)' }} />
+              <Background color="#1890ff" gap={20} style={{ opacity: 0.1 }} />
+              <MiniMap 
+                nodeColor={(n) => NODE_COLORS[n.type]}
+                maskColor="rgba(10, 14, 39, 0.8)"
+                style={{ background: '#141b3a' }}
+              />
+            </ReactFlow>
+          )}
+        </div>
       </div>
 
       {/* 添加节点/边的弹窗 */}

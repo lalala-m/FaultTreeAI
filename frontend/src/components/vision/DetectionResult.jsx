@@ -28,6 +28,7 @@ export default function DetectionResult({
   loading = false, 
   onGenerateFaultTree,
   hideImage = false,
+  hideEmptyUploadAction = false,
   style,
   className,
 }) {
@@ -218,9 +219,11 @@ export default function DetectionResult({
           image={Empty.PRESENTED_IMAGE_SIMPLE}
           description="暂无识别结果"
         >
-          <Button type="primary" icon={<ThunderboltOutlined />}>
-            上传图片开始识别
-          </Button>
+          {!hideEmptyUploadAction && (
+            <Button type="primary" icon={<ThunderboltOutlined />}>
+              上传图片开始识别
+            </Button>
+          )}
         </Empty>
       </Card>
     );
