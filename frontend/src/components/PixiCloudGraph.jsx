@@ -67,6 +67,8 @@ export default function PixiCloudGraph({ nodes, edges, onNodeClick, onPaneClick,
   }
   const scale = activeFrame.scale
   const centeredNode = centerNodeId ? byId.get(centerNodeId) : null
+  const centeredNodeHeight = centeredNode ? estimateNodeHeight(centeredNode.data?.label, centeredNode.data?.kind || 'device') : null
+  const centeredNodeWidth = centeredNode ? estimateNodeWidth(centeredNode.data?.label, centeredNode.data?.kind || 'device') : null
   const offsetX = centeredNode
     ? (viewW / 2) - (((centeredNode.position?.x ?? 0) + (NODE_W[centeredNode.data?.kind || 'device'] || 220) / 2) * scale)
     : activeFrame.offsetX
@@ -286,6 +288,7 @@ export default function PixiCloudGraph({ nodes, edges, onNodeClick, onPaneClick,
                 top,
                 width,
                 height: nodeHeight,
+                zIndex: node?.data?.raiseAbove ? 5 : 1,
                 borderRadius: radius,
                 border: `1.4px solid ${hex(style.stroke)}`,
                 background: hex(style.fill),
@@ -295,11 +298,16 @@ export default function PixiCloudGraph({ nodes, edges, onNodeClick, onPaneClick,
                 boxShadow: '0 8px 24px rgba(0,0,0,0.08)',
                 padding: '8px 12px',
                 cursor: 'pointer',
-                overflow: 'hidden',
+                overflow: 'visible',
                 userSelect: 'none',
                 WebkitUserSelect: 'none',
                 caretColor: 'transparent',
                 outline: 'none',
+                textAlign: 'center',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                lineHeight: 1.42,
               }}
             >
               <span style={{ display: 'block', lineHeight: 1.4, wordBreak: 'break-word' }}>{node.data?.label}</span>

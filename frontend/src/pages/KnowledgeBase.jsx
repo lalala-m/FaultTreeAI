@@ -247,8 +247,28 @@ export default function KnowledgeBase() {
     { title: '机械类别', dataIndex: 'machine_category', key: 'machine_category', width: 120, render: (v) => <Text>{v || '-'}</Text> },
     { title: '机械', dataIndex: 'machine', key: 'machine', width: 140, render: (v) => <Text>{v || '-'}</Text> },
     { title: '问题类别', dataIndex: 'problem_category', key: 'problem_category', width: 120, render: (v) => <Text>{v || '-'}</Text> },
-    { title: '问题', dataIndex: 'problem', key: 'problem', render: (v) => <Text style={{ color: '#1a1a1a' }}>{v}</Text> },
-    { title: '导致原因', dataIndex: 'root_cause', key: 'root_cause', render: (v) => <Text type="secondary">{v || '-'}</Text> },
+    {
+      title: '问题',
+      dataIndex: 'problem',
+      key: 'problem',
+      width: 320,
+      render: (v) => (
+        <div style={{ minWidth: 240, whiteSpace: 'normal', wordBreak: 'break-word', lineHeight: 1.6, color: '#1a1a1a' }}>
+          {v || '-'}
+        </div>
+      ),
+    },
+    {
+      title: '导致原因',
+      dataIndex: 'root_cause',
+      key: 'root_cause',
+      width: 180,
+      render: (v) => (
+        <div style={{ minWidth: 140, whiteSpace: 'normal', wordBreak: 'break-word', lineHeight: 1.6, color: '#8c8c8c' }}>
+          {v || '-'}
+        </div>
+      ),
+    },
     {
       title: '权重',
       dataIndex: 'effective_weight',
@@ -574,6 +594,7 @@ export default function KnowledgeBase() {
           dataSource={items}
           rowKey="item_id"
           loading={itemsLoading}
+          scroll={{ x: 1280 }}
           pagination={{ pageSize: 8 }}
           locale={{ emptyText: <Empty description="暂无结构化知识，请新增" /> }}
         />
