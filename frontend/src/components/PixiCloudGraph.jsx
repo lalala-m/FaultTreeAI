@@ -67,8 +67,6 @@ export default function PixiCloudGraph({ nodes, edges, onNodeClick, onPaneClick,
   }
   const scale = activeFrame.scale
   const centeredNode = centerNodeId ? byId.get(centerNodeId) : null
-  const centeredNodeHeight = centeredNode ? estimateNodeHeight(centeredNode.data?.label, centeredNode.data?.kind || 'device') : null
-  const centeredNodeWidth = centeredNode ? estimateNodeWidth(centeredNode.data?.label, centeredNode.data?.kind || 'device') : null
   const offsetX = centeredNode
     ? (viewW / 2) - (((centeredNode.position?.x ?? 0) + (NODE_W[centeredNode.data?.kind || 'device'] || 220) / 2) * scale)
     : activeFrame.offsetX

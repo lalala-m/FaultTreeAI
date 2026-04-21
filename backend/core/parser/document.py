@@ -26,8 +26,36 @@ def _normalize_table_text(text: str) -> str:
 def parse_pdf(file_path: str) -> list[dict]:
     doc = fitz.open(file_path)
     chunks = []
+    engine = None
     for page_num, page in enumerate(doc):
         text = page.get_text("text").strip()
+        
+        # 如果提取出的文本过少，则认为可能是扫描版图片，尝试进行 OCR 识别
+        if len(text) < 50:
+            if engine is None:
+                try:
+                    from rapidocr_onnxruntime import RapidOCR
+                    engine = RapidOCR()
+                except ImportError:
+                    pass
+            
+            if engine:
+                import numpy as np
+                import cv2
+                # 放大两倍以提高 OCR 精度
+                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+                img_array = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, pix.n)
+                if pix.n == 4:
+                    img_array = cv2.cvtColor(img_array, cv2.COLOR_RGBA2RGB)
+                elif pix.n == 1:
+                    img_array = cv2.cvtColor(img_array, cv2.COLOR_GRAY2RGB)
+                elif pix.n == 3 and pix.colorspace.name == 'DeviceBGR':
+                    img_array = cv2.cvtColor(img_array, cv2.COLOR_BGR2RGB)
+                
+                result, _ = engine(img_array)
+                if result:
+                    text = "\n".join([res[1] for res in result])
+
         # 仅保留 PDF 自带文字层，忽略页面中的图片内容。
         text = _normalize_table_text(text)
         if not text:

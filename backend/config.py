@@ -77,8 +77,8 @@ class Settings(BaseSettings):
     JWT_EXPIRE_MINUTES: int = 60 * 24 * 7
 
     # ??? ???? ???
-    MANUALS_PATH: str = "data/manuals"
-    SAMPLES_PATH: str = "data/samples"
+    MANUALS_PATH: str = str(Path(__file__).resolve().parent.parent / "data" / "manuals")
+    SAMPLES_PATH: str = str(Path(__file__).resolve().parent.parent / "data" / "samples")
     SKIP_EMBED_ON_FAIL: bool = True
 
     class Config:

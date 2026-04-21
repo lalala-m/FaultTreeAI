@@ -28,6 +28,7 @@ aiohttp>=3.9.0
 # 文档解析
 PyMuPDF>=1.24.0
 python-docx>=1.1.0
+rapidocr-onnxruntime==1.2.3
 
 # 图计算
 networkx>=3.3

@@ -698,7 +698,9 @@ export default function KnowledgeGraph() {
     }
 
     if (level === 'm' || !mKey) {
-      if (selectedPipelineId) {
+      const pipelineNameKey = keyOf(line)
+      const shouldShowPipeline = selectedPipelineId && !flatMachines.some((m) => keyOf(m.name) === pipelineNameKey)
+      if (shouldShowPipeline) {
         addNode(selectedPipelineId, line, 'pipeline', CENTER_X, CENTER_Y, false, { pipeline: line })
       }
       const overviewMachines = flatMachines.slice(0, 18)
@@ -707,7 +709,7 @@ export default function KnowledgeGraph() {
       overviewMachines.forEach((m, i) => {
         let x
         let y
-        if (selectedPipelineId) {
+        if (shouldShowPipeline) {
           const a = overviewAngles[i] ?? ((Math.PI * 2 * i) / Math.max(overviewMachines.length, 1))
           x = CENTER_X + Math.cos(a) * overviewRing
           y = CENTER_Y + Math.sin(a) * overviewRing
@@ -734,7 +736,7 @@ export default function KnowledgeGraph() {
           y = pos.y
         }
         addNode(`m-${m.key}`, m.name, 'device', x, y, false, { level: 'm', key: m.key, emphasis: selectedPipelineId ? 0.9 : 1 })
-        if (selectedPipelineId) addEdge(selectedPipelineId, `m-${m.key}`, '#69b1ff')
+        if (shouldShowPipeline) addEdge(selectedPipelineId, `m-${m.key}`, '#69b1ff')
       })
       return { nodes: ns, edges: es }
     }
@@ -933,6 +935,51 @@ export default function KnowledgeGraph() {
         }
       }
       return { nodes: ns, edges: es }
+    }
+
+    if (transitionPhase === 'expanded' && activeDeviceId && activeFaultId) {
+      const dev = devices.find((d) => `dev-${d.name}` === activeDeviceId)
+      const idxMatch = String(activeFaultId).match(/-(\d+)$/)
+      const fi = idxMatch ? Number(idxMatch[1]) : NaN
+      const fault = Number.isFinite(fi) ? (dev?.faults || [])[fi] : null
+      if (dev && fault) {
+        const ax = CENTER_X
+        const ay = CENTER_Y
+        const faultId = `fault-${dev.name}-${fi}`
+        ns.push({
+          id: faultId,
+          type: 'cloud',
+          data: {
+            label: fault.name,
+            kind: 'fault',
+            preset: visualPreset,
+            hidden: false,
+            deviceId: activeDeviceId,
+            faultIndex: fi,
+            emphasis: 1.06,
+          },
+          position: { x: ax, y: ay },
+          draggable: false,
+        })
+        const solutions = fault.solutions || []
+        const sRadius = ringRadius(solutions.length || 1, SOLUTION_NODE_W, 24, 240)
+        const angles = faultAngles(Math.max(solutions.length, 1))
+        solutions.forEach((s, si) => {
+          const a = angles[si] ?? ((Math.PI * 2 * si) / Math.max(solutions.length, 1))
+          const sx = ax + Math.cos(a) * sRadius
+          const sy = ay + Math.sin(a) * sRadius
+          const solId = `sol-${dev.name}-${fi}-${si}`
+          ns.push({
+            id: solId,
+            type: 'cloud',
+            data: { label: s, kind: 'solution', preset: visualPreset, hidden: false },
+            position: { x: sx, y: sy },
+            draggable: false,
+          })
+          es.push({ id: `e-${faultId}-${solId}`, source: faultId, target: solId, style: { stroke: '#95de64' } })
+        })
+        return { nodes: ns, edges: es }
+      }
     }
     const basePosById = new Map()
     devices.forEach((d, i) => {

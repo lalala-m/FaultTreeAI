@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import {
-  Card, Upload, Table, Button, Space, Tag, Typography, message, Progress, Empty, Popconfirm, Steps, Alert, Select, Input, Modal, Form, Slider, Switch
+  Card, Upload, Table, Button, Space, Tag, Typography, message, Progress, Empty, Popconfirm, Steps, Alert, Select, Input, Modal, Form, Slider, Switch, Tooltip
 } from 'antd'
 import { 
   UploadOutlined, 
@@ -43,9 +43,11 @@ export default function KnowledgeBase() {
   const [expertWeightSubmitting, setExpertWeightSubmitting] = useState(false)
   const [reextractSubmitting, setReextractSubmitting] = useState(false)
   const [itemForm] = Form.useForm()
+  const pollRef = useRef({ token: 0, timer: null })
 
-  const loadDocs = async () => {
+  const loadDocs = async (force = false) => {
     try {
+      if (force) api.invalidateCache?.(['documents'])
       const data = await api.listDocuments()
       setDocs(Array.isArray(data) ? data : [])
     } catch {
@@ -82,6 +84,13 @@ export default function KnowledgeBase() {
   useEffect(() => {
     loadDocs()
     loadPipelines()
+    return () => {
+      try {
+        if (pollRef.current?.timer) clearTimeout(pollRef.current.timer)
+      } catch {
+      }
+      pollRef.current = { token: 0, timer: null }
+    }
   }, [])
 
   useEffect(() => {
@@ -108,7 +117,7 @@ export default function KnowledgeBase() {
       setProgress(60)
       
       const p = (uploadPipeline || '').trim() || '流水线1'
-      await api.uploadDocument(file, setProgress, p, uploadAutoExtract)
+      const uploaded = await api.uploadDocument(file, setProgress, p, uploadAutoExtract)
       
       // 步骤4: 完成
       setUploadStep(4)
@@ -116,6 +125,41 @@ export default function KnowledgeBase() {
       message.success(uploadAutoExtract ? '文档上传完成，已触发结构化抽取（后台进行）' : '文档上传并处理完成！')
       await loadDocs()
       await loadPipelines()
+
+      if (uploadAutoExtract && uploaded?.doc_id) {
+        try {
+          if (pollRef.current?.timer) clearTimeout(pollRef.current.timer)
+        } catch {
+        }
+        const token = Date.now()
+        pollRef.current = { token, timer: null }
+
+        const tick = async (attempt = 0) => {
+          if (pollRef.current?.token !== token) return
+          let list = null
+          try {
+            api.invalidateCache?.(['documents'])
+            list = await api.listDocuments()
+          } catch {
+          }
+          const arr = Array.isArray(list) ? list : null
+          if (arr) {
+            setDocs(arr)
+            const doc = arr.find((d) => String(d?.doc_id || '') === String(uploaded.doc_id || ''))
+            const structured = String(doc?.structured_kb || '')
+            if (structured && structured !== 'pending') {
+              if (String(doc?.pipeline || p) === String(itemsPipeline)) {
+                await loadItems(String(doc?.pipeline || p))
+              }
+              return
+            }
+          }
+          if (attempt >= 240) return
+          pollRef.current.timer = setTimeout(() => tick(attempt + 1), 1500)
+        }
+
+        tick(0)
+      }
     } catch (err) {
       message.error('上传失败: ' + (err.response?.data?.detail || err.message))
       setUploadStep(0)
@@ -207,10 +251,13 @@ export default function KnowledgeBase() {
       render: (s, row) => {
         const v = String(s || '')
         if (!v) return <Text type="secondary">-</Text>
-        if (v === 'ok') return <Tag color="green">已抽取</Tag>
+        const tip = String(row?.structured_error || '')
+        const withTip = (node) => (tip ? <Tooltip title={tip}>{node}</Tooltip> : node)
+        if (v === 'ok') return withTip(<Tag color="green">已抽取</Tag>)
         if (v === 'pending') return <Tag color="blue">抽取中</Tag>
-        if (v === 'failed') return <Tag color="red">失败</Tag>
-        return <Tag>{v}</Tag>
+        if (v === 'empty') return withTip(<Tag color="orange">未抽取</Tag>)
+        if (v === 'failed') return withTip(<Tag color="red">失败</Tag>)
+        return withTip(<Tag>{v}</Tag>)
       },
     },
     {

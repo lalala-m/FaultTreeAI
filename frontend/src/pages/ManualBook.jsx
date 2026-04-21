@@ -23,6 +23,7 @@ export default function ManualBook() {
   const [useAI, setUseAI] = useState(true)
   const [entries, setEntries] = useState([])
   const [loading, setLoading] = useState(false)
+  const [reextracting, setReextracting] = useState(false)
   const [query, setQuery] = useState('')
 
   useEffect(() => {
@@ -116,6 +117,18 @@ export default function ManualBook() {
     },
   ]
 
+  const reextract = async () => {
+    setReextracting(true)
+    try {
+      await api.reextractManualEntries(pipeline, { use_ai: useAI })
+      message.success('已重新抽取')
+      await loadEntries()
+    } catch (e) {
+      message.error(e?.response?.data?.detail || e?.message || '重新抽取失败')
+    }
+    setReextracting(false)
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <Card>
@@ -131,6 +144,9 @@ export default function ManualBook() {
                 <Switch checked={useAI} onChange={setUseAI} />
               </Space>
               <Button icon={<ReloadOutlined />} onClick={() => loadEntries()} disabled={loading}>刷新</Button>
+              <Button onClick={reextract} loading={reextracting} disabled={loading}>
+                整理手册/重新抽取
+              </Button>
               <Button type="primary" icon={<DownloadOutlined />} onClick={exportWord}>导出 Word</Button>
             </Space>
           </div>

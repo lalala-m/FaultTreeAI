@@ -1347,6 +1347,7 @@ async def upload_document(
         if auto_extract:
             async def _structured_extract_task(_doc_id: str, _pipeline: str):
                 import psycopg2.extras
+                import asyncio
                 if (settings.LLM_PROVIDER or "").lower() == "minimax" and (not settings.MINIMAX_API_KEY or not settings.MINIMAX_GROUP_ID):
                     with psycopg2.connect(
                         host=settings.DB_HOST, port=settings.DB_PORT,
@@ -1366,13 +1367,35 @@ async def upload_document(
                     return
 
                 try:
-                    r = await extract_knowledge_items_with_ai(pipeline=_pipeline, doc_ids=[_doc_id])
-                    payload = {
-                        "structured_kb": "ok",
-                        "structured_extracted": int(getattr(r, "extracted", 0)),
-                        "structured_inserted": int(getattr(r, "inserted", 0)),
-                        "structured_skipped": int(getattr(r, "skipped", 0)),
-                    }
+                    r = await asyncio.wait_for(
+                        extract_knowledge_items_with_ai(pipeline=_pipeline, doc_ids=[_doc_id]),
+                        timeout=1200,
+                    )
+                    extracted = int(getattr(r, "extracted", 0))
+                    inserted = int(getattr(r, "inserted", 0))
+                    skipped = int(getattr(r, "skipped", 0))
+                    provider = str(getattr(r, "provider", "") or "")
+                    errors = list(getattr(r, "errors", []) or [])
+                    if extracted <= 0 and inserted <= 0:
+                        payload = {
+                            "structured_kb": "empty",
+                            "structured_extracted": extracted,
+                            "structured_inserted": inserted,
+                            "structured_skipped": skipped,
+                            "structured_provider": provider,
+                            "structured_error": (errors[0] if errors else "未抽取到条目：可能是扫描版PDF无可解析文字，或文档缺少“故障现象-原因-处理”描述。")[:200],
+                        }
+                    else:
+                        payload = {
+                            "structured_kb": "ok",
+                            "structured_extracted": extracted,
+                            "structured_inserted": inserted,
+                            "structured_skipped": skipped,
+                            "structured_provider": provider,
+                            "structured_error": (errors[0] if errors else ""),
+                        }
+                except asyncio.TimeoutError:
+                    payload = {"structured_kb": "failed", "structured_error": "结构化抽取超时（1200s），请稍后重试或缩小文档范围。"}
                 except Exception as e:
                     payload = {"structured_kb": "failed", "structured_error": str(e)[:200]}
 
@@ -2466,7 +2489,15 @@ def _extract_manual_entries(pipeline: str, limit: int = 400) -> list[dict]:
     ]
     unsafe = [
         "目录", "更新日期", "查询热线", "本手册", "官方完整手册", "标准化模板", "产品结构图示",
-        "技术参数", "参数表",
+        "技术参数", "参数表", "版权", "保留解释权", "如有变更", "仅供参考",
+        "注意事项", "符号说明", "标识说明", "风险等级", "警示三角", "警示标志",
+        "产品概述", "简介", "包装清单", "装箱单",
+    ]
+
+    topic_keywords = [
+        "开机", "关机", "启动", "停止", "复位", "校准", "清洁", "清理", "维护",
+        "更换", "安装", "拆卸", "操作", "检查", "确认", "连接", "断电",
+        "安全", "高压", "防护", "佩戴", "锁定挂牌", "紧固", "润滑",
     ]
 
     def norm_line(s: str) -> str:
@@ -2486,6 +2517,25 @@ def _extract_manual_entries(pipeline: str, limit: int = 400) -> list[dict]:
         if any(k in compact for k in norm_keys):
             return "规范"
         return ""
+
+    def pick_topic(line: str) -> str:
+        text = str(line or "").strip()
+        for k in topic_keywords:
+            if k in text:
+                return f"{k}要求"
+        return "通用"
+
+    def is_useful_line(v: str, compact: str) -> bool:
+        if len(compact) < 6 or len(compact) > 140:
+            return False
+        if any(k in compact for k in unsafe):
+            return False
+        if len(compact) <= 10 and (_is_noise_phrase(v) or _is_noise_phrase(compact)):
+            return False
+        # 必须包含动词或规范性措辞
+        if not any(k in compact for k in (op_keys + norm_keys + safety_keys)):
+            return False
+        return True
 
     with psycopg2.connect(
         host=settings.DB_HOST, port=settings.DB_PORT,
@@ -2522,11 +2572,7 @@ def _extract_manual_entries(pipeline: str, limit: int = 400) -> list[dict]:
             if not v:
                 continue
             compact = re.sub(r"\s+", "", v)
-            if len(compact) < 6 or len(compact) > 120:
-                continue
-            if any(k in compact for k in unsafe):
-                continue
-            if len(compact) <= 10 and (_is_noise_phrase(v) or _is_noise_phrase(compact)):
+            if not is_useful_line(v, compact):
                 continue
             cat = pick_category(compact)
             if not cat:
@@ -2538,6 +2584,7 @@ def _extract_manual_entries(pipeline: str, limit: int = 400) -> list[dict]:
             out.append(
                 {
                     "category": cat,
+                    "topic": pick_topic(v),
                     "text": v[:240],
                     "source": {
                         "doc_id": doc_id,
@@ -2564,6 +2611,21 @@ async def list_manual_entries(pipeline: str = "流水线1", category: str | None
     if cat:
         entries = [x for x in entries if str((x or {}).get("category") or "") == cat]
     return {"pipeline": pipeline, "category": cat, "count": len(entries), "entries": entries}
+
+
+@router.post("/manual/reextract")
+async def reextract_manual_entries(pipeline: str = "流水线1", use_ai: bool = True, user: dict = Depends(require_expert)):
+    pipeline = _normalize_pipeline(pipeline)
+    # 清缓存并强制重建
+    global _MANUAL_CACHE
+    if pipeline in _MANUAL_CACHE:
+        _MANUAL_CACHE.pop(pipeline, None)
+    if use_ai:
+        manual = await _build_manual_with_ai(pipeline)
+        entries = _flatten_manual_entries(manual)
+    else:
+        entries = [{"category": x.get("category"), "topic": x.get("topic") or "", "text": x.get("text")} for x in _extract_manual_entries(pipeline, limit=600)]
+    return {"pipeline": pipeline, "count": len(entries), "entries": entries}
 
 
 @router.get("/manual/export/word")

@@ -243,6 +243,12 @@ export const listManualEntries = async (pipeline = '流水线1', params = {}) =>
   return data
 }
 
+export const reextractManualEntries = async (pipeline = '流水线1', params = {}) => {
+  const { data } = await api.post('/knowledge/manual/reextract', null, { params: { pipeline, ...(params || {}) } })
+  invalidateCache(['manualEntries'])
+  return data
+}
+
 export const exportManualWord = async (pipeline = '流水线1', params = {}) => {
   return api.get('/knowledge/manual/export/word', { params: { pipeline, ...(params || {}) }, responseType: 'blob' })
 }
@@ -414,6 +420,7 @@ api.feedbackKnowledgeItemWeight = feedbackKnowledgeItemWeight
 api.setKnowledgeItemExpertWeight = setKnowledgeItemExpertWeight
 api.listKnowledgeItemSuggestions = listKnowledgeItemSuggestions
 api.listManualEntries = listManualEntries
+api.reextractManualEntries = reextractManualEntries
 api.exportManualWord = exportManualWord
 api.reextractKnowledgeItems = reextractKnowledgeItems
 api.cleanupKnowledgeItems = cleanupKnowledgeItems

@@ -192,7 +192,7 @@ async def _extract_items_with_llm(filename: str, content: str) -> tuple[list[dic
 2) 机械(machine)优先用手册明确的设备名/型号；若不明确，使用文件名推断：{device_hint}
 3) 过滤无用信息：安全提示、目录、参数表、工具清单、泛化描述（如“检查电源”但没有对应故障现象）不要输出
 4) machine_category/problem_category若手册没有，基于 machine/problem 内容合理推断；不要留空
-5) 每个条目必须同时包含 problem 与 root_cause；diagnosis/solution 可为空字符串
+5) 每个条目必须包含 problem；root_cause 若无法从原文明确抽取，请输出空字符串（系统会自动填为“未明确”）
 6) items数量控制在 30 条以内，去重（相同 machine+problem+root_cause 只保留一条）
 
 维修手册内容：
@@ -214,9 +214,7 @@ async def _extract_items_with_llm(filename: str, content: str) -> tuple[list[dic
         problem = _clean_phrase(it.get("problem"), 40)
         if not _is_useful_problem(problem):
             continue
-        root_cause = _clean_phrase(it.get("root_cause"), 60)
-        if len(root_cause) < 2:
-            continue
+        root_cause = _clean_phrase(it.get("root_cause"), 60) or "未明确"
         problem_category = _clean_phrase(it.get("problem_category") or _infer_problem_category(problem), 30) or _infer_problem_category(problem)
         diagnosis = _clean_phrase(it.get("diagnosis"), 120)
         solution = _clean_phrase(it.get("solution"), 140)
