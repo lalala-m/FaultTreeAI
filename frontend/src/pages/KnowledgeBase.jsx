@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
 import {
-  Card, Upload, Table, Button, Space, Tag, Typography, message, Progress, Empty, Popconfirm, Steps, Alert, Select, Input, Modal, Form, Slider, Switch, Tooltip
+  Card, Upload, Table, Button, Space, Tag, Typography, message, Progress, Empty, Popconfirm, Steps, Alert, Select, Input, Modal, Form, Slider, Tooltip
 } from 'antd'
 import { 
   UploadOutlined, 
@@ -25,15 +25,26 @@ export default function KnowledgeBase() {
   const [progress, setProgress] = useState(0)
   const [loading, setLoading] = useState(true)
   const [uploadStep, setUploadStep] = useState(0)
-  const [uploadPipeline, setUploadPipeline] = useState('流水线1')
-  const [uploadAutoExtract, setUploadAutoExtract] = useState(true)
+  const [uploadPipeline, setUploadPipeline] = useState(() => {
+    try {
+      return String(window?.localStorage?.getItem('kb_upload_pipeline') || '流水线1') || '流水线1'
+    } catch {
+      return '流水线1'
+    }
+  })
   const [pipelines, setPipelines] = useState([])
   const [newPipelineName, setNewPipelineName] = useState('')
   const [creatingPipeline, setCreatingPipeline] = useState(false)
 
   const [items, setItems] = useState([])
   const [itemsLoading, setItemsLoading] = useState(false)
-  const [itemsPipeline, setItemsPipeline] = useState('流水线1')
+  const [itemsPipeline, setItemsPipeline] = useState(() => {
+    try {
+      return String(window?.localStorage?.getItem('kb_items_pipeline') || '流水线1') || '流水线1'
+    } catch {
+      return '流水线1'
+    }
+  })
   const [itemModalOpen, setItemModalOpen] = useState(false)
   const [itemSubmitting, setItemSubmitting] = useState(false)
   const [itemWeightSubmitting, setItemWeightSubmitting] = useState({})
@@ -41,7 +52,11 @@ export default function KnowledgeBase() {
   const [expertWeightItem, setExpertWeightItem] = useState(null)
   const [expertWeightValue, setExpertWeightValue] = useState(null)
   const [expertWeightSubmitting, setExpertWeightSubmitting] = useState(false)
-  const [reextractSubmitting, setReextractSubmitting] = useState(false)
+  const [itemQuery, setItemQuery] = useState('')
+  const [docSummaryOpen, setDocSummaryOpen] = useState(false)
+  const [docSummaryLoading, setDocSummaryLoading] = useState(false)
+  const [docSummaryTitle, setDocSummaryTitle] = useState('')
+  const [docSummaryText, setDocSummaryText] = useState('')
   const [itemForm] = Form.useForm()
   const pollRef = useRef({ token: 0, timer: null })
 
@@ -97,6 +112,20 @@ export default function KnowledgeBase() {
     loadItems(itemsPipeline)
   }, [itemsPipeline])
 
+  useEffect(() => {
+    try {
+      window?.localStorage?.setItem('kb_items_pipeline', String(itemsPipeline || '流水线1'))
+    } catch {
+    }
+  }, [itemsPipeline])
+
+  useEffect(() => {
+    try {
+      window?.localStorage?.setItem('kb_upload_pipeline', String(uploadPipeline || '流水线1'))
+    } catch {
+    }
+  }, [uploadPipeline])
+
   const handleUpload = async ({ file }) => {
     setUploading(true)
     setProgress(0)
@@ -117,16 +146,16 @@ export default function KnowledgeBase() {
       setProgress(60)
       
       const p = (uploadPipeline || '').trim() || '流水线1'
-      const uploaded = await api.uploadDocument(file, setProgress, p, uploadAutoExtract)
+      const uploaded = await api.uploadDocument(file, setProgress, p, true)
       
       // 步骤4: 完成
       setUploadStep(4)
       setProgress(100)
-      message.success(uploadAutoExtract ? '文档上传完成，已触发结构化抽取（后台进行）' : '文档上传并处理完成！')
+      message.success('文档上传完成，已触发生成并入库（后台进行）')
       await loadDocs()
       await loadPipelines()
 
-      if (uploadAutoExtract && uploaded?.doc_id) {
+      if (uploaded?.doc_id) {
         try {
           if (pollRef.current?.timer) clearTimeout(pollRef.current.timer)
         } catch {
@@ -147,7 +176,8 @@ export default function KnowledgeBase() {
             setDocs(arr)
             const doc = arr.find((d) => String(d?.doc_id || '') === String(uploaded.doc_id || ''))
             const structured = String(doc?.structured_kb || '')
-            if (structured && structured !== 'pending') {
+            const summaryStatus = String(doc?.ai_summary_status || '')
+            if (structured && structured !== 'pending' && summaryStatus !== 'pending') {
               if (String(doc?.pipeline || p) === String(itemsPipeline)) {
                 await loadItems(String(doc?.pipeline || p))
               }
@@ -258,6 +288,54 @@ export default function KnowledgeBase() {
         if (v === 'empty') return withTip(<Tag color="orange">未抽取</Tag>)
         if (v === 'failed') return withTip(<Tag color="red">失败</Tag>)
         return withTip(<Tag>{v}</Tag>)
+      },
+    },
+    {
+      title: 'AI总结',
+      dataIndex: 'ai_summary_status',
+      key: 'ai_summary_status',
+      width: 180,
+      render: (s, row) => {
+        const v = String(s || '')
+        const tip = String(row?.ai_summary_error || '')
+        const tag =
+          v === 'ok' ? <Tag color="green">已生成</Tag>
+            : v === 'pending' ? <Tag color="blue">生成中</Tag>
+              : v === 'empty' ? <Tag color="orange">为空</Tag>
+                : v === 'failed' ? <Tag color="red">失败</Tag>
+                  : <Tag>未生成</Tag>
+        const tagNode = tip ? <Tooltip title={tip}>{tag}</Tooltip> : tag
+
+        return (
+          <Space size={8}>
+            <span
+              style={{ cursor: 'pointer' }}
+              onClick={async () => {
+                if (!row?.doc_id) return
+                if (String(row.ai_summary_status || '') === 'pending') {
+                  message.info('AI 总结正在后台生成中，请稍后刷新')
+                  return
+                }
+                try {
+                  setDocSummaryLoading(true)
+                  if (String(row.ai_summary_status || '') !== 'ok') {
+                    await api.generateDocumentSummary(row.doc_id)
+                    await loadDocs(true)
+                  }
+                  const res = await api.getDocumentSummary(row.doc_id)
+                  setDocSummaryTitle((row.filename || 'AI总结') + '（结构化汇总）')
+                  setDocSummaryText(String(res?.ai_summary || '').trim())
+                  setDocSummaryOpen(true)
+                } catch (e) {
+                  message.error(e.response?.data?.detail || e.message || '获取 AI 总结失败')
+                }
+                setDocSummaryLoading(false)
+              }}
+            >
+              {tagNode}
+            </span>
+          </Space>
+        )
       },
     },
     {
@@ -402,6 +480,20 @@ export default function KnowledgeBase() {
     },
   ]
 
+  const filteredItems = items.filter(row => {
+    const q = String(itemQuery || '').trim()
+    if (!q) return true
+    const hay = [
+      row?.machine_category,
+      row?.machine,
+      row?.problem_category,
+      row?.problem,
+      row?.root_cause,
+      row?.solution,
+    ].map(v => String(v || '')).join(' ')
+    return hay.includes(q)
+  })
+
   return (
     <div className="page-container">
       {/* 页面标题 */}
@@ -475,10 +567,6 @@ export default function KnowledgeBase() {
             showSearch
             optionFilterProp="label"
           />
-          <Space size={8}>
-            <Text type="secondary">上传后自动抽取结构化知识</Text>
-            <Switch checked={uploadAutoExtract} onChange={setUploadAutoExtract} disabled={uploading} />
-          </Space>
           <Input
             style={{ width: 180 }}
             placeholder="新流水线名称"
@@ -560,68 +648,39 @@ export default function KnowledgeBase() {
         />
       </Card>
 
+      <Modal
+        open={docSummaryOpen}
+        title={docSummaryTitle || 'AI总结'}
+        onCancel={() => setDocSummaryOpen(false)}
+        footer={null}
+        width={860}
+      >
+        <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.7 }}>
+          {docSummaryText || '-'}
+        </div>
+      </Modal>
+
       <Card className="glass-card" style={{ marginTop: 24 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
           <Space>
-            <Text strong style={{ fontSize: 15, color: '#1a1a1a' }}>结构化知识（流水线→机械类别→机械→问题类别→问题→原因）</Text>
+            <Text strong style={{ fontSize: 15, color: '#1a1a1a' }}>结构化知识</Text>
             <Select
               style={{ width: 220 }}
               value={itemsPipeline}
               onChange={setItemsPipeline}
               options={pipelines.map(p => ({ value: p, label: p }))}
             />
+            <Input
+              style={{ width: 260 }}
+              placeholder="过滤关键词"
+              value={itemQuery}
+              onChange={(e) => setItemQuery(e.target.value)}
+              allowClear
+            />
+            <Tag color="blue">{filteredItems.length}/{items.length}</Tag>
           </Space>
           <Space>
             <Button onClick={() => loadItems(itemsPipeline)} loading={itemsLoading}>刷新</Button>
-            <Button
-              loading={reextractSubmitting}
-              disabled={itemsLoading || reextractSubmitting}
-              onClick={() => {
-                Modal.confirm({
-                  title: '整理信息（自动补全空白字段）？',
-                  content: '会对当前流水线下结构化知识条目中缺失的信息（如机械类别/问题类别/原因/解决方案等）调用 AI 自动补全，不会删除条目。',
-                  okText: '开始补全',
-                  cancelText: '取消',
-                  onOk: async () => {
-                    try {
-                      setReextractSubmitting(true)
-                      const res = await api.autofillKnowledgeItems(itemsPipeline, { limit: 120, dry_run: false })
-                      message.success(`已补全：扫描${res?.scanned ?? 0}条，更新${res?.updated ?? 0}条`)
-                      await loadItems(itemsPipeline)
-                    } catch (e) {
-                      message.error(e.response?.data?.detail || e.message || '整理失败')
-                    }
-                    setReextractSubmitting(false)
-                  }
-                })
-              }}
-            >
-              整理信息
-            </Button>
-            <Button
-              disabled={itemsLoading || reextractSubmitting}
-              onClick={() => {
-                Modal.confirm({
-                  title: '清理无用条目并补齐机械类别？',
-                  content: '会删除“操作说明/目录/参数表”等非故障条目，并对保留条目补齐机械类别与问题类别（仅保留有导致原因的条目）。',
-                  okText: '开始清理',
-                  cancelText: '取消',
-                  onOk: async () => {
-                    try {
-                      setReextractSubmitting(true)
-                      const res = await api.cleanupKnowledgeItems(itemsPipeline, { delete_unknown_cause: true, delete_noise: true, dry_run: false })
-                      message.success(`已清理：删除${res?.deleted ?? 0}条，更新${res?.updated ?? 0}条`)
-                      await loadItems(itemsPipeline)
-                    } catch (e) {
-                      message.error(e.response?.data?.detail || e.message || '清理失败')
-                    }
-                    setReextractSubmitting(false)
-                  }
-                })
-              }}
-            >
-              清理无用
-            </Button>
             <Button
               type="primary"
               icon={<PlusOutlined />}
@@ -638,7 +697,7 @@ export default function KnowledgeBase() {
 
         <Table
           columns={itemColumns}
-          dataSource={items}
+          dataSource={filteredItems}
           rowKey="item_id"
           loading={itemsLoading}
           scroll={{ x: 1280 }}

@@ -406,6 +406,7 @@ class LLMClient:
             self._embed = OpenAIEmbeddings(
                 model=settings.EMBED_MODEL,
                 api_key=settings.OPENAI_API_KEY,
+                base_url=settings.OPENAI_BASE_URL,
                 dimensions=settings.EMBED_DIM,
             )
 

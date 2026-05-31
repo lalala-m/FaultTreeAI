@@ -149,6 +149,45 @@ export const deleteDocument = async (docId) => {
   return data
 }
 
+export const getDocumentSummary = async (docId) => {
+  const traceId = Math.random().toString(16).slice(2, 10)
+  // #region debug-point A:ai-summary-empty-get
+  fetch('http://127.0.0.1:7777/event', { method: 'POST', body: JSON.stringify({ sessionId: 'ai-summary-empty', runId: 'pre-fix', hypothesisId: 'A', location: 'frontend/src/services/api.js:getDocumentSummary', msg: '[DEBUG] GET /knowledge/{docId}/summary start', data: { docId: String(docId || ''), traceId }, ts: Date.now() }) }).catch(() => {})
+  // #endregion
+  try {
+    const resp = await api.get(`/knowledge/${docId}/summary`)
+    // #region debug-point A:ai-summary-empty-get-ok
+    fetch('http://127.0.0.1:7777/event', { method: 'POST', body: JSON.stringify({ sessionId: 'ai-summary-empty', runId: 'pre-fix', hypothesisId: 'A', location: 'frontend/src/services/api.js:getDocumentSummary', msg: '[DEBUG] GET /knowledge/{docId}/summary ok', data: { docId: String(docId || ''), status: resp?.status, ai_summary_status: resp?.data?.ai_summary_status || '', ai_summary_len: String(resp?.data?.ai_summary || '').length, traceId }, ts: Date.now() }) }).catch(() => {})
+    // #endregion
+    return resp.data
+  } catch (err) {
+    // #region debug-point A:ai-summary-empty-get-err
+    fetch('http://127.0.0.1:7777/event', { method: 'POST', body: JSON.stringify({ sessionId: 'ai-summary-empty', runId: 'pre-fix', hypothesisId: 'A', location: 'frontend/src/services/api.js:getDocumentSummary', msg: '[DEBUG] GET /knowledge/{docId}/summary error', data: { docId: String(docId || ''), status: err?.response?.status, detail: err?.response?.data || err?.message || '', traceId }, ts: Date.now() }) }).catch(() => {})
+    // #endregion
+    throw err
+  }
+}
+
+export const generateDocumentSummary = async (docId) => {
+  const traceId = Math.random().toString(16).slice(2, 10)
+  // #region debug-point A:ai-summary-empty-post
+  fetch('http://127.0.0.1:7777/event', { method: 'POST', body: JSON.stringify({ sessionId: 'ai-summary-empty', runId: 'pre-fix', hypothesisId: 'A', location: 'frontend/src/services/api.js:generateDocumentSummary', msg: '[DEBUG] POST /knowledge/{docId}/summary start', data: { docId: String(docId || ''), traceId }, ts: Date.now() }) }).catch(() => {})
+  // #endregion
+  try {
+    const resp = await api.post(`/knowledge/${docId}/summary`, null, { timeout: 300000 })
+    // #region debug-point A:ai-summary-empty-post-ok
+    fetch('http://127.0.0.1:7777/event', { method: 'POST', body: JSON.stringify({ sessionId: 'ai-summary-empty', runId: 'pre-fix', hypothesisId: 'A', location: 'frontend/src/services/api.js:generateDocumentSummary', msg: '[DEBUG] POST /knowledge/{docId}/summary ok', data: { docId: String(docId || ''), status: resp?.status, extracted: resp?.data?.extracted, inserted: resp?.data?.inserted, provider: resp?.data?.provider || '', ai_summary_status: resp?.data?.ai_summary_status || '', traceId }, ts: Date.now() }) }).catch(() => {})
+    // #endregion
+    invalidateCache(['documents'])
+    return resp.data
+  } catch (err) {
+    // #region debug-point A:ai-summary-empty-post-err
+    fetch('http://127.0.0.1:7777/event', { method: 'POST', body: JSON.stringify({ sessionId: 'ai-summary-empty', runId: 'pre-fix', hypothesisId: 'A', location: 'frontend/src/services/api.js:generateDocumentSummary', msg: '[DEBUG] POST /knowledge/{docId}/summary error', data: { docId: String(docId || ''), status: err?.response?.status, detail: err?.response?.data || err?.message || '', traceId }, ts: Date.now() }) }).catch(() => {})
+    // #endregion
+    throw err
+  }
+}
+
 export const updateDocumentPipeline = async (docId, pipeline) => {
   const { data } = await api.put(`/knowledge/${docId}/pipeline`, null, { params: { pipeline } })
   invalidateCache(['documents'])
@@ -404,6 +443,8 @@ export const prefetchBootstrap = async (opts = {}) => {
 api.uploadDocument = uploadDocument
 api.listDocuments = listDocuments
 api.deleteDocument = deleteDocument
+api.getDocumentSummary = getDocumentSummary
+api.generateDocumentSummary = generateDocumentSummary
 api.updateDocumentPipeline = updateDocumentPipeline
 api.searchKnowledge = searchKnowledge
 api.getKnowledgeStats = getKnowledgeStats

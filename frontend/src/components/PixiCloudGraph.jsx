@@ -24,6 +24,96 @@ const NODE_STYLE = {
 
 const hex = (v) => `#${Number(v || 0).toString(16).padStart(6, '0')}`
 
+const _charUnit = (ch) => {
+  const code = ch.codePointAt(0) || 0
+  if (ch === ' ') return 0.35
+  if (ch === '\t') return 0.6
+  if (code >= 0x4e00 && code <= 0x9fff) return 1
+  if (code >= 0x3040 && code <= 0x30ff) return 0.95
+  if (code >= 0xac00 && code <= 0xd7af) return 1
+  if (code >= 0x1100 && code <= 0x11ff) return 0.9
+  if ((code >= 0x21 && code <= 0x7e) || (code >= 0xff01 && code <= 0xff60)) return 0.62
+  return 0.8
+}
+
+const _textUnits = (text) => {
+  const s = String(text || '')
+  let sum = 0
+  for (const ch of s) sum += _charUnit(ch)
+  return sum
+}
+
+const _estimateNodeSizePx = (label, kind, minWidthPx, maxWidthPx, fontSizePx) => {
+  const paddingX = 24
+  const paddingY = 16
+  const lineHeight = fontSizePx * 1.42
+  const lines = String(label || '').split(/\r?\n/).map((x) => x.trim()).filter(Boolean)
+  const safeLines = lines.length ? lines : ['']
+  const maxLineUnits = Math.max(...safeLines.map(_textUnits), 0)
+  const idealWidth = Math.ceil(maxLineUnits * fontSizePx + paddingX)
+  const width = Math.max(minWidthPx, Math.min(maxWidthPx, idealWidth))
+  const innerWidth = Math.max(1, width - paddingX)
+  const unitsPerLine = Math.max(1, innerWidth / fontSizePx)
+  const totalLines = safeLines.reduce((acc, line) => acc + Math.max(1, Math.ceil(_textUnits(line) / unitsPerLine)), 0)
+  const height = Math.max(1, Math.ceil(totalLines * lineHeight + paddingY))
+  return { width, height }
+}
+
+const _resolveNodeCollisions = (nodes, opts = {}) => {
+  const arr = Array.isArray(nodes) ? nodes.map((n) => ({ ...n })) : []
+  if (arr.length <= 1) return arr
+  const padding = Number.isFinite(opts.padding) ? opts.padding : 10
+  const iterations = Number.isFinite(opts.iterations) ? opts.iterations : 12
+  const pinnedId = opts.pinnedId ? String(opts.pinnedId) : ''
+
+  const isPinned = (n) => (pinnedId && String(n?.id) === pinnedId) || n?.node?.data?.pinned === true
+
+  for (let it = 0; it < iterations; it += 1) {
+    let moved = false
+    for (let i = 0; i < arr.length; i += 1) {
+      const a = arr[i]
+      const acx = a.left + a.width / 2
+      const acy = a.top + a.nodeHeight / 2
+      for (let j = i + 1; j < arr.length; j += 1) {
+        const b = arr[j]
+        const bcx = b.left + b.width / 2
+        const bcy = b.top + b.nodeHeight / 2
+
+        const dx = bcx - acx
+        const dy = bcy - acy
+        const minDx = (a.width + b.width) / 2 + padding
+        const minDy = (a.nodeHeight + b.nodeHeight) / 2 + padding
+        if (Math.abs(dx) >= minDx || Math.abs(dy) >= minDy) continue
+
+        const overlapX = minDx - Math.abs(dx)
+        const overlapY = minDy - Math.abs(dy)
+
+        const pinA = isPinned(a)
+        const pinB = isPinned(b)
+        const wa = pinA ? 0 : (pinB ? 1 : 0.5)
+        const wb = pinB ? 0 : (pinA ? 1 : 0.5)
+        if (wa === 0 && wb === 0) continue
+
+        if (overlapX <= overlapY) {
+          const dir = dx >= 0 ? 1 : -1
+          const push = (overlapX + 0.5) * dir
+          a.left -= push * wa
+          b.left += push * wb
+        } else {
+          const dir = dy >= 0 ? 1 : -1
+          const push = (overlapY + 0.5) * dir
+          a.top -= push * wa
+          b.top += push * wb
+        }
+        moved = true
+      }
+    }
+    if (!moved) break
+  }
+
+  return arr
+}
+
 export default function PixiCloudGraph({ nodes, edges, onNodeClick, onPaneClick, height = 560, freezeView = false, onFrameChange, centerNodeId = null }) {
   const hostRef = useRef(null)
   const nodeRefs = useRef(new Map())
@@ -90,14 +180,24 @@ export default function PixiCloudGraph({ nodes, edges, onNodeClick, onPaneClick,
     const emphasis = Number.isFinite(n.data?.emphasis) ? n.data.emphasis : 1
     const baseWidth = (NODE_W[kind] || 220) * scale
     const baseHeight = (NODE_H[kind] || 86) * scale
-    const width = baseWidth * emphasis
-    const nodeHeight = baseHeight * emphasis
+    const minWidth = baseWidth * emphasis
+    const minHeight = baseHeight * emphasis
+    const fontSize = Math.max(12, 14 * scale)
+    const maxWidth = minWidth * (kind === 'solution' ? 1.7 : 1.45)
+    const estimated = _estimateNodeSizePx(n.data?.label, kind, minWidth, maxWidth, fontSize)
+    const width = estimated.width
+    const nodeHeight = Math.max(minHeight, estimated.height)
     const left = (n.position?.x ?? 0) * scale + offsetX - (width - baseWidth) / 2
     const top = (n.position?.y ?? 0) * scale + offsetY - (nodeHeight - baseHeight) / 2
     const style = NODE_STYLE[kind] || NODE_STYLE.device
     const radius = preset === 'v4' ? 14 : preset === 'v1' ? 20 : 999
     return { id: n.id, node: n, kind, width, nodeHeight, left, top, style, radius }
   }), [visibleNodes, scale, offsetX, offsetY])
+  const resolvedLayoutNodes = useMemo(
+    () => _resolveNodeCollisions(layoutNodes, { padding: 12, iterations: 14, pinnedId: centerNodeId }),
+    [layoutNodes, centerNodeId]
+  )
+  const layoutById = useMemo(() => new Map(resolvedLayoutNodes.map((n) => [n.id, n])), [resolvedLayoutNodes])
   const graphIdentity = useMemo(
     () => [
       visibleNodes.map((n) => n.id).join('|'),
@@ -128,7 +228,7 @@ export default function PixiCloudGraph({ nodes, edges, onNodeClick, onPaneClick,
 
   useLayoutEffect(() => {
     const prevLayout = prevLayoutRef.current
-    layoutNodes.forEach(({ id, node, left, top, width, nodeHeight }, i) => {
+    resolvedLayoutNodes.forEach(({ id, node, left, top, width, nodeHeight }, i) => {
       const el = nodeRefs.current.get(id)
       if (!el) return
       const prev = prevLayout.get(id)
@@ -155,17 +255,17 @@ export default function PixiCloudGraph({ nodes, edges, onNodeClick, onPaneClick,
         { opacity: 1, scale: 1, y: 0, duration: 0.7, delay: i * 0.03, ease: 'power2.out' }
       )
     })
-    prevLayoutRef.current = new Map(layoutNodes.map(({ id, left, top, width, nodeHeight }) => [
+    prevLayoutRef.current = new Map(resolvedLayoutNodes.map(({ id, left, top, width, nodeHeight }) => [
       id,
       { left, top, width, height: nodeHeight },
     ]))
     return () => {
-      layoutNodes.forEach(({ id }) => {
+      resolvedLayoutNodes.forEach(({ id }) => {
         const el = nodeRefs.current.get(id)
         if (el) gsap.killTweensOf(el)
       })
     }
-  }, [layoutNodes])
+  }, [resolvedLayoutNodes])
 
   useEffect(() => {
     if (!isDragging) return undefined
@@ -255,19 +355,17 @@ export default function PixiCloudGraph({ nodes, edges, onNodeClick, onPaneClick,
           }}
         >
           {visibleEdges.map((e) => {
-            const s = byId.get(e.source)
-            const t = byId.get(e.target)
+            const s = layoutById.get(e.source)
+            const t = layoutById.get(e.target)
             if (!s || !t) return null
-            const sk = s.data?.kind || 'device'
-            const tk = t.data?.kind || 'device'
-            const sx = ((s.position?.x ?? 0) + (NODE_W[sk] || 220) / 2) * scale + offsetX
-            const sy = ((s.position?.y ?? 0) + (NODE_H[sk] || 86) / 2) * scale + offsetY
-            const tx = ((t.position?.x ?? 0) + (NODE_W[tk] || 220) / 2) * scale + offsetX
-            const ty = ((t.position?.y ?? 0) + (NODE_H[tk] || 86) / 2) * scale + offsetY
+            const sx = s.left + s.width / 2
+            const sy = s.top + s.nodeHeight / 2
+            const tx = t.left + t.width / 2
+            const ty = t.top + t.nodeHeight / 2
             return <line key={e.id} x1={sx} y1={sy} x2={tx} y2={ty} stroke={e.style?.stroke || '#91caff'} strokeWidth={1.2} opacity={0.88} />
           })}
         </svg>
-        {layoutNodes.map(({ id, node, kind, width, nodeHeight, left, top, style, radius }, i) => {
+        {resolvedLayoutNodes.map(({ id, node, kind, width, nodeHeight, left, top, style, radius }, i) => {
           return (
             <button
               key={id}

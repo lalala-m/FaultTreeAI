@@ -19,7 +19,7 @@ from backend.core.llm.base_provider import (
     EmbedResult,
     BenchmarkResult,
 )
-from backend.core.llm.providers import OllamaProvider, MiniMaxProvider, OpenAIProvider
+from backend.core.llm.providers import OllamaProvider, OpenAIProvider
 
 
 # ─────────────────────────────────────────────
@@ -28,7 +28,6 @@ from backend.core.llm.providers import OllamaProvider, MiniMaxProvider, OpenAIPr
 
 _PROVIDER_REGISTRY: dict[str, type[BaseLLMProvider]] = {
     "ollama": OllamaProvider,
-    "minimax": MiniMaxProvider,
     "openai": OpenAIProvider,
 }
 
@@ -118,18 +117,18 @@ class ProviderFactory:
             Embeddings: Embeddings 实例
         """
         from backend.core.llm.embeddings import UnifiedEmbeddings
-        provider = (provider or settings.EMBED_PROVIDER or "minimax").lower()
+        provider = (provider or settings.EMBED_PROVIDER or "openai").lower()
         return UnifiedEmbeddings(provider=provider)
 
     @classmethod
     def list_chat_providers(cls) -> List[str]:
         """列出支持的 ChatModel Provider"""
-        return ["minimax", "ollama", "openai", "azure_openai"]
+        return ["openai", "ollama", "azure_openai"]
 
     @classmethod
     def list_embed_providers(cls) -> List[str]:
         """列出支持的 Embeddings Provider"""
-        return ["minimax", "ollama", "openai", "azure_openai"]
+        return ["openai", "ollama", "azure_openai"]
 
     @classmethod
     def reset(cls):
@@ -185,9 +184,7 @@ class LLMManager:
         self._metrics_history: List[GenerationMetrics] = []
 
     def _infer_fallback(self, primary: str) -> str:
-        if primary == "ollama":
-            return "minimax"
-        return "ollama"
+        return "openai"
 
     # ── 实例获取 ──────────────────────────────────────────
 

@@ -9,6 +9,8 @@ import tiktoken
 import re
 import json
 import tempfile
+import os
+import urllib.request
 from datetime import datetime
 from collections import Counter
 from pathlib import Path
@@ -28,6 +30,47 @@ from backend.config import settings
 import psycopg2, psycopg2.extras
 
 router = APIRouter(tags=["知识管理"])
+
+# #region debug-point dbg:ai-summary-empty-helpers
+def _dbg_event(hypothesis_id: str, msg: str, data: dict | None = None, run_id: str = "pre-fix", trace_id: str = "") -> None:
+    try:
+        candidates = [".dbg/ai-summary-empty.env", "../.dbg/ai-summary-empty.env", "../../.dbg/ai-summary-empty.env"]
+        url = "http://127.0.0.1:7777/event"
+        session_id = "ai-summary-empty"
+        try:
+            c = ""
+            for p in candidates:
+                try:
+                    with open(p, "r", encoding="utf-8") as f:
+                        c = f.read()
+                    break
+                except Exception:
+                    continue
+            for ln in c.splitlines():
+                if ln.startswith("DEBUG_SERVER_URL="):
+                    url = ln.split("=", 1)[1].strip() or url
+                elif ln.startswith("DEBUG_SESSION_ID="):
+                    session_id = ln.split("=", 1)[1].strip() or session_id
+        except Exception:
+            pass
+        payload = {
+            "sessionId": session_id,
+            "runId": run_id,
+            "hypothesisId": str(hypothesis_id or "")[:20],
+            "location": "backend/api/knowledge.py",
+            "msg": f"[DEBUG] {msg}"[:400],
+            "data": data if isinstance(data, dict) else {},
+            "ts": int(time.time() * 1000),
+        }
+        if trace_id:
+            payload["traceId"] = trace_id
+        urllib.request.urlopen(
+            urllib.request.Request(url, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"), headers={"Content-Type": "application/json"}),
+            timeout=1.5,
+        ).read()
+    except Exception:
+        return
+# #endregion
 DEVICE_TERMS = [
     "手持式无线吸尘器", "无线吸尘器", "吸尘器",
     "电饭煲", "传送带", "输送带",
@@ -324,7 +367,7 @@ class KnowledgeItemReextractRequest(BaseModel):
 class KnowledgeItemCleanupRequest(BaseModel):
     pipeline: str = "流水线1"
     dry_run: bool = False
-    delete_unknown_cause: bool = True
+    delete_unknown_cause: bool = False
     delete_noise: bool = True
 
 
@@ -1248,6 +1291,7 @@ async def upload_document(
     if ext not in allowed:
         raise HTTPException(status_code=400, detail=f"不支持的文件格式: {ext}")
     pipeline = _normalize_pipeline(pipeline)
+    auto_extract = True
 
     # 生成文档ID
     doc_id = uuid.uuid4()
@@ -1348,7 +1392,7 @@ async def upload_document(
             async def _structured_extract_task(_doc_id: str, _pipeline: str):
                 import psycopg2.extras
                 import asyncio
-                if (settings.LLM_PROVIDER or "").lower() == "minimax" and (not settings.MINIMAX_API_KEY or not settings.MINIMAX_GROUP_ID):
+                if (settings.LLM_PROVIDER or "").lower() == "openai" and (not getattr(settings, "OPENAI_API_KEY", "") or not getattr(settings, "OPENAI_BASE_URL", "")):
                     with psycopg2.connect(
                         host=settings.DB_HOST, port=settings.DB_PORT,
                         user=settings.DB_USER, password=settings.DB_PASSWORD,
@@ -1361,14 +1405,14 @@ async def upload_document(
                                 SET metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb
                                 WHERE doc_id = %s
                                 """,
-                                (psycopg2.extras.Json({"structured_kb": "failed", "structured_error": "LLM 未配置"}), _doc_id),
+                                (psycopg2.extras.Json({"structured_kb": "failed", "structured_error": "LLM 未配置（缺少 OPENAI_API_KEY 或 OPENAI_BASE_URL）", "ai_summary_status": "failed", "ai_summary_error": "LLM 未配置（缺少 OPENAI_API_KEY 或 OPENAI_BASE_URL）"}), _doc_id),
                             )
                             conn2.commit()
                     return
 
                 try:
                     r = await asyncio.wait_for(
-                        extract_knowledge_items_with_ai(pipeline=_pipeline, doc_ids=[_doc_id]),
+                        extract_knowledge_items_with_ai(pipeline=_pipeline, doc_ids=[_doc_id], replace=True),
                         timeout=1200,
                     )
                     extracted = int(getattr(r, "extracted", 0))
@@ -1376,14 +1420,15 @@ async def upload_document(
                     skipped = int(getattr(r, "skipped", 0))
                     provider = str(getattr(r, "provider", "") or "")
                     errors = list(getattr(r, "errors", []) or [])
-                    if extracted <= 0 and inserted <= 0:
+                    if inserted <= 0:
+                        err_msg = " | ".join([str(e) for e in (errors[:3] if errors else [])]).strip()
                         payload = {
                             "structured_kb": "empty",
                             "structured_extracted": extracted,
                             "structured_inserted": inserted,
                             "structured_skipped": skipped,
                             "structured_provider": provider,
-                            "structured_error": (errors[0] if errors else "未抽取到条目：可能是扫描版PDF无可解析文字，或文档缺少“故障现象-原因-处理”描述。")[:200],
+                            "structured_error": (err_msg or ("抽取到条目但未写入有效知识条目（可能 problem 为空或被过滤）。" if extracted > 0 else "未抽取到条目：可能是扫描版PDF无可解析文字，或文档缺少“故障现象-原因-处理”描述。"))[:200],
                         }
                     else:
                         payload = {
@@ -1392,7 +1437,7 @@ async def upload_document(
                             "structured_inserted": inserted,
                             "structured_skipped": skipped,
                             "structured_provider": provider,
-                            "structured_error": (errors[0] if errors else ""),
+                            "structured_error": (" | ".join([str(e) for e in (errors[:3] if errors else [])]).strip() or "")[:200],
                         }
                 except asyncio.TimeoutError:
                     payload = {"structured_kb": "failed", "structured_error": "结构化抽取超时（1200s），请稍后重试或缩小文档范围。"}
@@ -1408,11 +1453,94 @@ async def upload_document(
                         with conn2.cursor() as cur2:
                             cur2.execute(
                                 """
+                                SELECT
+                                    ki.pipeline,
+                                    ki.machine_category,
+                                    ki.machine,
+                                    ki.problem_category,
+                                    ki.problem,
+                                    ki.root_cause
+                                FROM knowledge_items ki
+                                WHERE ki.status = 'active'
+                                  AND COALESCE(ki.metadata->>'doc_id','') = %s
+                                ORDER BY ki.pipeline, ki.machine_category, ki.machine, ki.problem_category, ki.problem, ki.root_cause
+                                LIMIT 500
+                                """,
+                                (str(_doc_id),),
+                            )
+                            rows = cur2.fetchall() or []
+                            if not rows:
+                                cur2.execute("SELECT filename FROM documents WHERE doc_id = %s", (str(_doc_id),))
+                                fn_row = cur2.fetchone()
+                                fn = str((fn_row or [None])[0] or "")
+                                if fn:
+                                    cur2.execute(
+                                        """
+                                        SELECT
+                                            ki.pipeline,
+                                            ki.machine_category,
+                                            ki.machine,
+                                            ki.problem_category,
+                                            ki.problem,
+                                            ki.root_cause
+                                        FROM knowledge_items ki
+                                        WHERE ki.status = 'active'
+                                          AND COALESCE(ki.metadata->>'filename','') = %s
+                                          AND ki.updated_at >= NOW() - INTERVAL '30 minutes'
+                                        ORDER BY ki.pipeline, ki.machine_category, ki.machine, ki.problem_category, ki.problem, ki.root_cause
+                                        LIMIT 500
+                                        """,
+                                        (fn,),
+                                    )
+                                    rows = cur2.fetchall() or []
+                            lines: list[str] = []
+                            last_pl = None
+                            last_mc = None
+                            last_m = None
+                            last_pc = None
+                            for pl, mc, m, pc, p, rc in rows:
+                                pl_s = str(pl or "").strip() or "流水线1"
+                                mc_s = str(mc or "").strip() or "通用设备"
+                                m_s = str(m or "").strip() or "设备"
+                                pc_s = str(pc or "").strip() or "其他"
+                                p_s = str(p or "").strip()
+                                rc_s = str(rc or "").strip() or "未明确"
+                                if pl_s != last_pl:
+                                    lines.append(f"流水线：{pl_s}")
+                                    last_pl = pl_s
+                                    last_mc = None
+                                    last_m = None
+                                    last_pc = None
+                                if mc_s != last_mc:
+                                    lines.append(f"机械类别：{mc_s}")
+                                    last_mc = mc_s
+                                    last_m = None
+                                    last_pc = None
+                                if m_s != last_m:
+                                    lines.append(f"  机械：{m_s}")
+                                    last_m = m_s
+                                    last_pc = None
+                                if pc_s != last_pc:
+                                    lines.append(f"    问题类别：{pc_s}")
+                                    last_pc = pc_s
+                                if p_s:
+                                    lines.append(f"      - 问题：{p_s}；原因：{rc_s}")
+
+                            summary_text = "\n".join(lines).strip()
+                            summary_payload = {
+                                "ai_summary_status": "ok" if summary_text else "empty",
+                                "ai_summary": summary_text,
+                                "ai_summary_error": "",
+                                "ai_summary_provider": str(payload.get("structured_provider") or ""),
+                                "ai_summary_count": len(rows),
+                            }
+                            cur2.execute(
+                                """
                                 UPDATE documents
                                 SET metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb
                                 WHERE doc_id = %s
                                 """,
-                                (psycopg2.extras.Json(payload), _doc_id),
+                                (psycopg2.extras.Json({**payload, **summary_payload}), _doc_id),
                             )
                             conn2.commit()
                 except Exception:
@@ -1430,7 +1558,7 @@ async def upload_document(
                         SET metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb
                         WHERE doc_id = %s
                         """,
-                        (psycopg2.extras.Json({"structured_kb": "pending"}), str(doc_id)),
+                        (psycopg2.extras.Json({"structured_kb": "pending", "ai_summary_status": "pending"}), str(doc_id)),
                     )
                     conn2.commit()
 
@@ -1483,6 +1611,229 @@ async def upload_document(
     )
 
 
+@router.post("/{doc_id}/summary")
+async def generate_doc_summary(doc_id: str, user: dict = Depends(require_expert)):
+    """生成结构化总结（机械类别→机械→问题类别→问题→原因）并导入到知识库"""
+    trace_id = uuid.uuid4().hex[:12]
+    _dbg_event("A", "enter generate_doc_summary", {"doc_id": str(doc_id)}, trace_id=trace_id)
+    try:
+        _doc_uuid = uuid.UUID(str(doc_id))
+    except Exception:
+        _dbg_event("A", "invalid doc_id", {"doc_id": str(doc_id)}, trace_id=trace_id)
+        raise HTTPException(status_code=400, detail="doc_id 不是有效的 UUID")
+
+    if (settings.LLM_PROVIDER or "").lower() == "openai" and (not getattr(settings, "OPENAI_API_KEY", "") or not getattr(settings, "OPENAI_BASE_URL", "")):
+        _dbg_event(
+            "A",
+            "llm not configured for openai-compatible provider",
+            {"LLM_PROVIDER": str(settings.LLM_PROVIDER or ""), "has_key": bool(getattr(settings, "OPENAI_API_KEY", "")), "has_base": bool(getattr(settings, "OPENAI_BASE_URL", ""))},
+            trace_id=trace_id,
+        )
+        raise HTTPException(status_code=503, detail="LLM 未配置：缺少 OPENAI_API_KEY 或 OPENAI_BASE_URL")
+
+    with psycopg2.connect(
+        host=settings.DB_HOST, port=settings.DB_PORT,
+        user=settings.DB_USER, password=settings.DB_PASSWORD,
+        database=settings.DB_NAME
+    ) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT filename, COALESCE(metadata->>'pipeline','流水线1') FROM documents WHERE doc_id = %s AND status <> 'deleted'", (str(_doc_uuid),))
+            row = cur.fetchone()
+            if not row:
+                _dbg_event("A", "document not found", {"doc_id": str(_doc_uuid)}, trace_id=trace_id)
+                raise HTTPException(status_code=404, detail="文档不存在")
+            filename = str(row[0] or "")
+            pipeline = str(row[1] or "流水线1")
+            _dbg_event("B", "loaded document pipeline", {"doc_id": str(_doc_uuid), "filename": filename, "pipeline": pipeline}, trace_id=trace_id)
+
+    try:
+        result = await extract_knowledge_items_with_ai(pipeline=pipeline, doc_ids=[str(_doc_uuid)], replace=True)
+        _dbg_event(
+            "B",
+            "extract done",
+            {
+                "provider": str(getattr(result, "provider", "") or ""),
+                "extracted": int(getattr(result, "extracted", 0)),
+                "inserted": int(getattr(result, "inserted", 0)),
+                "skipped": int(getattr(result, "skipped", 0)),
+                "errors": (list(getattr(result, "errors", []) or [])[:3]),
+            },
+            trace_id=trace_id,
+        )
+    except Exception as e:
+        _dbg_event("D", "extract raised exception", {"err": str(e)[:300]}, trace_id=trace_id)
+        raise
+    extracted_n = int(getattr(result, "extracted", 0))
+    inserted_n = int(getattr(result, "inserted", 0))
+
+    with psycopg2.connect(
+        host=settings.DB_HOST, port=settings.DB_PORT,
+        user=settings.DB_USER, password=settings.DB_PASSWORD,
+        database=settings.DB_NAME
+    ) as conn2:
+        with conn2.cursor() as cur2:
+            cur2.execute(
+                """
+                SELECT
+                    ki.pipeline,
+                    ki.machine_category,
+                    ki.machine,
+                    ki.problem_category,
+                    ki.problem,
+                    ki.root_cause
+                FROM knowledge_items ki
+                WHERE ki.status = 'active'
+                  AND COALESCE(ki.metadata->>'doc_id','') = %s
+                ORDER BY ki.pipeline, ki.machine_category, ki.machine, ki.problem_category, ki.problem, ki.root_cause
+                LIMIT 500
+                """,
+                (str(_doc_uuid),),
+            )
+            rows = cur2.fetchall() or []
+            if not rows:
+                cur2.execute(
+                    """
+                    SELECT
+                        ki.pipeline,
+                        ki.machine_category,
+                        ki.machine,
+                        ki.problem_category,
+                        ki.problem,
+                        ki.root_cause
+                    FROM knowledge_items ki
+                    WHERE ki.status = 'active'
+                      AND COALESCE(ki.metadata->>'filename','') = %s
+                      AND ki.updated_at >= NOW() - INTERVAL '30 minutes'
+                    ORDER BY ki.pipeline, ki.machine_category, ki.machine, ki.problem_category, ki.problem, ki.root_cause
+                    LIMIT 500
+                    """,
+                    (filename,),
+                )
+                rows = cur2.fetchall() or []
+                _dbg_event("C", "fallback query by filename", {"filename": filename, "row_count": len(rows)}, trace_id=trace_id)
+            _dbg_event("C", "queried knowledge_items by doc_id", {"doc_id": str(_doc_uuid), "row_count": len(rows), "sample": (list(rows[0]) if rows else [])}, trace_id=trace_id)
+
+            lines: list[str] = []
+            last_pl = None
+            last_mc = None
+            last_m = None
+            last_pc = None
+            for pl, mc, m, pc, p, rc in rows:
+                pl_s = str(pl or "").strip() or "流水线1"
+                mc_s = str(mc or "").strip() or "通用设备"
+                m_s = str(m or "").strip() or "设备"
+                pc_s = str(pc or "").strip() or "其他"
+                p_s = str(p or "").strip()
+                rc_s = str(rc or "").strip() or "未明确"
+                if pl_s != last_pl:
+                    lines.append(f"流水线：{pl_s}")
+                    last_pl = pl_s
+                    last_mc = None
+                    last_m = None
+                    last_pc = None
+                if mc_s != last_mc:
+                    lines.append(f"机械类别：{mc_s}")
+                    last_mc = mc_s
+                    last_m = None
+                    last_pc = None
+                if m_s != last_m:
+                    lines.append(f"  机械：{m_s}")
+                    last_m = m_s
+                    last_pc = None
+                if pc_s != last_pc:
+                    lines.append(f"    问题类别：{pc_s}")
+                    last_pc = pc_s
+                if p_s:
+                    lines.append(f"      - 问题：{p_s}；原因：{rc_s}")
+
+            summary_text = "\n".join(lines).strip()
+            _dbg_event("E", "built summary text", {"summary_len": len(summary_text), "line_count": len(lines)}, trace_id=trace_id)
+
+    summary_pipelines: list[str] = []
+    try:
+        seen_pl = set()
+        for r in rows:
+            pl = str((r[0] if r else "") or "").strip()
+            if not pl or pl in seen_pl:
+                continue
+            seen_pl.add(pl)
+            summary_pipelines.append(pl)
+    except Exception:
+        summary_pipelines = []
+
+    with psycopg2.connect(
+        host=settings.DB_HOST, port=settings.DB_PORT,
+        user=settings.DB_USER, password=settings.DB_PASSWORD,
+        database=settings.DB_NAME
+    ) as conn2:
+        with conn2.cursor() as cur2:
+            cur2.execute(
+                """
+                UPDATE documents
+                SET metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb
+                WHERE doc_id = %s
+                """,
+                (
+                    psycopg2.extras.Json(
+                        {
+                            "ai_summary_status": "ok" if summary_text else "empty",
+                            "ai_summary": summary_text,
+                            "ai_summary_provider": str(getattr(result, "provider", "") or ""),
+                            "ai_summary_error": ("" if summary_text else ("抽取到条目但未写入有效知识条目，无法生成总结。" if extracted_n > 0 and inserted_n <= 0 else ""))[:200],
+                            "ai_summary_count": len(rows),
+                            "ai_summary_filename": filename,
+                            "ai_summary_pipelines": summary_pipelines,
+                        }
+                    ),
+                    str(_doc_uuid),
+                ),
+            )
+            conn2.commit()
+            _dbg_event("E", "updated documents.metadata.ai_summary", {"doc_id": str(_doc_uuid), "status": ("ok" if summary_text else "empty"), "count": len(rows)}, trace_id=trace_id)
+
+    return {
+        "doc_id": str(_doc_uuid),
+        "pipeline": pipeline,
+        "summary_pipeline": (summary_pipelines[0] if summary_pipelines else ""),
+        "summary_pipelines": summary_pipelines,
+        "ai_summary_status": "ok" if summary_text else "empty",
+        "extracted": int(getattr(result, "extracted", 0)),
+        "inserted": int(getattr(result, "inserted", 0)),
+        "skipped": int(getattr(result, "skipped", 0)),
+        "provider": str(getattr(result, "provider", "") or ""),
+        "errors": list(getattr(result, "errors", []) or [])[:5],
+    }
+
+
+@router.get("/{doc_id}/summary")
+async def get_doc_summary(doc_id: str, user: dict = Depends(get_current_user)):
+    """获取文档 AI 总结"""
+    try:
+        _doc_uuid = uuid.UUID(str(doc_id))
+    except Exception:
+        raise HTTPException(status_code=400, detail="doc_id 不是有效的 UUID")
+
+    with psycopg2.connect(
+        host=settings.DB_HOST, port=settings.DB_PORT,
+        user=settings.DB_USER, password=settings.DB_PASSWORD,
+        database=settings.DB_NAME
+    ) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT metadata FROM documents WHERE doc_id = %s AND status <> 'deleted'", (str(_doc_uuid),))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="文档不存在")
+            meta = row[0] if isinstance(row[0], dict) else {}
+
+    return {
+        "doc_id": str(_doc_uuid),
+        "ai_summary_status": str((meta or {}).get("ai_summary_status") or ""),
+        "ai_summary": str((meta or {}).get("ai_summary") or ""),
+        "ai_summary_error": str((meta or {}).get("ai_summary_error") or ""),
+        "ai_summary_provider": str((meta or {}).get("ai_summary_provider") or ""),
+    }
+
+
 @router.get("/list")
 async def list_documents(user: dict = Depends(get_current_user)):
     """列出已上传的文档"""
@@ -1514,6 +1865,9 @@ async def list_documents(user: dict = Depends(get_current_user)):
             "structured_inserted": (row[6] or {}).get("structured_inserted", 0),
             "structured_skipped": (row[6] or {}).get("structured_skipped", 0),
             "structured_error": (row[6] or {}).get("structured_error", ""),
+            "ai_summary_status": (row[6] or {}).get("ai_summary_status", ""),
+            "ai_summary": ((row[6] or {}).get("ai_summary", "") or "")[:400],
+            "ai_summary_error": (row[6] or {}).get("ai_summary_error", ""),
         }
         for row in rows
     ]
@@ -1873,16 +2227,15 @@ async def reextract_knowledge_items(payload: KnowledgeItemReextractRequest, user
                 cur.execute(
                     """
                     DELETE FROM knowledge_items
-                    WHERE pipeline = %s
-                      AND COALESCE(metadata->>'doc_id', '') = ANY(%s::text[])
+                    WHERE COALESCE(metadata->>'doc_id', '') = ANY(%s::text[])
                     """,
-                    (pipeline, doc_ids),
+                    (doc_ids,),
                 )
                 deleted = int(cur.rowcount or 0)
                 conn.commit()
 
-    if (settings.LLM_PROVIDER or "").lower() == "minimax" and (not settings.MINIMAX_API_KEY or not settings.MINIMAX_GROUP_ID):
-        raise HTTPException(status_code=503, detail="LLM 未配置：缺少 MINIMAX_API_KEY 或 MINIMAX_GROUP_ID，无法整理。")
+    if (settings.LLM_PROVIDER or "").lower() == "openai" and (not getattr(settings, "OPENAI_API_KEY", "") or not getattr(settings, "OPENAI_BASE_URL", "")):
+        raise HTTPException(status_code=503, detail="LLM 未配置：缺少 OPENAI_API_KEY 或 OPENAI_BASE_URL，无法整理。")
 
     try:
         result = await extract_knowledge_items_with_ai(pipeline=pipeline, doc_ids=doc_ids)
@@ -1971,18 +2324,26 @@ async def cleanup_knowledge_items(payload: KnowledgeItemCleanupRequest, user: di
             norm_root = _norm_text(root_cause)
             norm_problem = _norm_text(problem)
 
-            should_delete = False
-            if delete_unknown_cause and (not root_cause or norm_root in unknown_cause_norm):
-                should_delete = True
+            is_noise = False
             if delete_noise:
                 if norm_machine in machine_noise_norm:
-                    should_delete = True
+                    is_noise = True
                 if any(k in norm_problem for k in noise_problem_norm if k):
-                    should_delete = True
+                    is_noise = True
                 if _is_noise_phrase(problem):
-                    should_delete = True
+                    is_noise = True
                 if machine_category == "" and (norm_machine in machine_noise_norm or any(k in norm_problem for k in noise_problem_norm if k)):
+                    is_noise = True
+
+            is_unknown_cause = (not root_cause) or (norm_root in unknown_cause_norm)
+            should_delete = is_noise
+            if delete_unknown_cause and is_unknown_cause:
+                if is_noise:
                     should_delete = True
+                else:
+                    short_problem = len(norm_problem) <= 6
+                    if short_problem:
+                        should_delete = True
 
             if should_delete:
                 to_delete.append(str(item_id))

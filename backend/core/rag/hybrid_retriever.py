@@ -65,12 +65,19 @@ async def retrieve_hybrid(
         from backend.core.rag.bm25_retriever import retrieve_bm25
         return await retrieve_bm25(query, top_k=top_k, doc_ids=doc_ids)
     
-    # 并行执行两种检索
-    vector_results, bm25_results = await asyncio.gather(
-        vector_search(),
-        bm25_search(),
-        return_exceptions=True,
-    )
+    vw = float(vector_weight if vector_weight is not None else 0.5)
+    if vw <= 0:
+        vector_results = []
+        bm25_results = await bm25_search()
+    elif vw >= 1:
+        vector_results = await vector_search()
+        bm25_results = []
+    else:
+        vector_results, bm25_results = await asyncio.gather(
+            vector_search(),
+            bm25_search(),
+            return_exceptions=True,
+        )
     
     # 处理异常
     if isinstance(vector_results, Exception):

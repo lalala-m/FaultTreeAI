@@ -1,16 +1,45 @@
 import os
 from pathlib import Path
 from pydantic_settings import BaseSettings
+from pydantic import Field, model_validator
 from functools import lru_cache
 
 
 class Settings(BaseSettings):
     # ??? ????�????
+    DATABASE_URL_ENV: str = Field(default="", alias="DATABASE_URL")
     DB_HOST: str = "localhost"
     DB_PORT: int = 5432
     DB_USER: str = "postgres"
     DB_PASSWORD: str = "your_postgres_password"
     DB_NAME: str = "faulttree"
+
+    @model_validator(mode="after")
+    def _populate_db_fields_from_database_url(self):
+        if not self.DATABASE_URL_ENV:
+            return self
+
+        from urllib.parse import urlparse, unquote
+
+        raw = self.DATABASE_URL_ENV.strip()
+        normalized = raw.replace("postgresql+asyncpg://", "postgresql://").replace(
+            "postgresql+psycopg2://", "postgresql://"
+        )
+        parsed = urlparse(normalized)
+
+        if parsed.scheme.startswith("postgresql"):
+            if parsed.hostname:
+                self.DB_HOST = parsed.hostname
+            if parsed.port:
+                self.DB_PORT = parsed.port
+            if parsed.username:
+                self.DB_USER = unquote(parsed.username)
+            if parsed.password:
+                self.DB_PASSWORD = unquote(parsed.password)
+            if parsed.path and len(parsed.path) > 1:
+                self.DB_NAME = parsed.path.lstrip("/")
+
+        return self
 
     @property
     def DATABASE_URL(self) -> str:
@@ -30,8 +59,8 @@ class Settings(BaseSettings):
         )
 
     # ??? LLM Provider ???
-    LLM_PROVIDER: str = "minimax"
-    LLM_FALLBACK_PROVIDER: str = "minimax"
+    LLM_PROVIDER: str = "openai"
+    LLM_FALLBACK_PROVIDER: str = "openai"
 
     # ??? MiniMax ???
     MINIMAX_API_KEY: str = ""
@@ -61,8 +90,8 @@ class Settings(BaseSettings):
     OLLAMA_EMBED_MODEL: str = "nomic-embed-text"
 
     # ??? Embedding ???
-    EMBED_PROVIDER: str = "minimax"
-    EMBED_MODEL: str = "embo-01"
+    EMBED_PROVIDER: str = "openai"
+    EMBED_MODEL: str = "text-embedding-ada-002"
     EMBED_DIM: int = 1024
 
     # ??? ???? ???
@@ -70,7 +99,8 @@ class Settings(BaseSettings):
     LLM_MAX_TOKENS: int = 4096
     RAG_TOP_K: int = 3
     RAG_SIMILARITY_THRESHOLD: float = 0.7
-    RAG_USE_HYBRID: bool = False           # ???????�?    RAG_VECTOR_WEIGHT: float = 0.5          # ?????�?(0-1)
+    RAG_USE_HYBRID: bool = False
+    RAG_VECTOR_WEIGHT: float = 0.5
     MAX_RETRY: int = 3
 
     JWT_SECRET: str = ""

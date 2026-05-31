@@ -248,7 +248,7 @@ export default function History() {
           items={[
             {
               key: 'faq',
-              label: '常见问题（合并）',
+              label: '常见问题',
               children: (
                 <Table
                   rowKey={(r) => `${r.tree_id || ''}-${r.question || ''}`}

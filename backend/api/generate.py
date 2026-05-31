@@ -266,7 +266,7 @@ async def _generate_with_chain(req: GenerateRequest) -> tuple[FaultTree, list, s
     from backend.core.langchain.chains.fault_tree_chain import generate_fault_tree_with_chain, get_fault_tree_chain
     from backend.core.llm.manager import ProviderFactory
 
-    provider = (req.provider or settings.LLM_PROVIDER or "minimax").lower()
+    provider = (req.provider or settings.LLM_PROVIDER or "openai").lower()
     ProviderFactory.get_chat_model(provider)
     chain = get_fault_tree_chain(provider=provider, recreate=True)
 

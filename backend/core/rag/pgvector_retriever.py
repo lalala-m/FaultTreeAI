@@ -108,11 +108,14 @@ async def add_chunks_to_db(
     texts = [c["text"] for c in chunks]
     vectors = None
     embedded = False
-    embeddings = _get_embeddings()
+    embeddings = None
+    if not (bool(settings.RAG_USE_HYBRID) and float(getattr(settings, "RAG_VECTOR_WEIGHT", 0.5)) <= 0):
+        embeddings = _get_embeddings()
     
     try:
-        vectors = await embeddings.aembed_documents(texts)
-        embedded = True
+        if embeddings is not None:
+            vectors = await embeddings.aembed_documents(texts)
+            embedded = True
     except Exception as e:
         if settings.SKIP_EMBED_ON_FAIL:
             embedded = False
@@ -152,7 +155,7 @@ async def add_chunks_to_db(
                     """, (
                         chunk_id, doc_id,
                         _to_vector_literal(vectors[i]),
-                        embeddings.model_name
+                        getattr(embeddings, "model_name", "")
                     ))
             conn.commit()
     return {"chunk_count": len(chunks), "embedded": embedded}

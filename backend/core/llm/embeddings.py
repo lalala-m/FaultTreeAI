@@ -139,18 +139,42 @@ class OpenAIEmbeddings(Embeddings):
         self.api_key = api_key or settings.OPENAI_API_KEY
         self.model_name = model or "text-embedding-ada-002"
         self.dimensions = dimensions
-        self.base_url = (base_url or settings.OPENAI_BASE_URL).rstrip("/") + "/embeddings"
+        base = (base_url or settings.OPENAI_BASE_URL).rstrip("/")
+        if base.endswith("/v2"):
+            self.base_url = base[:-3] + "/v1/embeddings"
+        else:
+            self.base_url = base + "/embeddings"
 
     def _get_headers(self) -> dict:
         if not self.api_key:
             raise ValueError("缺少 OPENAI_API_KEY")
         return {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
 
+    def _alt_url(self, url: str) -> str:
+        try:
+            if "/v2/embeddings" in url:
+                return url.replace("/v2/embeddings", "/v1/embeddings")
+            if url.endswith("/v2/embeddings"):
+                return url[:-len("/v2/embeddings")] + "/v1/embeddings"
+        except Exception:
+            return ""
+        return ""
+
+    def _post_with_fallback(self, url: str, payload: dict, timeout: float) -> httpx.Response:
+        resp = httpx.post(url, json=payload, headers=self._get_headers(), timeout=timeout)
+        if resp.status_code == 404:
+            alt = self._alt_url(url)
+            if alt:
+                resp2 = httpx.post(alt, json=payload, headers=self._get_headers(), timeout=timeout)
+                if resp2.status_code != 404:
+                    return resp2
+        return resp
+
     def embed_query(self, text: str) -> List[float]:
         payload = {"model": self.model_name, "input": text}
         if self.dimensions:
             payload["dimensions"] = self.dimensions
-        resp = httpx.post(self.base_url, json=payload, headers=self._get_headers(), timeout=60)
+        resp = self._post_with_fallback(self.base_url, payload, timeout=60)
         resp.raise_for_status()
         data = resp.json()
         return data["data"][0]["embedding"]
@@ -159,7 +183,7 @@ class OpenAIEmbeddings(Embeddings):
         payload = {"model": self.model_name, "input": texts}
         if self.dimensions:
             payload["dimensions"] = self.dimensions
-        resp = httpx.post(self.base_url, json=payload, headers=self._get_headers(), timeout=120)
+        resp = self._post_with_fallback(self.base_url, payload, timeout=120)
         resp.raise_for_status()
         data = resp.json()
         return [item["embedding"] for item in data["data"]]
@@ -170,6 +194,12 @@ class OpenAIEmbeddings(Embeddings):
             payload["dimensions"] = self.dimensions
         async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.post(self.base_url, json=payload, headers=self._get_headers())
+            if resp.status_code == 404:
+                alt = self._alt_url(self.base_url)
+                if alt:
+                    resp2 = await client.post(alt, json=payload, headers=self._get_headers())
+                    if resp2.status_code != 404:
+                        resp = resp2
             resp.raise_for_status()
             return resp.json()["data"][0]["embedding"]
 
@@ -179,6 +209,12 @@ class OpenAIEmbeddings(Embeddings):
             payload["dimensions"] = self.dimensions
         async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.post(self.base_url, json=payload, headers=self._get_headers())
+            if resp.status_code == 404:
+                alt = self._alt_url(self.base_url)
+                if alt:
+                    resp2 = await client.post(alt, json=payload, headers=self._get_headers())
+                    if resp2.status_code != 404:
+                        resp = resp2
             resp.raise_for_status()
             data = resp.json()
             return [item["embedding"] for item in data["data"]]
@@ -283,12 +319,12 @@ class UnifiedEmbeddings:
         base_url: Optional[str] = None,
         **kwargs,
     ):
-        configured_provider = (provider or settings.EMBED_PROVIDER or "minimax").lower()
+        configured_provider = (provider or settings.EMBED_PROVIDER or "openai").lower()
         provider_cls = self.PROVIDER_MAP.get(configured_provider)
         
         if provider_cls is None:
-            print(f"[WARN] Provider '{configured_provider}' not supported, using 'minimax'")
-            configured_provider = "minimax"
+            print(f"[WARN] Provider '{configured_provider}' not supported, using 'openai'")
+            configured_provider = "openai"
             provider_cls = self.PROVIDER_MAP.get(configured_provider)
         
         self.provider = configured_provider
@@ -316,10 +352,8 @@ class UnifiedEmbeddings:
                 kwargs["azure_deployment"] = model
             self._impl = provider_cls(**kwargs)
         else:
-            # 默认 MiniMax
-            self._impl = MiniMaxEmbeddings(
+            self._impl = OpenAIEmbeddings(
                 api_key=api_key,
-                group_id=group_id,
                 model=model,
                 base_url=base_url,
                 dimensions=dimensions,

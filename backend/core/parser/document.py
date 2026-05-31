@@ -1,14 +1,59 @@
 import fitz  # PyMuPDF
 from docx import Document
 from pathlib import Path
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 import re
 
-splitter = RecursiveCharacterTextSplitter(
-    chunk_size=500,
-    chunk_overlap=50,
-    separators=["\n\n", "\n", "。", "；", " "]
-)
+_CHUNK_SIZE = 500
+_CHUNK_OVERLAP = 50
+_SEPARATORS = ["\n\n", "\n", "。", "；", " "]
+
+
+def _merge_with_overlap(chunks: list[str], chunk_size: int, chunk_overlap: int) -> list[str]:
+    out: list[str] = []
+    buf = ""
+    for part in chunks:
+        p = (part or "").strip()
+        if not p:
+            continue
+        if not buf:
+            buf = p
+            continue
+        if len(buf) + 1 + len(p) <= chunk_size:
+            buf = f"{buf} {p}"
+            continue
+        out.append(buf.strip())
+        overlap = buf[-chunk_overlap:] if chunk_overlap > 0 else ""
+        buf = (overlap + " " + p).strip() if overlap else p
+    if buf.strip():
+        out.append(buf.strip())
+    return out
+
+
+def _recursive_split(text: str, separators: list[str], chunk_size: int) -> list[str]:
+    t = str(text or "").strip()
+    if not t:
+        return []
+    if len(t) <= chunk_size:
+        return [t]
+    if not separators:
+        return [t[i : i + chunk_size] for i in range(0, len(t), chunk_size)]
+    sep = separators[0]
+    parts = t.split(sep) if sep else list(t)
+    small: list[str] = []
+    for p in parts:
+        p2 = p.strip()
+        if not p2:
+            continue
+        if len(p2) <= chunk_size:
+            small.append(p2)
+        else:
+            small.extend(_recursive_split(p2, separators[1:], chunk_size))
+    return small
+
+
+def split_text(text: str) -> list[str]:
+    parts = _recursive_split(text, _SEPARATORS, _CHUNK_SIZE)
+    return _merge_with_overlap(parts, _CHUNK_SIZE, _CHUNK_OVERLAP)
 
 def _normalize_table_text(text: str) -> str:
     """
@@ -60,7 +105,7 @@ def parse_pdf(file_path: str) -> list[dict]:
         text = _normalize_table_text(text)
         if not text:
             continue
-        for i, chunk in enumerate(splitter.split_text(text)):
+        for i, chunk in enumerate(split_text(text)):
             chunks.append({
                 "text": chunk,
                 "source": Path(file_path).name,
@@ -73,7 +118,7 @@ def parse_txt(file_path: str) -> list[dict]:
     text = Path(file_path).read_text(encoding="utf-8", errors="ignore")
     text = _normalize_table_text(text)
     chunks = []
-    for i, chunk in enumerate(splitter.split_text(text)):
+    for i, chunk in enumerate(split_text(text)):
         chunks.append({
             "text": chunk,
             "source": Path(file_path).name,
@@ -84,8 +129,15 @@ def parse_txt(file_path: str) -> list[dict]:
 
 def parse_docx(file_path: str) -> list[dict]:
     doc = Document(file_path)
-    # 提取段落
-    full_text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+    paras = []
+    for p in doc.paragraphs:
+        t = str(p.text or "").strip()
+        if not t:
+            continue
+        if ("→" in t or "->" in t or "⇒" in t or "—>" in t) and not re.match(r"^[-*•]\s+", t):
+            t = "- " + t
+        paras.append(t)
+    full_text = "\n".join(paras)
     # 提取表格并标准化为 'a | b | c' 行
     table_lines = []
     try:
@@ -104,7 +156,7 @@ def parse_docx(file_path: str) -> list[dict]:
         full_text = (full_text + "\n" + "\n".join(table_lines)).strip()
     full_text = _normalize_table_text(full_text)
     chunks = []
-    for i, chunk in enumerate(splitter.split_text(full_text)):
+    for i, chunk in enumerate(split_text(full_text)):
         chunks.append({
             "text": chunk,
             "source": Path(file_path).name,
@@ -117,7 +169,7 @@ def parse_markdown(file_path: str) -> list[dict]:
     """解析 Markdown 文件"""
     text = Path(file_path).read_text(encoding="utf-8")
     chunks = []
-    for i, chunk in enumerate(splitter.split_text(text)):
+    for i, chunk in enumerate(split_text(text)):
         chunks.append({
             "text": chunk,
             "source": Path(file_path).name,
