@@ -74,6 +74,12 @@ class Settings(BaseSettings):
     OPENAI_BASE_URL: str = "https://api.openai.com/v1"
     LLM_MODEL: str = "gpt-4o"
 
+    # ??? Baidu VOP ???
+    BAIDU_VOP_API_KEY: str = ""
+    BAIDU_VOP_SECRET_KEY: str = ""
+    BAIDU_VOP_CUID: str = "faulttreeai"
+    BAIDU_VOP_DEV_PID: int = 1537
+
     # ??? Anthropic ???
     ANTHROPIC_API_KEY: str = ""
     ANTHROPIC_MODEL: str = "claude-3-5-sonnet-20241022"

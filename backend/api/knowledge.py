@@ -1286,7 +1286,7 @@ async def upload_document(
     if file.size and file.size > 50 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="文件大小超过50MB")
 
-    allowed = {".pdf", ".txt", ".log", ".docx"}
+    allowed = {".pdf", ".txt", ".log", ".docx", ".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv", ".m4v", ".webm"}
     ext = Path(file.filename).suffix.lower()
     if ext not in allowed:
         raise HTTPException(status_code=400, detail=f"不支持的文件格式: {ext}")

@@ -179,14 +179,26 @@ def parse_markdown(file_path: str) -> list[dict]:
     return chunks
 
 def parse_document(file_path: str) -> list[dict]:
+    """
+    根据文件类型自动选择解析器（PDF/TXT/DOCX/Markdown/视频）
+    返回统一格式的 chunk 列表
+    """
+    from backend.core.parser.video_processor import parse_video, VIDEO_EXTENSIONS
+    
     ext = Path(file_path).suffix.lower()
+    
+    # 视频文件处理
+    if ext in VIDEO_EXTENSIONS:
+        return parse_video(file_path)
+    
+    # 原有文档处理
     if ext == ".pdf":
         return parse_pdf(file_path)
-    elif ext == ".txt" or ext == ".log":
+    if ext in (".txt", ".log"):
         return parse_txt(file_path)
-    elif ext == ".docx":
+    if ext == ".docx":
         return parse_docx(file_path)
-    elif ext == ".md" or ext == ".markdown":
+    if ext in (".md", ".markdown"):
         return parse_markdown(file_path)
     else:
         raise ValueError(f"不支持的文件格式: {ext}")

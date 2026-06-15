@@ -1,14 +1,14 @@
 # ============================================================
-# FaultTreeAI - 外部API + LangChain + PostgreSQL 版本
+# FaultTreeAI - External API + LangChain + PostgreSQL
 # ============================================================
 
-# Web框架
+# Web framework
 fastapi>=0.115.0
 uvicorn>=0.30.0
 pydantic>=2.9.0
 pydantic-settings>=2.5.0
 
-# LangChain 核心
+# LangChain core
 langchain>=0.3.0
 langchain-core>=0.3.0
 langchain-community>=0.3.0
@@ -21,35 +21,36 @@ sqlalchemy[asyncio]>=2.0.30
 pgvector>=0.3.0
 langchain-postgres>=0.0.17
 
-# MiniMax API（项目自行封装，不依赖第三方 langchain-minimax）
-# MiniMax SDK（HTTP 调用封装）
+# MiniMax API
+# MiniMax SDK
 aiohttp>=3.9.0
 
-# 文档解析
+# Document parsing
 PyMuPDF>=1.24.0
 python-docx>=1.1.0
 rapidocr-onnxruntime==1.2.3
+openai-whisper>=20231117
 
-# 图计算
+# Graph computation
 networkx>=3.3
 numpy>=1.26.0
 
-# 视觉识别（YOLO + OpenCV）
+# Vision (YOLO + OpenCV)
 opencv-python>=4.9.0.80
 ultralytics>=8.3.0
 Pillow>=10.3.0
 
-# HTTP客户端
+# HTTP client
 httpx>=0.27.0
 
 # Auth
 passlib[bcrypt]>=1.7.4
 python-jose[cryptography]>=3.3.0
 
-# 报告导出
+# Report export
 reportlab>=4.2.0
 
-# 工具
+# Utilities
 python-multipart>=0.0.9
 aiofiles>=24.1.0
 python-dotenv>=1.0.0
@@ -60,8 +61,8 @@ lxml>=4.9.0
 tenacity>=9.0.0
 tiktoken>=0.12.0
 
-# 关键词检索
+# Keyword retrieval
 rank-bm25>=0.2.2
 
-# 视觉识别（YOLO）
+# Vision (YOLO)
 ultralytics>=8.3.0
