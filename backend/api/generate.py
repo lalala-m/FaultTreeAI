@@ -17,7 +17,10 @@ from backend.core.database.models import FaultTree as DBFaultTree
 from backend.core.database.connection import pg_conn
 from backend.core.fta.builder import compute_mcs
 from backend.core.fta.importance import compute_importance
-from backend.models.schemas import GenerateRequest, GenerateResponse, FaultTree, FTANode, FTAGate
+from backend.models.schemas import (
+    GenerateRequest, GenerateResponse, FaultTree, FTANode, FTAGate,
+    ClarifyRequest, ClarifyResponse, ClarifyQuestion,
+)
 from backend.config import settings
 import psycopg2
 
@@ -683,3 +686,187 @@ async def get_tree_session(tree_id: str):
         except Exception:
             msgs = []
     return {"tree_id": tree_id, "messages": msgs}
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 二次澄清（Clarify）接口
+# ─────────────────────────────────────────────────────────────────────────
+
+CLARIFY_SYSTEM_PROMPT = """你是一名资深工业设备故障诊断专家，正在协助工程师排查设备故障。
+
+你的任务：根据用户描述的故障现象，提出 2~4 个**最关键的澄清问题**，帮助锁定故障来源。
+问题应围绕：
+- 故障现象的**特征**（声音类型、振动方向、温度区间、颜色气味等）
+- 故障的**时序特征**（首次出现时间、发生频率、持续时长、是否周期性）
+- 故障的**触发条件**（什么工况/负荷/环境下出现，是否与启停相关）
+- 故障的**伴随现象**（是否同时有报警、其他部件异常、参数偏差）
+- 已做的**初步检查**（是否测量过电压/电流/温度/振动等数值）
+
+要求：
+1. 每个问题简短直接，不超过 40 字
+2. hint 给出填写示例或常见取值，帮助用户快速回答
+3. 不要问与故障无关的问题
+4. 不要重复用户已经说过的信息
+5. 严格输出 JSON，不要有任何额外文字、代码块标记
+
+输出格式：
+{
+  "intro": "开场白（如：为了更精准地定位故障源，请补充以下信息：）",
+  "questions": [
+    {"id": "Q1", "text": "问题正文", "hint": "填写提示或示例", "required": false},
+    {"id": "Q2", "text": "问题正文", "hint": "填写提示或示例", "required": true}
+  ],
+  "refined_query_hint": "若用户回答完上述问题后，可以将原问题改写为这样一句更完整的描述（仅给提示，前端不会直接使用）"
+}
+"""
+
+CLARIFY_USER_PROMPT_TEMPLATE = """用户描述的故障现象：
+{top_event}
+
+{context_block}
+
+请基于以上信息，生成 {max_q} 个最关键的澄清问题。仅输出 JSON："""
+
+
+async def _build_clarify_context_block(doc_ids=None, top_k: int = 3) -> str:
+    """可选：用 RAG 检索的片段作为背景，帮助生成更针对性的澄清问题"""
+    if not top_k or top_k <= 0:
+        return ""
+    try:
+        from backend.core.rag.pgvector_retriever import retrieve_hybrid
+        chunks = await retrieve_hybrid(
+            "", top_k=top_k, doc_ids=doc_ids, vector_weight=0.5
+        )
+    except Exception:
+        return ""
+
+    if not chunks:
+        return ""
+    lines = ["## 已有相关知识片段（仅作背景参考，不要在问题中重复其内容）"]
+    for c in chunks[:top_k]:
+        ref = c.get("ref_id") or c.get("source") or ""
+        text = (c.get("text") or "").strip().replace("\n", " ")
+        if text:
+            lines.append(f"- [{ref}] {text[:200]}")
+    return "\n".join(lines)
+
+
+@router.post("/clarify", response_model=ClarifyResponse)
+async def clarify_problem(req: ClarifyRequest):
+    """根据用户描述的故障现象，由 LLM 动态生成 2~4 个澄清问题。
+
+    流程：
+    1. 可选用 RAG 检索相关片段作为背景
+    2. 调用 LLM（带 fallback）生成结构化澄清问题
+    3. 解析 JSON 返回 ClarifyResponse
+    若 LLM 不可用或解析失败，返回 fallback 模板问题（保证前端可用）
+    """
+    top_event = str(req.top_event or "").strip()
+    if not top_event:
+        raise HTTPException(status_code=400, detail="top_event 不能为空")
+
+    max_q = int(req.max_questions or 4)
+    max_q = max(2, min(max_q, 5))
+
+    # 1) 构造上下文（可选）
+    context_block = ""
+    try:
+        if req.rag_top_k and req.rag_top_k > 0:
+            context_block = await _build_clarify_context_block(
+                doc_ids=req.doc_ids, top_k=min(int(req.rag_top_k), 5)
+            )
+    except Exception:
+        context_block = ""
+
+    # 2) 组装 prompt
+    user_prompt = CLARIFY_USER_PROMPT_TEMPLATE.format(
+        top_event=top_event,
+        context_block=context_block or "（暂无相关知识背景）",
+        max_q=max_q,
+    )
+    full_prompt = f"{CLARIFY_SYSTEM_PROMPT}\n\n{user_prompt}"
+
+    # 3) 调用 LLM（带 fallback）
+    provider_used = None
+    data = None
+    try:
+        from backend.core.llm.manager import get_llm_manager
+        manager = get_llm_manager()
+        kwargs = {}
+        if req.provider:
+            kwargs["provider"] = req.provider.lower()
+        resp, provider_used = await manager.generate_with_fallback(full_prompt, **kwargs)
+        raw = resp.content or ""
+        data = _extract_clarify_json(raw)
+    except Exception as e:
+        # 不抛错，走 fallback
+        data = None
+
+    # 4) fallback：返回通用模板问题
+    if not data or not isinstance(data, dict) or not data.get("questions"):
+        data = _fallback_clarify_questions(top_event, max_q)
+
+    # 5) 规整输出
+    raw_qs = data.get("questions") or []
+    questions: list[ClarifyQuestion] = []
+    for i, q in enumerate(raw_qs[:max_q]):
+        if not isinstance(q, dict):
+            continue
+        qid = str(q.get("id") or f"Q{i + 1}").strip() or f"Q{i + 1}"
+        text = str(q.get("text") or "").strip()
+        if not text:
+            continue
+        hint = str(q.get("hint") or "").strip()
+        required = bool(q.get("required", False))
+        questions.append(ClarifyQuestion(id=qid, text=text, hint=hint, required=required))
+
+    if not questions:
+        data = _fallback_clarify_questions(top_event, max_q)
+        for q in data.get("questions", []):
+            questions.append(ClarifyQuestion(**q))
+
+    return ClarifyResponse(
+        questions=questions,
+        refined_query_hint=str(data.get("refined_query_hint") or "").strip(),
+        provider=provider_used,
+        raw_intro=str(data.get("intro") or "为了更精准地定位故障源，请补充以下信息：").strip(),
+    )
+
+
+def _extract_clarify_json(text: str) -> dict:
+    """从 LLM 输出中提取 JSON，兼容 markdown 代码块"""
+    if not text:
+        return {}
+    s = text.strip()
+    if s.startswith("```"):
+        lines = s.split("\n")
+        s = "\n".join(lines[1:-1]) if lines[-1].strip() == "```" else "\n".join(lines[1:])
+    s = s.strip()
+    m = re.search(r"\{[\s\S]*\}", s)
+    if not m:
+        return {}
+    try:
+        return json.loads(m.group())
+    except Exception:
+        return {}
+
+
+def _fallback_clarify_questions(top_event: str, max_q: int) -> dict:
+    """LLM 不可用时的兜底模板问题"""
+    base = [
+        {"id": "Q1", "text": "该故障首次出现的时间？是突然发生还是逐渐加重？",
+         "hint": "如：3天前突然出现 / 一周内逐渐加重", "required": True},
+        {"id": "Q2", "text": "故障的发生频率和持续时间？",
+         "hint": "如：每次启动后持续10秒 / 间歇性，约每5分钟一次", "required": False},
+        {"id": "Q3", "text": "在什么工况或环境下会出现该现象？",
+         "hint": "如：满负荷运行时 / 仅在低温启动时", "required": False},
+        {"id": "Q4", "text": "是否伴随其他异常（报警/振动/温升/异响等）？",
+         "hint": "如：同时有温度报警 / 无其他异常", "required": False},
+        {"id": "Q5", "text": "已做过哪些初步检查或测量？",
+         "hint": "如：测过电压正常 / 检查过润滑无异常", "required": False},
+    ]
+    return {
+        "intro": "为了更精准地定位故障源，请补充以下信息（回答越具体越好）：",
+        "questions": base[:max_q],
+        "refined_query_hint": f"{top_event}（待用户补充细节）",
+    }

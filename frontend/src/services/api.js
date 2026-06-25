@@ -322,6 +322,11 @@ export const generateFaultTree = async (params) => {
   return data
 }
 
+export const clarifyProblem = async (params) => {
+  const { data } = await api.post('/generate/clarify', params, { timeout: 120000 })
+  return data
+}
+
 export const getFaultTree = async (treeId) => {
   const { data } = await api.get(`/generate/${treeId}`)
   return data
@@ -467,6 +472,7 @@ api.reextractKnowledgeItems = reextractKnowledgeItems
 api.cleanupKnowledgeItems = cleanupKnowledgeItems
 api.autofillKnowledgeItems = autofillKnowledgeItems
 api.generateFaultTree = generateFaultTree
+api.clarifyProblem = clarifyProblem
 api.getFaultTree = getFaultTree
 api.getSessionByTree = getSessionByTree
 api.listFaultTrees = listFaultTrees

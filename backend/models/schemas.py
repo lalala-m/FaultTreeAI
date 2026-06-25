@@ -61,3 +61,27 @@ class EditRequest(BaseModel):
     mcs: Optional[List[List[str]]] = None
     importance: Optional[List[dict]] = None
     validation_issues: Optional[List[str]] = None
+
+
+# ── 二次澄清（Clarify）相关 ────────────────────────
+
+class ClarifyQuestion(BaseModel):
+    id: str                       # 问题 ID，前端回传答案时用
+    text: str                     # 问题正文，如 "异响是连续的还是间歇的？"
+    hint: str = ""                # 输入提示，如 "如：沉闷、尖锐、间歇3秒一次"
+    required: bool = False        # 是否必填
+
+
+class ClarifyRequest(BaseModel):
+    top_event: str                # 用户的原始问题描述
+    doc_ids: Optional[List[str]] = None   # 指定知识来源文档
+    provider: Optional[str] = None        # 指定 LLM Provider
+    rag_top_k: Optional[int] = 3          # 是否用 RAG 上下文辅助生成澄清问题
+    max_questions: Optional[int] = 4      # 最多生成几个问题（2~5）
+
+
+class ClarifyResponse(BaseModel):
+    questions: List[ClarifyQuestion]
+    refined_query_hint: str = ""  # LLM 给出的"完善后的查询"提示，便于后续 generate
+    provider: Optional[str] = None
+    raw_intro: str = ""           # 助手开场白，如 "为了更精准地分析，请补充以下信息："
