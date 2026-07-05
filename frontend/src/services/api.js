@@ -292,6 +292,15 @@ export const exportManualWord = async (pipeline = '流水线1', params = {}) => 
   return api.get('/knowledge/manual/export/word', { params: { pipeline, ...(params || {}) }, responseType: 'blob' })
 }
 
+export const listStructuredManual = async (pipeline = '流水线1', params = {}) => {
+  const { data } = await api.get('/knowledge/manual/structured', { params: { pipeline, ...(params || {}) } })
+  return data
+}
+
+export const exportStructuredManualWord = async (pipeline = '流水线1', params = {}) => {
+  return api.get('/knowledge/manual/structured/export/word', { params: { pipeline, ...(params || {}) }, responseType: 'blob' })
+}
+
 export const reextractKnowledgeItems = async (pipeline = '流水线1', mode = 'replace', docIds = null) => {
   const payload = { pipeline, mode }
   if (Array.isArray(docIds) && docIds.length) payload.doc_ids = docIds
@@ -468,6 +477,8 @@ api.listKnowledgeItemSuggestions = listKnowledgeItemSuggestions
 api.listManualEntries = listManualEntries
 api.reextractManualEntries = reextractManualEntries
 api.exportManualWord = exportManualWord
+api.listStructuredManual = listStructuredManual
+api.exportStructuredManualWord = exportStructuredManualWord
 api.reextractKnowledgeItems = reextractKnowledgeItems
 api.cleanupKnowledgeItems = cleanupKnowledgeItems
 api.autofillKnowledgeItems = autofillKnowledgeItems

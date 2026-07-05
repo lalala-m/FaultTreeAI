@@ -3171,6 +3171,235 @@ async def _build_manual_with_ai(pipeline: str) -> dict:
     return res
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# 规范手册（结构化知识版）—— 普通用户可访问
+# 展示 knowledge_items 中的结构化知识：机械类别 → 机械 → 问题类别 → 问题 → 根因 → 解决方案
+# ─────────────────────────────────────────────────────────────────────────
+
+@router.get("/manual/structured")
+async def list_structured_manual(
+    pipeline: str = "流水线1",
+    machine_category: str | None = None,
+    limit: int = 1000,
+    user: dict = Depends(get_current_user),
+):
+    """列出某流水线下的结构化知识（普通用户可访问，只读）。
+
+    返回按 机械类别 → 机械 分组的结构化知识，便于规范手册页面树形展示。
+    """
+    pipeline_value = _normalize_pipeline(pipeline)
+    lim = max(1, min(int(limit or 1000), 5000))
+    mc_filter = str(machine_category or "").strip()
+
+    with psycopg2.connect(
+        host=settings.DB_HOST, port=settings.DB_PORT,
+        user=settings.DB_USER, password=settings.DB_PASSWORD,
+        database=settings.DB_NAME,
+    ) as conn:
+        _ensure_structured_knowledge_tables(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    ki.item_id::text,
+                    ki.pipeline,
+                    ki.machine_category,
+                    ki.machine,
+                    ki.problem_category,
+                    ki.problem,
+                    ki.root_cause,
+                    ki.solution,
+                    ki.metadata,
+                    ki.status,
+                    ki.created_at,
+                    ki.updated_at,
+                    COALESCE(kw.current_weight, 0.5),
+                    kw.expert_weight,
+                    COALESCE(kw.expert_weight, kw.current_weight, 0.5) AS effective_weight
+                FROM knowledge_items ki
+                LEFT JOIN knowledge_item_weights kw ON kw.item_id = ki.item_id
+                WHERE ki.status = 'active'
+                  AND ki.pipeline = %s
+                ORDER BY ki.machine_category ASC, ki.machine ASC, ki.updated_at DESC
+                LIMIT %s
+                """,
+                (pipeline_value, lim),
+            )
+            rows = cur.fetchall() or []
+
+    items = []
+    mc_set = []  # 保留出现顺序
+    mc_seen = set()
+    for r in rows:
+        metadata = r[8] if isinstance(r[8], dict) else {}
+        machine = str(r[3] or "").strip()
+        machine_category = _canonicalize_machine_category(r[2], machine)
+        problem_category = _canonicalize_problem_category(str(r[4] or "").strip(), str(r[5] or "").strip(), str(r[6] or ""))
+        if not machine:
+            machine = _infer_device_from_filename(str((metadata or {}).get("filename") or "")) if metadata else ""
+        machine = _normalize_machine_name(machine) or machine
+        if not machine_category:
+            machine_category = _infer_machine_category_from_machine(machine)
+        if not problem_category:
+            problem_category = _infer_problem_category_from_problem(str(r[5] or ""))
+
+        if machine_category and machine_category not in mc_seen:
+            mc_seen.add(machine_category)
+            mc_set.append(machine_category)
+
+        items.append({
+            "item_id": r[0],
+            "pipeline": r[1],
+            "machine_category": machine_category,
+            "machine": machine,
+            "problem_category": problem_category,
+            "problem": r[5],
+            "root_cause": r[6],
+            "solution": r[7],
+            "metadata": metadata,
+            "status": r[9],
+            "created_at": r[10].isoformat() if r[10] else None,
+            "updated_at": r[11].isoformat() if r[11] else None,
+            "current_weight": float(r[12] if r[12] is not None else 0.5),
+            "expert_weight": float(r[13]) if r[13] is not None else None,
+            "effective_weight": float(r[14] if r[14] is not None else (r[12] if r[12] is not None else 0.5)),
+        })
+
+    # 可选：按机械类别过滤
+    if mc_filter:
+        items = [x for x in items if str(x.get("machine_category") or "") == mc_filter]
+
+    # 按 机械类别 → 机械 分组
+    groups: dict[str, dict[str, list]] = {}
+    for it in items:
+        mc = str(it.get("machine_category") or "其他")
+        m = str(it.get("machine") or "未指定")
+        groups.setdefault(mc, {}).setdefault(m, []).append(it)
+
+    sections = []
+    for mc in sorted(groups.keys()):
+        machines = groups[mc]
+        machine_sections = []
+        for m in sorted(machines.keys()):
+            machine_sections.append({
+                "machine": m,
+                "count": len(machines[m]),
+                "items": machines[m],
+            })
+        sections.append({
+            "machine_category": mc,
+            "count": sum(x["count"] for x in machine_sections),
+            "machines": machine_sections,
+        })
+
+    return {
+        "pipeline": pipeline_value,
+        "machine_categories": mc_set,
+        "total": len(items),
+        "sections": sections,
+        "items": items,  # 扁平列表，便于表格直接渲染
+    }
+
+
+@router.get("/manual/structured/export/word")
+async def export_structured_manual_word(
+    pipeline: str = "流水线1",
+    user: dict = Depends(get_current_user),
+):
+    """将结构化知识按 机械类别 → 机械 → 问题 层级导出为 Word 文档。"""
+    pipeline_value = _normalize_pipeline(pipeline)
+
+    with psycopg2.connect(
+        host=settings.DB_HOST, port=settings.DB_PORT,
+        user=settings.DB_USER, password=settings.DB_PASSWORD,
+        database=settings.DB_NAME,
+    ) as conn:
+        _ensure_structured_knowledge_tables(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    ki.machine_category,
+                    ki.machine,
+                    ki.problem_category,
+                    ki.problem,
+                    ki.root_cause,
+                    ki.solution,
+                    ki.metadata
+                FROM knowledge_items ki
+                WHERE ki.status = 'active'
+                  AND ki.pipeline = %s
+                ORDER BY ki.machine_category ASC, ki.machine ASC, ki.updated_at DESC
+                """,
+                (pipeline_value,),
+            )
+            rows = cur.fetchall() or []
+
+    # 规整 + 分组（与 list_structured_manual 一致）
+    groups: dict[str, dict[str, list]] = {}
+    for r in rows:
+        mc_raw, m_raw, pc_raw, p, rc, sol, meta = r
+        metadata = meta if isinstance(meta, dict) else {}
+        machine = str(m_raw or "").strip()
+        machine_category = _canonicalize_machine_category(mc_raw, machine)
+        problem_category = _canonicalize_problem_category(str(pc_raw or "").strip(), str(p or "").strip(), str(rc or ""))
+        if not machine:
+            machine = _infer_device_from_filename(str((metadata or {}).get("filename") or "")) if metadata else ""
+        machine = _normalize_machine_name(machine) or machine
+        if not machine_category:
+            machine_category = _infer_machine_category_from_machine(machine)
+        if not problem_category:
+            problem_category = _infer_problem_category_from_problem(str(p or ""))
+
+        mc = machine_category or "其他"
+        m = machine or "未指定"
+        groups.setdefault(mc, {}).setdefault(m, []).append({
+            "problem_category": problem_category or "",
+            "problem": str(p or "").strip(),
+            "root_cause": str(rc or "").strip(),
+            "solution": str(sol or "").strip(),
+        })
+
+    doc = Document()
+    doc.add_heading("规范手册（结构化知识）", 0)
+    doc.add_paragraph(f"流水线：{pipeline_value}")
+    doc.add_paragraph(f"导出时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    total = sum(len(items) for machines in groups.values() for items in machines.values())
+    doc.add_paragraph(f"知识条目数：{total}")
+    doc.add_paragraph("")
+
+    if not groups:
+        doc.add_paragraph("暂无结构化知识，请先在知识库中整理。")
+    else:
+        for mc in sorted(groups.keys()):
+            doc.add_heading(f"一、{mc}", level=1)
+            machines = groups[mc]
+            for m in sorted(machines.keys()):
+                items = machines[m]
+                doc.add_heading(f"{m}（共 {len(items)} 条）", level=2)
+                # 用表格呈现：问题类别 / 问题 / 根因 / 解决方案
+                table = doc.add_table(rows=1, cols=4)
+                table.style = "Table Grid"
+                hdr = table.rows[0].cells
+                hdr[0].text, hdr[1].text, hdr[2].text, hdr[3].text = "问题类别", "问题", "导致原因", "解决方法"
+                for it in items:
+                    row = table.add_row().cells
+                    row[0].text = str(it.get("problem_category") or "")[:60]
+                    row[1].text = str(it.get("problem") or "")[:300]
+                    row[2].text = str(it.get("root_cause") or "")[:300]
+                    row[3].text = str(it.get("solution") or "")[:500]
+                doc.add_paragraph("")
+
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".docx")
+    doc.save(tmp.name)
+    filename = f"规范手册_结构化知识_{pipeline_value}.docx"
+    return FileResponse(
+        tmp.name,
+        filename=filename,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+
+
 @router.get("/graph")
 async def knowledge_graph(pipeline: str = "流水线1"):
     pipeline = _normalize_pipeline(pipeline)
