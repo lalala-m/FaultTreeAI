@@ -3,8 +3,8 @@ import os
 import shutil
 import time
 
-src = r'd:\AllProject\FaultTreeAI\yolo11m.pt'
-dst = r'd:\AllProject\FaultTreeAI\data\models\yolo11m.pt'
+src = r'd:\AllProject\故障检修系统\yolo11m.pt'
+dst = r'd:\AllProject\故障检修系统\data\models\yolo11m.pt'
 
 os.makedirs(os.path.dirname(dst), exist_ok=True)
 

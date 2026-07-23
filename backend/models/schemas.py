@@ -26,6 +26,14 @@ class FaultTree(BaseModel):
     confidence: float
     analysis_summary: str
 
+
+class ClarifyQuestion(BaseModel):
+    id: str                       # 问题 ID，前端回传答案时用
+    text: str                     # 问题正文，如 "异响是连续的还是间歇的？"
+    hint: str = ""                # 输入提示，如 "如：沉闷、尖锐、间歇3秒一次"
+    required: bool = False        # 是否必填
+
+
 class GenerateRequest(BaseModel):
     top_event: str
     user_prompt: str
@@ -35,6 +43,8 @@ class GenerateRequest(BaseModel):
     provider: Optional[str] = None        # 指定调用的 LLM Provider（如 'minimax' / 'ollama'）
     use_fallback: Optional[bool] = True   # 失败时是否允许自动回退
     manual_weight: Optional[float] = None # 文档权重(0.0~1.0)，用于混合检索时的向量占比
+    clarify_questions: Optional[List[ClarifyQuestion]] = None  # 本次使用的 clarify 问题
+    clarify_answers: Optional[dict] = None                     # 用户填写的 clarify 答案 {qid: answer}
 
 class GenerateResponse(BaseModel):
     tree_id: Optional[str] = None
@@ -61,3 +71,86 @@ class EditRequest(BaseModel):
     mcs: Optional[List[List[str]]] = None
     importance: Optional[List[dict]] = None
     validation_issues: Optional[List[str]] = None
+
+
+class ClarifyRequest(BaseModel):
+    top_event: str                # 用户的原始问题描述
+    doc_ids: Optional[List[str]] = None   # 指定知识来源文档
+    provider: Optional[str] = None        # 指定 LLM Provider
+    rag_top_k: Optional[int] = 3          # 是否用 RAG 上下文辅助生成澄清问题
+    max_questions: Optional[int] = 4      # 最多生成几个问题（2~5）
+
+
+class ClarifyResponse(BaseModel):
+    questions: List[ClarifyQuestion]
+    refined_query_hint: str = ""  # LLM 给出的"完善后的查询"提示，便于后续 generate
+    provider: Optional[str] = None
+    raw_intro: str = ""           # 助手开场白，如 "为了更精准地分析，请补充以下信息："
+
+
+class ClarifyLookupRequest(BaseModel):
+    top_event: str
+
+
+class ClarifyLookupResponse(BaseModel):
+    found: bool
+    questions: List[ClarifyQuestion] = []
+    refined_query_hint: str = ""
+    provider: Optional[str] = None
+    raw_intro: str = ""
+
+
+class DiagnosisLookupRequest(BaseModel):
+    top_event: str
+    answers: dict
+
+
+class DiagnosisLookupResponse(BaseModel):
+    found: bool
+    tree_id: Optional[str] = None
+    fault_tree: Optional[FaultTree] = None
+    similarity: float = 0.0
+    hit_count: int = 0
+
+
+class DiagnosisStep(BaseModel):
+    step: int
+    title: str
+    action: str
+    expected: str = ""
+    decision: str = ""
+    note: str = ""
+
+
+class StepsRequest(BaseModel):
+    top_event: str
+    user_prompt: str = ""
+    doc_ids: Optional[List[str]] = None
+    provider: Optional[str] = None
+    rag_top_k: Optional[int] = 3
+    clarify_questions: Optional[List[ClarifyQuestion]] = None
+    clarify_answers: Optional[dict] = None
+
+
+class StepsResponse(BaseModel):
+    steps: List[DiagnosisStep] = []
+    summary: str = ""
+    provider: Optional[str] = None
+
+
+class StepsLookupRequest(BaseModel):
+    top_event: str
+    answers: dict
+
+
+class StepsLookupResponse(BaseModel):
+    found: bool
+    steps: List[DiagnosisStep] = []
+    summary: str = ""
+    hit_count: int = 0
+
+
+class SaveSessionRequest(BaseModel):
+    top_event: str
+    answers: dict
+    messages: List[dict]

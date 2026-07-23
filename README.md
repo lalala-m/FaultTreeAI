@@ -1,10 +1,10 @@
-# FaultTreeAI
+# 故障检修系统
 
-基于知识驱动与多模型推理的工业设备故障树智能生成与辅助构建系统。
+基于知识驱动与多模型推理的工业设备故障树智能诊断系统。
 
 ## GitHub 项目描述（可直接用于仓库简介）
 
-FaultTreeAI 是一个面向工业场景的 FTA（Fault Tree Analysis）智能系统，集成 RAG 知识检索、结构化故障树生成、MOCUS 最小割集与 Birnbaum 重要度分析，并支持 Ollama / MiniMax 多模型可切换与自动回退，适合本地离线开发与竞赛/生产演示。
+故障检修系统是一个面向工业场景的 FTA（Fault Tree Analysis）智能系统，集成 RAG 知识检索、结构化故障树生成、MOCUS 最小割集与 Birnbaum 重要度分析，并支持 Ollama / MiniMax 多模型可切换与自动回退，适合本地离线开发与竞赛/生产演示。
 
 **关键词**：`FastAPI` `React` `RAG` `pgvector` `Ollama` `MiniMax` `FTA` `MOCUS` `Fault Tree`
 
@@ -31,7 +31,7 @@ FaultTreeAI 是一个面向工业场景的 FTA（Fault Tree Analysis）智能系
 ## 项目结构
 
 ```
-FaultTreeAI/
+故障检修系统/
 ├── backend/
 │   ├── api/                    # API 路由
 │   │   ├── knowledge.py        # 文档上传 / 列表 / 删除
@@ -109,6 +109,75 @@ npm run dev
 ```
 
 访问 http://localhost:5173
+
+### 4. 手机 App 本地 HTTPS 代理（8443）
+
+当 Android App 需要通过 `https://<电脑IP>:8443` 访问前端，以启用 WebView 内的摄像头、麦克风和音视频通话能力时，可使用前端自带的本地 HTTPS 代理。
+
+先在项目根目录 `.env` 中设置后端地址：
+
+```bash
+VITE_API_TARGET=http://<Linux虚拟机IP>:8000
+```
+
+然后启动前端 HTTPS 开发入口：
+
+```bash
+cd frontend
+npm install
+npm run dev:https
+```
+
+默认行为：
+
+- `https://<电脑IP>:8443` -> 代理到前端 Vite 开发服务 `http://127.0.0.1:5173`
+- `/api`、`/ws`、`/docs` -> 代理到 `VITE_API_TARGET`
+- HTTPS 证书默认读取项目根目录 `ssl/cert.pem` 和 `ssl/key.pem`
+
+可选环境变量：
+
+- `HTTPS_PROXY_PORT`：本地 HTTPS 代理端口，默认 `8443`
+- `VITE_DEV_TARGET`：前端开发服务地址，默认 `http://127.0.0.1:5173`
+- `HTTPS_PROXY_API_TARGET`：覆盖 `.env` 中的 `VITE_API_TARGET`
+- `HTTPS_PROXY_CERT` / `HTTPS_PROXY_KEY`：自定义证书路径
+
+## 虚拟机部署
+
+本项目支持将后端单独部署到 Linux/麒麟虚拟机，本机只跑前端和手机 App。
+
+**所有需要同步到虚拟机的文件都收敛在 `deploy/vm/` 目录。**
+
+### 准备部署包
+
+在项目根目录执行：
+
+```bash
+./scripts/sync_deploy_vm.sh
+```
+
+该脚本会把 `backend/`、`data/`、`scripts/`、`.env.example`、`requirements.txt`、`rtc_bot/` 等同步到 `deploy/vm/`。
+
+### 同步到虚拟机
+
+```bash
+# 备份 VM 上的 .env
+ssh wcd@192.168.222.135 "cd /home/wcd/故障检修系统 && cp .env .env.bak.$(date +%Y%m%d%H%M%S)"
+
+# 同步整个 deploy/vm/ 到虚拟机
+rsync -avz --delete deploy/vm/ wcd@192.168.222.135:/home/wcd/故障检修系统/
+```
+
+### 在虚拟机上启动
+
+```bash
+ssh wcd@192.168.222.135
+cd /home/wcd/故障检修系统
+cp .env.example .env
+# 编辑 .env 填入真实 API Key
+./scripts/start_kylin.sh
+```
+
+详细说明见 `deploy/vm/README.md`。
 
 ## API 文档
 

@@ -1,0 +1,176 @@
+<?xml version="1.0" encoding="utf-8"?>
+<com.google.android.material.card.MaterialCardView xmlns:android="http://schemas.android.com/apk/res/android"
+  xmlns:app="http://schemas.android.com/apk/res-auto"
+  android:id="@+id/card_container"
+  android:layout_width="match_parent"
+  android:layout_height="wrap_content"
+  android:layout_marginHorizontal="12dp"
+  android:layout_marginVertical="6dp"
+  app:cardCornerRadius="16dp"
+  app:cardElevation="2dp"
+  app:strokeColor="#E5E7EB"
+  app:strokeWidth="1dp">
+
+  <LinearLayout
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="14dp">
+
+    <TextView
+      android:id="@+id/tv_title"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:text="建议排查步骤"
+      android:textColor="#1A1A1A"
+      android:textSize="15sp"
+      android:textStyle="bold" />
+
+    <TextView
+      android:id="@+id/tv_subtitle"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:layout_marginTop="4dp"
+      android:textColor="#9CA3AF"
+      android:textSize="12sp" />
+
+    <TextView
+      android:id="@+id/tv_summary"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:layout_marginTop="10dp"
+      android:background="#F0FDF4"
+      android:padding="10dp"
+      android:textColor="#166534"
+      android:textSize="13sp"
+      android:visibility="gone" />
+
+    <LinearLayout
+      android:id="@+id/step_container"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:layout_marginTop="10dp"
+      android:orientation="vertical"
+      android:background="#FAFAFA"
+      android:padding="12dp">
+
+      <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical">
+
+        <com.google.android.material.chip.Chip
+          android:id="@+id/chip_step_number"
+          android:layout_width="wrap_content"
+          android:layout_height="wrap_content"
+          android:textColor="#FFFFFF"
+          app:chipBackgroundColor="#60A5FA"
+          app:chipMinHeight="24dp"
+          app:chipStartPadding="8dp"
+          app:chipEndPadding="8dp"
+          app:chipCornerRadius="12dp"
+          app:textStartPadding="0dp"
+          app:textEndPadding="0dp" />
+
+        <TextView
+          android:id="@+id/tv_step_title"
+          android:layout_width="0dp"
+          android:layout_height="wrap_content"
+          android:layout_weight="1"
+          android:layout_marginStart="8dp"
+          android:textColor="#1A1A1A"
+          android:textSize="15sp"
+          android:textStyle="bold" />
+      </LinearLayout>
+
+      <TextView
+        android:id="@+id/tv_step_action"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:textColor="#374151"
+        android:textSize="14sp"
+        android:lineSpacingMultiplier="1.2" />
+
+      <TextView
+        android:id="@+id/tv_step_expected"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:background="#E0F2FE"
+        android:padding="8dp"
+        android:textColor="#0C4A6E"
+        android:textSize="12sp"
+        android:visibility="gone" />
+
+      <TextView
+        android:id="@+id/tv_step_decision"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:textColor="#6B7280"
+        android:textSize="12sp"
+        android:visibility="gone" />
+
+      <TextView
+        android:id="@+id/tv_step_note"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:textColor="#B45309"
+        android:textSize="12sp"
+        android:visibility="gone" />
+    </LinearLayout>
+
+    <LinearLayout
+      android:id="@+id/action_container"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:layout_marginTop="12dp"
+      android:orientation="horizontal"
+      android:gravity="end">
+
+      <com.google.android.material.button.MaterialButton
+        android:id="@+id/btn_normal"
+        style="@style/Widget.Material3.Button.OutlinedButton"
+        android:layout_width="wrap_content"
+        android:layout_height="40dp"
+        android:text="正常"
+        android:textSize="13sp"
+        app:cornerRadius="8dp" />
+
+      <com.google.android.material.button.MaterialButton
+        android:id="@+id/btn_abnormal"
+        style="@style/Widget.Material3.Button.OutlinedButton"
+        android:layout_width="wrap_content"
+        android:layout_height="40dp"
+        android:layout_marginStart="6dp"
+        android:text="异常"
+        android:textSize="13sp"
+        android:textColor="#DC2626"
+        app:cornerRadius="8dp" />
+
+      <com.google.android.material.button.MaterialButton
+        android:id="@+id/btn_unknown"
+        style="@style/Widget.Material3.Button.OutlinedButton"
+        android:layout_width="wrap_content"
+        android:layout_height="40dp"
+        android:layout_marginStart="6dp"
+        android:text="不确定"
+        android:textSize="13sp"
+        app:cornerRadius="8dp" />
+
+      <com.google.android.material.button.MaterialButton
+        android:id="@+id/btn_view_result"
+        android:layout_width="wrap_content"
+        android:layout_height="40dp"
+        android:layout_marginStart="6dp"
+        android:text="查看结果"
+        android:textSize="13sp"
+        android:visibility="gone"
+        app:backgroundTint="#60A5FA"
+        app:cornerRadius="8dp" />
+    </LinearLayout>
+  </LinearLayout>
+</com.google.android.material.card.MaterialCardView>

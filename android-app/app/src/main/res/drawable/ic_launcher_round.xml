@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+  android:width="108dp"
+  android:height="108dp"
+  android:viewportWidth="108"
+  android:viewportHeight="108">
+  <!-- 蓝底圆形背景 -->
+  <path
+    android:fillColor="#1677FF"
+    android:pathData="M54,6a48,48 0,1 1,0 96a48,48 0,1 1,0 -96z" />
+  <!-- 白色树：树冠 -->
+  <path
+    android:fillColor="#FFFFFF"
+    android:pathData="M54,20 L30,56 L42,56 L26,80 L82,80 L66,56 L78,56 Z" />
+  <!-- 白色树：树干 -->
+  <path
+    android:fillColor="#FFFFFF"
+    android:pathData="M48,80 L60,80 L60,92 L48,92 Z" />
+</vector>

@@ -1,0 +1,174 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+  xmlns:app="http://schemas.android.com/apk/res-auto"
+  android:layout_width="match_parent"
+  android:layout_height="match_parent"
+  android:background="#1a1a1a">
+
+  <!-- 本地摄像头画面（全屏背景） -->
+  <SurfaceView
+    android:id="@+id/local_view"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent" />
+
+  <!-- 远端 AI 画面（小窗） -->
+  <SurfaceView
+    android:id="@+id/remote_view"
+    android:layout_width="120dp"
+    android:layout_height="160dp"
+    android:layout_gravity="top|end"
+    android:layout_margin="16dp" />
+
+  <!-- 顶部渐变遮罩，让状态栏文字更清晰 -->
+  <View
+    android:layout_width="match_parent"
+    android:layout_height="180dp"
+    android:background="@drawable/bg_top_gradient" />
+
+  <!-- 中间 AI 状态区 -->
+  <LinearLayout
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_gravity="center"
+    android:orientation="vertical"
+    android:gravity="center_horizontal">
+
+    <!-- 状态指示点 -->
+    <LinearLayout
+      android:id="@+id/status_dots"
+      android:layout_width="wrap_content"
+      android:layout_height="wrap_content"
+      android:orientation="horizontal"
+      android:layout_marginTop="24dp"
+      android:gravity="center">
+
+      <View
+        android:layout_width="8dp"
+        android:layout_height="8dp"
+        android:background="@drawable/bg_dot_active"
+        android:layout_marginEnd="6dp" />
+
+      <View
+        android:layout_width="8dp"
+        android:layout_height="8dp"
+        android:background="@drawable/bg_dot_active"
+        android:layout_marginEnd="6dp"
+        android:alpha="0.6" />
+
+      <View
+        android:layout_width="8dp"
+        android:layout_height="8dp"
+        android:background="@drawable/bg_dot_active"
+        android:alpha="0.3" />
+    </LinearLayout>
+
+    <TextView
+      android:id="@+id/status_text"
+      android:layout_width="wrap_content"
+      android:layout_height="wrap_content"
+      android:layout_marginTop="16dp"
+      android:text="你可以开始说话"
+      android:textColor="#FFFFFF"
+      android:textSize="16sp"
+      android:shadowColor="#80000000"
+      android:shadowRadius="4" />
+
+    <TextView
+      android:id="@+id/ai_status_text"
+      android:layout_width="wrap_content"
+      android:layout_height="wrap_content"
+      android:layout_marginTop="8dp"
+      android:text=""
+      android:textColor="#a0ffa0"
+      android:textSize="14sp"
+      android:shadowColor="#80000000"
+      android:shadowRadius="4" />
+  </LinearLayout>
+
+  <!-- 底部控制栏 -->
+  <LinearLayout
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_gravity="bottom"
+    android:orientation="vertical"
+    android:gravity="center_horizontal"
+    android:paddingBottom="40dp"
+    android:paddingHorizontal="32dp">
+
+    <LinearLayout
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:orientation="horizontal"
+      android:gravity="center_vertical">
+
+      <!-- 语音按钮 -->
+      <FrameLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:gravity="center">
+
+        <ImageButton
+          android:id="@+id/btn_voice"
+          android:layout_width="64dp"
+          android:layout_height="64dp"
+          android:layout_gravity="center"
+          android:background="@drawable/bg_circle_white"
+          android:src="@android:drawable/ic_btn_speak_now"
+          android:contentDescription="语音"
+          android:padding="16dp"
+          android:scaleType="fitCenter"
+          app:tint="#1A1A1A" />
+      </FrameLayout>
+
+      <!-- 摄像头/画面按钮 -->
+      <FrameLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:gravity="center">
+
+        <ImageButton
+          android:id="@+id/btn_camera"
+          android:layout_width="64dp"
+          android:layout_height="64dp"
+          android:layout_gravity="center"
+          android:background="@drawable/bg_circle_gray"
+          android:src="@android:drawable/ic_menu_camera"
+          android:contentDescription="切换摄像头"
+          android:padding="16dp"
+          android:scaleType="fitCenter"
+          app:tint="#1A1A1A" />
+      </FrameLayout>
+
+      <!-- 挂断按钮 -->
+      <FrameLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:gravity="center">
+
+        <ImageButton
+          android:id="@+id/btn_hangup"
+          android:layout_width="64dp"
+          android:layout_height="64dp"
+          android:layout_gravity="center"
+          android:background="@drawable/bg_circle_red"
+          android:src="@android:drawable/ic_menu_close_clear_cancel"
+          android:contentDescription="挂断"
+          android:padding="16dp"
+          android:scaleType="fitCenter"
+          app:tint="#FFFFFF" />
+      </FrameLayout>
+    </LinearLayout>
+
+    <TextView
+      android:layout_width="wrap_content"
+      android:layout_height="wrap_content"
+      android:layout_marginTop="20dp"
+      android:text="内容由 AI 生成"
+      android:textColor="#99FFFFFF"
+      android:textSize="12sp" />
+  </LinearLayout>
+
+</FrameLayout>

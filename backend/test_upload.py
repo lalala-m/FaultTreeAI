@@ -11,7 +11,7 @@ from backend.core.rag.pgvector_retriever import add_chunks_to_db, retrieve
 
 
 async def test():
-    chunks = parse_document('D:/AllProject/FaultTreeAI/data/manuals/通用型驱动系统故障数据（原始数据）.pdf')
+    chunks = parse_document('D:/AllProject/故障检修系统/data/manuals/通用型驱动系统故障数据（原始数据）.pdf')
     print(f"解析完成，共 {len(chunks)} 个分块")
     print("第一块内容：", chunks[0]['text'][:100] if chunks else "无")
     print("开始向量化入库...")

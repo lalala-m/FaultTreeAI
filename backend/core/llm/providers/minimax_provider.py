@@ -6,6 +6,7 @@ MiniMax 云端 LLM Provider
 import time
 import httpx
 from backend.config import settings
+from backend.core.llm.async_http import get_async_http_client
 from backend.core.llm.base_provider import BaseLLMProvider, LLMResponse, EmbedResult
 
 
@@ -118,30 +119,31 @@ class MiniMaxProvider(BaseLLMProvider):
             "GroupId": self.group_id,
         }
 
-        async with httpx.AsyncClient(timeout=120) as client:
-            try:
-                resp = await client.post(
-                    f"{self.base_url}/v1/text/chatcompletion_v2",
-                    json=payload,
-                    headers=headers,
-                )
-                resp.raise_for_status()
-            except httpx.HTTPStatusError as exc:
-                detail = self._extract_http_error(exc.response)
-                raise RuntimeError(
-                    f"MiniMax 接口异常 [{exc.response.status_code}]: {detail}"
-                ) from exc
-            except httpx.RequestError as exc:
-                raise RuntimeError(
-                    f"MiniMax 请求失败: {self._extract_request_error(exc)}"
-                ) from exc
+        client = get_async_http_client()
+        try:
+            resp = await client.post(
+                f"{self.base_url}/v1/text/chatcompletion_v2",
+                json=payload,
+                headers=headers,
+                timeout=120,
+            )
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            detail = self._extract_http_error(exc.response)
+            raise RuntimeError(
+                f"MiniMax 接口异常 [{exc.response.status_code}]: {detail}"
+            ) from exc
+        except httpx.RequestError as exc:
+            raise RuntimeError(
+                f"MiniMax 请求失败: {self._extract_request_error(exc)}"
+            ) from exc
 
-            data = resp.json()
+        data = resp.json()
 
-            if data.get("base_resp", {}).get("status_code", 0) != 0:
-                err_code = data["base_resp"]["status_code"]
-                err_msg = data["base_resp"].get("status_msg", "未知错误")
-                raise RuntimeError(f"MiniMax API 错误 [{err_code}]: {err_msg}")
+        if data.get("base_resp", {}).get("status_code", 0) != 0:
+            err_code = data["base_resp"]["status_code"]
+            err_msg = data["base_resp"].get("status_msg", "未知错误")
+            raise RuntimeError(f"MiniMax API 错误 [{err_code}]: {err_msg}")
 
         latency_ms = (time.perf_counter() - start) * 1000
         content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
@@ -157,14 +159,15 @@ class MiniMaxProvider(BaseLLMProvider):
             "GroupId": self.group_id,
         }
 
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.post(
-                f"{self.base_url}/v1/embeddings",
-                json=payload,
-                headers=headers,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        client = get_async_http_client()
+        resp = await client.post(
+            f"{self.base_url}/v1/embeddings",
+            json=payload,
+            headers=headers,
+            timeout=60,
+        )
+        resp.raise_for_status()
+        data = resp.json()
 
         latency_ms = (time.perf_counter() - start) * 1000
         vectors = data.get("vectors", [data.get("vector", [])])
@@ -181,14 +184,15 @@ class MiniMaxProvider(BaseLLMProvider):
             "GroupId": self.group_id,
         }
 
-        async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.post(
-                f"{self.base_url}/v1/embeddings",
-                json=payload,
-                headers=headers,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        client = get_async_http_client()
+        resp = await client.post(
+            f"{self.base_url}/v1/embeddings",
+            json=payload,
+            headers=headers,
+            timeout=120,
+        )
+        resp.raise_for_status()
+        data = resp.json()
 
         latency_ms = (time.perf_counter() - start) * 1000
         vectors = data.get("vectors", data.get("data", []))

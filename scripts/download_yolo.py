@@ -5,7 +5,7 @@ import os
 import shutil
 
 # 目标目录
-data_dir = r'd:\AllProject\FaultTreeAI\data\models'
+data_dir = r'd:\AllProject\故障检修系统\data\models'
 os.makedirs(data_dir, exist_ok=True)
 
 model_file = os.path.join(data_dir, 'yolo11m.pt')

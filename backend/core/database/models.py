@@ -126,6 +126,50 @@ class FaultTree(Base):
     )
 
 
+class ClarifyCache(Base):
+    """Clarify 问题缓存表：相同 top_event 复用历史问题"""
+    __tablename__ = "clarify_cache"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    top_event = Column(Text, nullable=False, unique=True)
+    questions = Column(JSONB, nullable=False, default=[])
+    raw_intro = Column(Text)
+    refined_query_hint = Column(Text)
+    provider = Column(String(100))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        Index("idx_clarify_cache_top_event", "top_event"),
+    )
+
+
+class DiagnosisCase(Base):
+    """诊断案例表：top_event + clarify 答案 → 排查步骤 + 可选故障树 + 原因权重"""
+    __tablename__ = "diagnosis_cases"
+
+    case_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    top_event = Column(Text, nullable=False)
+    questions = Column(JSONB, nullable=False, default=[])
+    answers = Column(JSONB, nullable=False, default={})
+    answers_hash = Column(String(64), nullable=False)
+    tree_id = Column(UUID(as_uuid=True), ForeignKey("fault_trees.tree_id", ondelete="CASCADE"), nullable=True)
+    cause_weights = Column(JSONB, nullable=False, default={})
+    steps_json = Column(JSONB, nullable=False, default=[])
+    messages_json = Column(JSONB, nullable=False, default=[])
+    hit_count = Column(Integer, nullable=False, default=1)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    fault_tree = relationship("FaultTree", backref="diagnosis_cases")
+
+    __table_args__ = (
+        Index("idx_diagnosis_cases_top_event", "top_event"),
+        Index("idx_diagnosis_cases_hash", "answers_hash"),
+        Index("idx_diagnosis_cases_top_hash", "top_event", "answers_hash"),
+    )
+
+
 class ValidationLog(Base):
     """校验日志表"""
     __tablename__ = "validation_logs"
@@ -177,6 +221,23 @@ class FaultTreeFeedback(Base):
         Index("idx_feedbacks_tree_id", "tree_id"),
         Index("idx_feedbacks_status", "status"),
         Index("idx_feedbacks_created_at", "created_at"),
+    )
+
+
+class ManualBook(Base):
+    """规范手册缓存表：按流水线持久化 AI 生成的手册"""
+    __tablename__ = "manual_books"
+
+    book_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    pipeline = Column(String(120), nullable=False)
+    use_ai = Column(Boolean, nullable=False, default=True)
+    sections = Column(JSONB, nullable=False, default=[])
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        Index("idx_manual_books_pipeline", "pipeline"),
+        Index("idx_manual_books_pipeline_ai", "pipeline", "use_ai"),
     )
 
 

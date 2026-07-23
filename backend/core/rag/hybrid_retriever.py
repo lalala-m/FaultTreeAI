@@ -65,6 +65,9 @@ async def retrieve_hybrid(
         from backend.core.rag.bm25_retriever import retrieve_bm25
         return await retrieve_bm25(query, top_k=top_k, doc_ids=doc_ids)
     
+    if not query or not str(query).strip():
+        return []
+
     vw = float(vector_weight if vector_weight is not None else 0.5)
     if vw <= 0:
         vector_results = []

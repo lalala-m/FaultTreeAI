@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>AI 视频故障排查</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: #0f172a; color: #e2e8f0; display: flex; flex-direction: column; height: 100vh;
+      overflow: hidden;
+    }
+    #header {
+      padding: 10px 14px; background: #1e293b; border-bottom: 1px solid #334155;
+      display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    }
+    #header h1 { margin: 0; font-size: 16px; }
+    #status { font-size: 12px; color: #94a3b8; text-align: right; }
+    #main { flex: 1; display: flex; overflow: hidden; }
+    #video-panel {
+      flex: 1; position: relative; background: #020617; display: flex; align-items: center; justify-content: center;
+    }
+    #rtc-local-player {
+      width: 100%; height: 100%;
+    }
+    #side-panel {
+      width: 380px; max-width: 100%; border-left: 1px solid #334155; display: flex; flex-direction: column;
+      background: #1e293b;
+    }
+    #messages {
+      flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px;
+    }
+    .msg { padding: 10px 12px; border-radius: 10px; font-size: 14px; line-height: 1.5; max-width: 100%; word-break: break-word; }
+    .msg.user { background: #2563eb; align-self: flex-end; color: #fff; }
+    .msg.ai { background: #334155; align-self: flex-start; }
+    .msg.system { background: #451a03; color: #fdba74; align-self: center; font-size: 12px; }
+    #input-area {
+      padding: 10px; border-top: 1px solid #334155; display: flex; gap: 8px; align-items: center;
+    }
+    #input-area input {
+      flex: 1; padding: 10px 12px; border-radius: 6px; border: 1px solid #475569; background: #0f172a; color: #fff;
+    }
+    #input-area button {
+      padding: 10px 14px; border-radius: 6px; border: none; background: #2563eb; color: #fff; cursor: pointer;
+      white-space: nowrap;
+    }
+    #input-area button:disabled { background: #475569; cursor: not-allowed; }
+    #voice-btn {
+      background: #16a34a !important;
+    }
+    #voice-btn.listening {
+      background: #dc2626 !important;
+    }
+    #controls {
+      padding: 10px; border-top: 1px solid #334155; display: flex; gap: 8px; justify-content: center; flex-wrap: wrap;
+    }
+    #controls button {
+      padding: 8px 12px; border-radius: 6px; border: 1px solid #475569; background: #0f172a; color: #fff; cursor: pointer;
+      font-size: 13px;
+    }
+    #controls button.active { background: #2563eb; border-color: #2563eb; }
+    #controls button.danger { background: #dc2626; border-color: #dc2626; }
+    @media (max-width: 768px) {
+      #main { flex-direction: column; }
+      #side-panel { width: 100%; height: 48%; border-left: none; border-top: 1px solid #334155; }
+      #header h1 { font-size: 14px; }
+    }
+  </style>
+</head>
+<body>
+  <div id="header">
+    <h1>🔧 AI 视频故障排查</h1>
+    <div id="status">准备中...</div>
+  </div>
+  <div id="main">
+    <div id="video-panel">
+      <div id="rtc-local-player"></div>
+    </div>
+    <div id="side-panel">
+      <div id="messages"></div>
+      <div id="input-area">
+        <input id="question-input" type="text" placeholder="输入问题，例如：帮我看看这个设备" />
+        <button id="voice-btn" title="按住说话">🎤 说话</button>
+        <button id="send-btn">发送</button>
+      </div>
+      <div id="controls">
+        <button id="mute-btn">🎙️ 麦克风：开</button>
+        <button id="voice-out-btn" class="active">🔊 AI 语音：开</button>
+        <button id="capture-btn">📷 拍照分析</button>
+        <button id="leave-btn" class="danger">挂断</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/byteplus-rtc.min.js"></script>
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const appId = params.get('app_id');
+    const roomId = params.get('room_id');
+    const userId = params.get('user_id');
+    const token = params.get('token');
+    const sessionId = params.get('session_id');
+
+    const statusEl = document.getElementById('status');
+    const messagesEl = document.getElementById('messages');
+    const inputEl = document.getElementById('question-input');
+    const sendBtn = document.getElementById('send-btn');
+    const voiceBtn = document.getElementById('voice-btn');
+    const muteBtn = document.getElementById('mute-btn');
+    const voiceOutBtn = document.getElementById('voice-out-btn');
+    const captureBtn = document.getElementById('capture-btn');
+    const leaveBtn = document.getElementById('leave-btn');
+
+    let engine = null;
+    let ws = null;
+    let frameTimer = null;
+    let joined = false;
+    let micMuted = false;
+    let voiceOutputEnabled = true;
+    let recognition = null;
+    let listening = false;
+    let speechSupported = !!(window.SpeechRecognition || window.webkitSpeechRecognition) && 'speechSynthesis' in window;
+
+    function log(msg, type = 'system') {
+      const div = document.createElement('div');
+      div.className = `msg ${type}`;
+      div.textContent = msg;
+      messagesEl.appendChild(div);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    function setStatus(text) {
+      statusEl.textContent = text;
+    }
+
+    if (!appId || !roomId || !userId || !token || !sessionId) {
+      setStatus('参数不完整');
+      log('链接缺少必要参数：app_id, room_id, user_id, token, session_id', 'system');
+      throw new Error('missing params');
+    }
+
+    // ---------- 语音输入 / 输出 ----------
+    function initSpeech() {
+      if (!speechSupported) {
+        voiceBtn.style.display = 'none';
+        voiceOutBtn.style.display = 'none';
+        log('当前浏览器不支持语音功能，请使用文字输入', 'system');
+        return;
+      }
+      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+      recognition = new SR();
+      recognition.lang = 'zh-CN';
+      recognition.continuous = false;
+      recognition.interimResults = true;
+
+      recognition.onstart = () => {
+        listening = true;
+        voiceBtn.classList.add('listening');
+        voiceBtn.textContent = '🔴 听录中';
+        setStatus('正在听您说话...');
+      };
+      recognition.onend = () => {
+        listening = false;
+        voiceBtn.classList.remove('listening');
+        voiceBtn.textContent = '🎤 说话';
+        setStatus('AI 正在观察画面，按住 🎤 可语音提问');
+      };
+      recognition.onerror = (event) => {
+        listening = false;
+        voiceBtn.classList.remove('listening');
+        voiceBtn.textContent = '🎤 说话';
+        if (event.error !== 'aborted') {
+          log(`语音识别失败: ${event.error}`, 'system');
+        }
+      };
+      recognition.onresult = (event) => {
+        const text = Array.from(event.results || [])
+          .map((r) => String(r?.[0]?.transcript || ''))
+          .join('')
+          .trim();
+        if (text && !event.results[event.results.length - 1].isFinal) {
+          inputEl.value = text;
+        }
+        if (text && event.results[event.results.length - 1].isFinal) {
+          inputEl.value = text;
+          ask(text);
+        }
+      };
+    }
+
+    function startListening() {
+      if (!speechSupported || !recognition) return;
+      try {
+        window.speechSynthesis.cancel();
+        recognition.start();
+      } catch (e) {
+        console.error('start listening error', e);
+      }
+    }
+
+    function stopListening() {
+      if (!recognition || !listening) return;
+      try {
+        recognition.stop();
+      } catch {}
+    }
+
+    function speak(text) {
+      if (!voiceOutputEnabled || !('speechSynthesis' in window) || !text) return;
+      try {
+        window.speechSynthesis.cancel();
+        const utter = new window.SpeechSynthesisUtterance(text);
+        utter.lang = 'zh-CN';
+        utter.rate = 1;
+        utter.pitch = 1;
+        window.speechSynthesis.speak(utter);
+      } catch (e) {
+        console.error('speak error', e);
+      }
+    }
+
+    // ---------- 实时分析通道 ----------
+    async function connectRealtime() {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const url = `${protocol}//${window.location.host}/api/realtime/ws/${sessionId}`;
+      ws = new WebSocket(url);
+
+      ws.onopen = () => {
+        log('实时分析通道已连接', 'system');
+        if (speechSupported) {
+          log('可点击 🎤 说话 或输入文字与 AI 交流', 'system');
+        }
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          const payload = data.payload || {};
+          if (data.type === 'result' && payload.content) {
+            log(payload.content, 'ai');
+            if (payload.speak !== false) {
+              speak(payload.content);
+            }
+          } else if (data.type === 'status') {
+            setStatus(`AI 状态: ${payload.ai_status || '观察中'}`);
+          } else if (data.type === 'error') {
+            log(`错误: ${payload.content || payload.message || '未知错误'}`, 'system');
+          }
+        } catch (e) {
+          console.error('parse ws message failed', e);
+        }
+      };
+
+      ws.onerror = (e) => {
+        log('实时通道异常', 'system');
+        console.error(e);
+      };
+
+      ws.onclose = () => {
+        log('实时通道已关闭', 'system');
+      };
+    }
+
+    async function sendFrame() {
+      if (!engine || !ws || ws.readyState !== WebSocket.OPEN) return;
+      try {
+        const image = await engine.takeLocalSnapshot();
+        if (image) {
+          ws.send(JSON.stringify({
+            type: 'frame',
+            payload: { image_base64: image, timestamp: Date.now(), source: 'local' }
+          }));
+        }
+      } catch (e) {
+        console.error('send frame failed', e);
+      }
+    }
+
+    async function ask(text) {
+      if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
+      log(text, 'user');
+      ws.send(JSON.stringify({
+        type: 'ask',
+        payload: { text, mode: 'text' }
+      }));
+      inputEl.value = '';
+    }
+
+    async function toggleMute() {
+      if (!engine) return;
+      try {
+        if (micMuted) {
+          await engine.startAudioCapture();
+          micMuted = false;
+          muteBtn.textContent = '🎙️ 麦克风：开';
+          muteBtn.classList.add('active');
+        } else {
+          await engine.stopAudioCapture();
+          micMuted = true;
+          muteBtn.textContent = '🎙️ 麦克风：关';
+          muteBtn.classList.remove('active');
+        }
+      } catch (e) {
+        log(`麦克风切换失败: ${e?.message || e}`, 'system');
+      }
+    }
+
+    async function joinRoom() {
+      try {
+        setStatus('正在加入房间...');
+        engine = BytePlusRTC.createEngine(appId);
+
+        engine.on(BytePlusRTC.events.onError, (err) => {
+          console.error('RTC error', err);
+          log(`RTC 错误: ${err?.message || JSON.stringify(err)}`, 'system');
+        });
+
+        await engine.joinRoom(
+          token,
+          roomId,
+          { userId },
+          {
+            isAutoPublish: true,
+            isAutoSubscribeAudio: true,
+            isAutoSubscribeVideo: true,
+            roomProfileType: BytePlusRTC.RoomProfileType ? BytePlusRTC.RoomProfileType.communication : 0,
+          }
+        );
+
+        // 默认开启音视频，麦克风自动打开以支持实时对话
+        await engine.startAudioCapture();
+        micMuted = false;
+        muteBtn.textContent = '🎙️ 麦克风：开';
+        muteBtn.classList.add('active');
+
+        await engine.startVideoCapture();
+        engine.setLocalVideoPlayer(BytePlusRTC.StreamIndex ? BytePlusRTC.StreamIndex.STREAM_INDEX_MAIN : 0, {
+          renderDom: 'rtc-local-player'
+        });
+
+        joined = true;
+        setStatus('已加入，AI 正在观察画面...');
+        log('已加入视频房间，AI 助手已接通', 'system');
+        if (speechSupported) {
+          log('提示：可按住 🎤 说话 或输入文字与 AI 交流', 'system');
+        }
+
+        await connectRealtime();
+
+        // 每 2 秒发送一帧画面给 AI 分析
+        frameTimer = setInterval(sendFrame, 2000);
+      } catch (e) {
+        setStatus('加入失败');
+        log(`加入房间失败: ${e?.message || e}`, 'system');
+        console.error(e);
+      }
+    }
+
+    async function leaveRoom() {
+      if (frameTimer) clearInterval(frameTimer);
+      stopListening();
+      if ('speechSynthesis' in window) {
+        try { window.speechSynthesis.cancel(); } catch {}
+      }
+      if (ws) {
+        try { ws.close(); } catch {}
+        ws = null;
+      }
+      if (engine) {
+        try {
+          await engine.stopVideoCapture();
+          await engine.stopAudioCapture();
+          await engine.leaveRoom();
+        } catch {}
+        engine = null;
+      }
+      joined = false;
+      setStatus('已挂断');
+      log('已离开房间', 'system');
+    }
+
+    // ---------- 事件绑定 ----------
+    sendBtn.addEventListener('click', () => ask(inputEl.value.trim()));
+    inputEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') ask(inputEl.value.trim());
+    });
+
+    // 按住说话 / 松开结束
+    voiceBtn.addEventListener('mousedown', startListening);
+    voiceBtn.addEventListener('mouseup', stopListening);
+    voiceBtn.addEventListener('mouseleave', stopListening);
+    voiceBtn.addEventListener('touchstart', (e) => { e.preventDefault(); startListening(); });
+    voiceBtn.addEventListener('touchend', (e) => { e.preventDefault(); stopListening(); });
+
+    muteBtn.addEventListener('click', toggleMute);
+
+    voiceOutBtn.addEventListener('click', () => {
+      voiceOutputEnabled = !voiceOutputEnabled;
+      if (voiceOutputEnabled) {
+        voiceOutBtn.textContent = '🔊 AI 语音：开';
+        voiceOutBtn.classList.add('active');
+      } else {
+        voiceOutBtn.textContent = '🔇 AI 语音：关';
+        voiceOutBtn.classList.remove('active');
+        window.speechSynthesis.cancel();
+      }
+    });
+
+    captureBtn.addEventListener('click', () => {
+      sendFrame();
+      log('已发送当前画面给 AI 分析', 'system');
+    });
+
+    leaveBtn.addEventListener('click', leaveRoom);
+    window.addEventListener('beforeunload', leaveRoom);
+
+    initSpeech();
+    joinRoom();
+  </script>
+</body>
+</html>

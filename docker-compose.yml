@@ -22,6 +22,11 @@ services:
     dns:
       - 8.8.8.8
       - 114.114.114.114
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
 
   # 后端服务
   backend:
@@ -55,7 +60,11 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./data/manuals:/app/data/manuals
-      - ./data/chroma_db:/app/data/chroma_db
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
 
   # 前端服务
   frontend:
@@ -65,11 +74,16 @@ services:
     container_name: faulttree-frontend
     ports:
       - "5173:80"
+      - "8443:443"
     depends_on:
       - backend
     volumes:
-      - ./frontend/src:/app/src
-      - ./frontend/public:/app/public
+      - ./ssl:/etc/nginx/ssl:ro
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
 volumes:
   pgdata:

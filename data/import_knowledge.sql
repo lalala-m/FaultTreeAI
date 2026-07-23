@@ -1,4 +1,4 @@
--- FaultTreeAI 知识库导入 SQL
+-- 故障检修系统 知识库导入 SQL
 -- 生成时间: 2024
 
 BEGIN;

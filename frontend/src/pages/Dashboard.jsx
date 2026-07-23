@@ -1,7 +1,9 @@
 import React, { useEffect, useMemo, useState, Suspense, lazy, useRef } from 'react'
 import { Typography, Card, Input, Button, Space, Select, Badge, Slider, Tag, Modal, message, Popover } from 'antd'
-import { ThunderboltOutlined, SendOutlined, SettingOutlined } from '@ant-design/icons'
+import { ThunderboltOutlined, SendOutlined, SettingOutlined, CameraOutlined, PlusOutlined } from '@ant-design/icons'
 import api from '../services/api.js'
+import { generationStore } from '../services/generationStore.js'
+import { dashboardStore } from '../services/dashboardStore.js'
 
 const { Title, Text } = Typography
 const FaultTreeViewer = lazy(() => import('../components/FaultTreeViewer.jsx'))
@@ -249,8 +251,8 @@ const applyTroubleshootingAnswer = (state, answerValue) => {
   }
 }
 
-export default function Dashboard({ onNavigate, user }) {
-  const [messages, setMessages] = useState([])
+export default function Dashboard({ onNavigate, user, mobile }) {
+  const [messages, setMessages] = useState(() => dashboardStore.getMessages())
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [docs, setDocs] = useState([])
@@ -278,10 +280,64 @@ export default function Dashboard({ onNavigate, user }) {
   const troubleshootingSessionsRef = useRef({})
   const [feedbackSubmittingSession, setFeedbackSubmittingSession] = useState(null)
   const bottomRef = useRef(null)
+  const [clarifyDrafts, setClarifyDrafts] = useState({})      // { [clarifyId]: { [qid]: string } }
+  const [clarifySubmitting, setClarifySubmitting] = useState(null) // 正在提交的 clarifyId
+  const clarifyIdCounter = useRef(0)
+  const pendingJobRef = useRef(null)
+
+  // 订阅全局内存 store：切换页面后恢复对话历史
+  useEffect(() => {
+    const unsubscribe = dashboardStore.subscribe((storeMessages) => {
+      setMessages(storeMessages)
+    })
+    return unsubscribe
+  }, [])
+
+  // 对话历史变化时同步到内存 store（刷新/重启后自动清空）
+  useEffect(() => {
+    dashboardStore.setMessages(messages)
+
+    // 检查是否有正在进行的生成任务在页面切换期间已完成
+    const typingMsg = messages.find(m => m.kind === 'typing' && m.id?.startsWith('typing_'))
+    if (typingMsg?.id && typingMsg?.topEvent) {
+      const job = generationStore.get(typingMsg.topEvent, typingMsg.answers)
+      if (job?.status === 'completed') {
+        finalizeGenerateResult(job.result, typingMsg.id)
+      } else if (job?.status === 'error') {
+        setMessages(prev => prev.map(m => (m.id === typingMsg.id
+          ? { role: 'assistant', text: '生成失败：' + (job.error?.response?.data?.detail || job.error?.message || '未知错误') }
+          : m
+        )))
+        setLoading(false)
+      } else if (job?.status === 'running') {
+        setLoading(true)
+        job.promise
+          .then(data => finalizeGenerateResult(data, typingMsg.id))
+          .catch(e => setMessages(prev => prev.map(m => (m.id === typingMsg.id
+            ? { role: 'assistant', text: '生成失败：' + (e?.response?.data?.detail || e?.message || '未知错误') }
+            : m
+          ))))
+          .finally(() => setLoading(false))
+      }
+    }
+  }, [messages])
 
   useEffect(() => {
     troubleshootingSessionsRef.current = troubleshootingSessions
   }, [troubleshootingSessions])
+
+  const persistSession = (topEvent, answers, msgs) => {
+    try {
+      const source = msgs || dashboardStore.getMessages()
+      if (!source || source.length === 0) return
+      const clean = JSON.parse(JSON.stringify(source))
+      api.saveSession({
+        top_event: String(topEvent || '').trim(),
+        answers: answers || {},
+        messages: clean,
+      }).catch(() => {})
+    } catch {}
+  }
 
   useEffect(() => {
     const loadDocs = async () => {
@@ -429,50 +485,136 @@ export default function Dashboard({ onNavigate, user }) {
 
     const now = Date.now()
     const typingId = `typing_${now}_${Math.random().toString(16).slice(2, 8)}`
-    setMessages(prev => [...prev, { role: 'user', text }, { role: 'assistant', kind: 'typing', id: typingId }])
+    setMessages(prev => [...prev,
+      { role: 'user', text },
+      { role: 'assistant', kind: 'typing', id: typingId, topEvent: text, answers: {} }
+    ])
     setInput('')
     setLoading(true)
-    try {
-      let data = null
-      try {
-        const hit = await api.lookupFaultTree(text)
-        if (hit?.found && hit?.tree_id) {
-          const reused = await api.getFaultTree(hit.tree_id)
-          data = reused
-          const msgText = reused?.fault_tree?.analysis_summary || '已从历史记录匹配到故障树。'
-          const selectedDocItem = docs.find(item => item.doc_id === selectedDoc)
-          setMessages(prev => prev.map(m => (m.id === typingId ? {
-            role: 'assistant',
-            text: msgText,
-            result: data,
-            meta: {
-              doc_id: selectedDoc || null,
-              doc_weight: Number(selectedDocItem?.current_weight ?? 0.5),
-              manual_weight: manualWeight,
-              provider: selectedProvider || null,
-              reused: true,
-              similarity: Number(hit?.similarity || 0),
-            },
-          } : m)))
-          setLoading(false)
-          return
-        }
-      } catch {
-      }
 
-      data = await api.generateFaultTree({
+    // —— 先查历史 clarify 缓存，命中则直接复用问题 ——
+    try {
+      const cached = await api.clarifyLookup(text)
+      if (cached?.found && Array.isArray(cached.questions) && cached.questions.length > 0) {
+        clarifyIdCounter.current += 1
+        const clarifyId = `clarify_${now}_${clarifyIdCounter.current}`
+        setMessages(prev => prev.map(m => (m.id === typingId ? {
+          id: clarifyId,
+          role: 'assistant',
+          kind: 'clarification',
+          top_event: text,
+          questions: cached.questions,
+          intro: String(cached?.raw_intro || '为了更精准地定位故障源，请补充以下信息：'),
+          refined_query_hint: String(cached?.refined_query_hint || ''),
+          provider: cached?.provider || null,
+          cached: true,
+          meta: {
+            doc_id: selectedDoc || null,
+            doc_weight: Number(docs.find(item => item.doc_id === selectedDoc)?.current_weight ?? 0.5),
+            manual_weight: manualWeight,
+            provider: selectedProvider || null,
+          },
+        } : m)))
+        const initDraft = {}
+        cached.questions.forEach(q => { initDraft[q.id] = '' })
+        setClarifyDrafts(prev => ({ ...prev, [clarifyId]: initDraft }))
+        setLoading(false)
+        return
+      }
+    } catch (e) {
+      // 缓存查询失败继续走 clarify
+    }
+
+    // —— 二次澄清流程：调用 /clarify 让 LLM 生成针对性问题 ——
+    try {
+      const clarifyResp = await api.clarifyProblem({
         top_event: text,
-        user_prompt: '',
-        rag_top_k: 5,
-        use_fallback: true,
-        provider: selectedProvider || undefined,
         doc_ids: selectedDoc ? [selectedDoc] : undefined,
-        manual_weight: Math.max(0, Math.min(100, manualWeight)) / 100.0,
+        provider: selectedProvider || undefined,
+        rag_top_k: 3,
+        max_questions: 4,
       })
-      const selectedDocItem = docs.find(item => item.doc_id === selectedDoc)
-      setMessages(prev => prev.map(m => (m.id === typingId ? {
+      const questions = Array.isArray(clarifyResp?.questions) ? clarifyResp.questions : []
+      if (questions.length > 0) {
+        clarifyIdCounter.current += 1
+        const clarifyId = `clarify_${now}_${clarifyIdCounter.current}`
+        // 用澄清卡片替换 typing 占位
+        setMessages(prev => prev.map(m => (m.id === typingId ? {
+          id: clarifyId,
+          role: 'assistant',
+          kind: 'clarification',
+          top_event: text,
+          questions,
+          intro: String(clarifyResp?.raw_intro || '为了更精准地定位故障源，请补充以下信息：'),
+          refined_query_hint: String(clarifyResp?.refined_query_hint || ''),
+          provider: clarifyResp?.provider || null,
+          cached: false,
+          meta: {
+            doc_id: selectedDoc || null,
+            doc_weight: Number(docs.find(item => item.doc_id === selectedDoc)?.current_weight ?? 0.5),
+            manual_weight: manualWeight,
+            provider: selectedProvider || null,
+          },
+        } : m)))
+        // 初始化草稿
+        const initDraft = {}
+        questions.forEach(q => { initDraft[q.id] = '' })
+        setClarifyDrafts(prev => ({ ...prev, [clarifyId]: initDraft }))
+        setLoading(false)
+        return
+      }
+      // 没有问题就回退到直接生成
+    } catch (e) {
+      // 澄清失败也回退到直接生成
+    }
+
+    // —— 兜底：直接走排查步骤流程，不再直接生成故障树 ——
+    await runStepsFlow(text, {}, [], typingId)
+  }
+
+  // 用输入 + 补充信息去匹配历史故障树
+  const tryReuseFaultTree = async (topEvent, userPrompt, typingId) => {
+    const lookupQuery = userPrompt ? `${topEvent}\n${userPrompt}` : topEvent
+    try {
+      const hit = await api.lookupFaultTree(lookupQuery)
+      if (hit?.found && hit?.tree_id) {
+        const reused = await api.getFaultTree(hit.tree_id)
+        const selectedDocItem = docs.find(item => item.doc_id === selectedDoc)
+        setMessages(prev => prev.map(m => (m.id === typingId ? {
+          role: 'assistant',
+          text: reused?.fault_tree?.analysis_summary || '已从历史记录匹配到故障树。',
+          result: reused,
+          meta: {
+            doc_id: selectedDoc || null,
+            doc_weight: Number(selectedDocItem?.current_weight ?? 0.5),
+            manual_weight: manualWeight,
+            provider: selectedProvider || null,
+            reused: true,
+            similarity: Number(hit?.similarity || 0),
+          },
+        } : m)))
+        setLoading(false)
+        return true
+      }
+    } catch {
+      // lookup 失败继续生成
+    }
+    return false
+  }
+
+  // 把"直接生成故障树"的逻辑抽出来，方便 clarify 失败回退与跳过澄清时复用
+  const finalizeGenerateResult = (data, typingId) => {
+    const selectedDocItem = docs.find(item => item.doc_id === selectedDoc)
+    let nextMessages = []
+    let topEvent = ''
+    let answers = {}
+    setMessages(prev => {
+      const typingMsg = prev.find(m => m.id === typingId)
+      topEvent = typingMsg?.topEvent || ''
+      answers = typingMsg?.answers || {}
+      nextMessages = prev.map(m => (m.id === typingId ? {
         role: 'assistant',
-        text: data.fault_tree?.analysis_summary || '已生成故障树。',
+        text: data?.fault_tree?.analysis_summary || '已生成故障树。',
         result: data,
         meta: {
           doc_id: selectedDoc || null,
@@ -480,14 +622,281 @@ export default function Dashboard({ onNavigate, user }) {
           manual_weight: manualWeight,
           provider: selectedProvider || null,
         },
-      } : m)))
+      } : m))
+      return nextMessages
+    })
+    persistSession(topEvent, answers, nextMessages)
+  }
+
+  const generateFromTopEvent = async (topEvent, typingId, userPrompt = '', clarifyQuestions = null, clarifyAnswers = null) => {
+    // 先尝试用完整信息复用历史记录（兼容旧逻辑）
+    const reused = await tryReuseFaultTree(topEvent, userPrompt, typingId)
+    if (reused) return
+
+    const payload = {
+      top_event: topEvent,
+      user_prompt: userPrompt,
+      rag_top_k: 5,
+      use_fallback: true,
+      provider: selectedProvider || undefined,
+      doc_ids: selectedDoc ? [selectedDoc] : undefined,
+      manual_weight: Math.max(0, Math.min(100, manualWeight)) / 100.0,
+    }
+    if (clarifyQuestions) {
+      payload.clarify_questions = clarifyQuestions
+    }
+    if (clarifyAnswers) {
+      payload.clarify_answers = clarifyAnswers
+    }
+
+    const promise = api.generateFaultTree(payload)
+    generationStore.start(topEvent, clarifyAnswers, promise)
+    pendingJobRef.current = { topEvent, answers: clarifyAnswers, typingId }
+
+    try {
+      const data = await promise
+      finalizeGenerateResult(data, typingId)
     } catch (e) {
       setMessages(prev => prev.map(m => (m.id === typingId
         ? { role: 'assistant', text: '生成失败：' + (e.response?.data?.detail || e.message) }
         : m
       )))
+    } finally {
+      setLoading(false)
+      pendingJobRef.current = null
     }
-    setLoading(false)
+  }
+
+  // 用户在澄清卡片上点"提交"
+  const submitClarification = async (clarifyId) => {
+    const clarifyMsg = messages.find(m => m.id === clarifyId)
+    if (!clarifyMsg || clarifyMsg.kind !== 'clarification') return
+    if (clarifySubmitting) return
+
+    const draft = clarifyDrafts[clarifyId] || {}
+    const questions = Array.isArray(clarifyMsg.questions) ? clarifyMsg.questions : []
+    const missingRequired = questions.filter(q => q.required && !String(draft[q.id] || '').trim())
+    if (missingRequired.length > 0) {
+      message.warning(`请填写必填项：${missingRequired.map(q => q.text).join('；')}`)
+      return
+    }
+
+    setClarifySubmitting(clarifyId)
+    // 把答案组装成一段富文本 user_prompt
+    const answerLines = []
+    for (const q of questions) {
+      const ans = String(draft[q.id] || '').trim()
+      if (!ans) continue
+      answerLines.push(`- ${q.text}\n  回答：${ans}`)
+    }
+    const enrichedPrompt = answerLines.length
+      ? `原始描述：${clarifyMsg.top_event}\n\n补充信息：\n${answerLines.join('\n')}`
+      : ''
+
+    // 在消息流中追加一条用户消息（汇总用户填的内容）+ 一个 typing 占位
+    const userSummary = answerLines.length
+      ? answerLines.map(l => l.split('\n').map(s => s.trim()).filter(Boolean).join(' → ')).join('；')
+      : '（未填写补充信息）'
+    const typingId = `typing_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`
+    setMessages(prev => {
+      const idx = prev.findIndex(m => m.id === clarifyId)
+      if (idx < 0) return prev
+      const next = [...prev]
+      next[idx] = { ...next[idx], submitted: true, submittedAnswers: draft }
+      next.splice(idx + 1, 0,
+        { role: 'user', text: userSummary },
+        { role: 'assistant', kind: 'typing', id: typingId, topEvent: clarifyMsg.top_event, answers: draft }
+      )
+      return next
+    })
+
+    setLoading(true)
+
+    await runStepsFlow(clarifyMsg.top_event, draft, questions, typingId, enrichedPrompt)
+    setClarifySubmitting(null)
+  }
+
+  const finalizeStepsResult = (typingId, topEvent, answers, questions, steps, summary, reused = false, hitCount = 0, provider = null) => {
+    const selectedDocItem = docs.find(item => item.doc_id === selectedDoc)
+    let nextMessages = []
+    setMessages(prev => {
+      nextMessages = prev.map(m => (m.id === typingId ? {
+        id: `steps_${typingId}`,
+        role: 'assistant',
+        kind: 'steps',
+        top_event: topEvent,
+        questions,
+        answers,
+        steps,
+        summary,
+        currentStep: 0,
+        stepResults: [],
+        finished: false,
+        meta: {
+          doc_id: selectedDoc || null,
+          doc_weight: Number(selectedDocItem?.current_weight ?? 0.5),
+          manual_weight: manualWeight,
+          provider: selectedProvider || provider || null,
+          reused,
+          hit_count: hitCount,
+        },
+      } : m))
+      return nextMessages
+    })
+    persistSession(topEvent, answers, nextMessages)
+  }
+
+  // 统一走“排查步骤”流程：先查历史 steps，命中则秒回，否则调用 LLM 生成
+  const runStepsFlow = async (topEvent, answers, questions, typingId, userPrompt = '') => {
+    try {
+      const cachedSteps = await api.stepsLookup(topEvent, answers)
+      if (cachedSteps?.found && Array.isArray(cachedSteps.steps) && cachedSteps.steps.length > 0) {
+        finalizeStepsResult(typingId, topEvent, answers, questions, cachedSteps.steps, '', true, cachedSteps.hit_count)
+        setLoading(false)
+        return
+      }
+    } catch {
+      // steps 查询失败继续生成
+    }
+
+    try {
+      const stepsResp = await api.generateSteps({
+        top_event: topEvent,
+        user_prompt: userPrompt,
+        doc_ids: selectedDoc ? [selectedDoc] : undefined,
+        provider: selectedProvider || undefined,
+        rag_top_k: 2,
+        clarify_questions: questions,
+        clarify_answers: answers,
+      })
+      finalizeStepsResult(typingId, topEvent, answers, questions, stepsResp?.steps || [], stepsResp?.summary || '', false, 0, stepsResp?.provider)
+    } catch (e) {
+      setMessages(prev => prev.map(m => (m.id === typingId
+        ? { role: 'assistant', text: '生成排查步骤失败：' + (e.response?.data?.detail || e.message) }
+        : m
+      )))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const advanceStep = (msgId, result) => {
+    setMessages(prev => prev.map(m => {
+      if (m.id !== msgId || m.kind !== 'steps') return m
+      const nextResults = [...(m.stepResults || []), { step: m.currentStep || 0, result }]
+      const nextStep = (m.currentStep || 0) + 1
+      const total = Array.isArray(m.steps) ? m.steps.length : 0
+      return {
+        ...m,
+        stepResults: nextResults,
+        currentStep: nextStep,
+        finished: nextStep >= total,
+      }
+    }))
+  }
+
+  const generateTreeFromSteps = async (stepsMsgId) => {
+    const stepsMsg = messages.find(m => m.id === stepsMsgId)
+    if (!stepsMsg || stepsMsg.kind !== 'steps') return
+
+    const typingId = `typing_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`
+    setMessages(prev => {
+      const idx = prev.findIndex(m => m.id === stepsMsgId)
+      if (idx < 0) return prev
+      const next = [...prev]
+      next.splice(idx + 1, 0,
+        { role: 'user', text: '生成故障树' },
+        { role: 'assistant', kind: 'typing', id: typingId, topEvent: stepsMsg.top_event, answers: stepsMsg.answers }
+      )
+      return next
+    })
+    setLoading(true)
+
+    // 先按 top_event + 答案组合匹配历史诊断案例
+    try {
+      const diagnosis = await api.diagnosisLookup(stepsMsg.top_event, stepsMsg.answers)
+      if (diagnosis?.found && diagnosis?.fault_tree) {
+        const selectedDocItem = docs.find(item => item.doc_id === selectedDoc)
+        setMessages(prev => prev.map(m => (m.id === typingId ? {
+          role: 'assistant',
+          text: diagnosis.fault_tree?.analysis_summary || '已从历史诊断案例匹配到故障树。',
+          result: {
+            tree_id: diagnosis.tree_id,
+            fault_tree: diagnosis.fault_tree,
+          },
+          meta: {
+            doc_id: selectedDoc || null,
+            doc_weight: Number(selectedDocItem?.current_weight ?? 0.5),
+            manual_weight: manualWeight,
+            provider: selectedProvider || null,
+            reused: true,
+            hit_count: diagnosis.hit_count || 0,
+          },
+        } : m)))
+        setLoading(false)
+        return
+      }
+    } catch {
+      // 诊断查询失败继续生成
+    }
+
+    const answerLines = []
+    for (const q of (stepsMsg.questions || [])) {
+      const ans = String((stepsMsg.answers || {})[q.id] || '').trim()
+      if (!ans) continue
+      answerLines.push(`- ${q.text}\n  回答：${ans}`)
+    }
+    const enrichedPrompt = answerLines.length
+      ? `原始描述：${stepsMsg.top_event}\n\n补充信息：\n${answerLines.join('\n')}`
+      : ''
+
+    await generateFromTopEvent(stepsMsg.top_event, typingId, enrichedPrompt, stepsMsg.questions, stepsMsg.answers)
+  }
+
+  // 跳过澄清，直接走 steps 流程
+  const skipClarification = async (clarifyId) => {
+    const clarifyMsg = messages.find(m => m.id === clarifyId)
+    if (!clarifyMsg || clarifyMsg.kind !== 'clarification') return
+    if (clarifySubmitting) return
+    setClarifySubmitting(clarifyId)
+    const typingId = `typing_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`
+    setMessages(prev => {
+      const idx = prev.findIndex(m => m.id === clarifyId)
+      if (idx < 0) return prev
+      const next = [...prev]
+      next[idx] = { ...next[idx], submitted: true, skipped: true }
+      next.splice(idx + 1, 0, { role: 'user', text: '（跳过补充信息，直接生成排查步骤）' })
+      next.splice(idx + 2, 0, { role: 'assistant', kind: 'typing', id: typingId, topEvent: clarifyMsg.top_event, answers: {} })
+      return next
+    })
+    setLoading(true)
+
+    await runStepsFlow(clarifyMsg.top_event, {}, clarifyMsg.questions || [], typingId)
+    setClarifySubmitting(null)
+  }
+
+  const updateClarifyDraft = (clarifyId, qid, value) => {
+    setClarifyDrafts(prev => ({
+      ...prev,
+      [clarifyId]: { ...(prev[clarifyId] || {}), [qid]: value },
+    }))
+  }
+
+  // 从 hint 文本中提取可点击的示例选项（如 "如：A/B；C" → ["A","B","C"]）
+  const parseHintOptions = (hint) => {
+    if (!hint) return []
+    const raw = String(hint).trim()
+    // 去掉前缀 "如：" / "例如：" / "如"（兼容 LLM 输出带/不带冒号）
+    let body = raw.replace(/^(如|例如)[：:\s]*/, '')
+    if (!body) return []
+    // 按 ；或 ; 分割，再按 / 或 、 分割（兼容中英文顿号/斜杠）
+    return body.split(/[;；]/)
+      .map(s => s.trim())
+      .filter(Boolean)
+      .flatMap(group =>
+        group.split(/[/／\u3001]/).map(s => s.trim()).filter(Boolean)  // \u3001 = 顿号
+      )
+      .filter(s => s.length <= 30)  // 过滤过长的非选项文本
   }
 
   const rateFromDashboard = async (msgId, treeId, vote) => {
@@ -665,7 +1074,7 @@ export default function Dashboard({ onNavigate, user }) {
         setFeedbackSubmittingSession(sessionId)
         try {
           const query = `${finalProblem} ${finalRootCause}`.trim()
-          const resp = await api.searchKnowledgeItems({ query, pipeline, top_k: 8 })
+          const resp = await api.searchKnowledgeItems({ query, pipeline, top_k: 8, knowledge_type: 'fault' })
           const results = Array.isArray(resp?.results) ? resp.results : []
           const best = results
             .map((r) => {
@@ -684,6 +1093,7 @@ export default function Dashboard({ onNavigate, user }) {
             const inferredMachine = String(fromTopEvent || fromFilename || '').trim()
             const createResp = await api.createKnowledgeItem({
               pipeline,
+              knowledge_type: 'fault',
               machine: inferredMachine,
               problem: finalProblem,
               root_cause: finalRootCause,
@@ -812,15 +1222,32 @@ export default function Dashboard({ onNavigate, user }) {
     setFsSaving(false)
   }
 
+  const isMobile = !!mobile
+  const openVision = (tab) => {
+    onNavigate?.('vision')
+    try {
+      window.dispatchEvent(new CustomEvent('vision-open', { detail: { tab } }))
+    } catch {
+    }
+  }
+  const openMobileActions = () => {
+    try {
+      window.dispatchEvent(new CustomEvent('mobile-actions-open'))
+    } catch {
+    }
+  }
+
+  const mobileComposerHeight = 152
+
   return (
-    <div className="page-container" style={{ height: 'calc(100vh - 112px)', display: 'flex', flexDirection: 'column', padding: 0, overflow: 'hidden', minHeight: 'auto', background: 'transparent' }}>
+    <div className="page-container" style={{ height: isMobile ? '100%' : 'calc(100vh - 112px)', display: 'flex', flexDirection: 'column', padding: 0, overflow: 'hidden', minHeight: 'auto', background: 'transparent' }}>
       <style>{`
         .chat-scroll::-webkit-scrollbar { width: 0; height: 0; }
         @keyframes chatDotPulse { 0%, 80%, 100% { opacity: .25; transform: translateY(0);} 40% { opacity: 1; transform: translateY(-2px);} }
       `}</style>
-      <div className="chat-scroll" style={{ flex: 1, overflow: 'auto', padding: '12px 0 18px 0', scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+      <div className="chat-scroll" style={{ flex: 1, overflow: 'auto', padding: isMobile ? `10px 0 ${mobileComposerHeight + 16}px 0` : '12px 0 18px 0', scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
         {messages.length === 0 ? (
-          <div style={{ height: 'calc(100vh - 220px)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 18 }}>
+          <div style={{ height: isMobile ? 'calc(100dvh - 260px)' : 'calc(100vh - 220px)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 18 }}>
             <div style={{ textAlign: 'center' }}>
               <div style={{ fontSize: 28, fontWeight: 700, color: '#111' }}>有什么我能帮你的吗？</div>
               <div style={{ marginTop: 8, color: '#666' }}>从下方输入故障现象，我会生成故障树并提供排查建议</div>
@@ -861,6 +1288,171 @@ export default function Dashboard({ onNavigate, user }) {
                           <span style={{ width: 6, height: 6, borderRadius: 6, background: '#1677ff', display: 'inline-block', animation: 'chatDotPulse 1.1s infinite', animationDelay: '0.3s' }} />
                         </div>
                         <Text type="secondary">正在生成…</Text>
+                      </div>
+                    ) : null}
+                    {m.kind === 'clarification' ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                        <div>
+                          <Text strong>{m.intro || '为了更精准地定位故障源，请补充以下信息：'}</Text>
+                          <div style={{ marginTop: 4 }}>
+                            <Text type="secondary" style={{ fontSize: 12 }}>
+                              针对故障现象「{m.top_event}」的关键澄清
+                            </Text>
+                          </div>
+                        </div>
+                        {(Array.isArray(m.questions) ? m.questions : []).map(q => {
+                          const draft = clarifyDrafts[m.id] || {}
+                          const val = draft[q.id] || ''
+                          const disabled = !!m.submitted || clarifySubmitting === m.id
+                          const options = parseHintOptions(q.hint)
+                          return (
+                            <div key={q.id} style={{ borderTop: '1px dashed #f0f0f0', paddingTop: 8 }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                <Text style={{ fontWeight: 500 }}>{q.text}</Text>
+                                {q.required ? <Tag color="red" style={{ marginLeft: 4 }}>必填</Tag> : null}
+                              </div>
+
+                              {/* 可点击的示例选项 */}
+                              {options.length > 0 && !disabled ? (
+                                <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+                                  {options.map((opt, idx) => {
+                                    const isSelected = val === opt
+                                    return (
+                                      <Tag.CheckableTag
+                                        key={idx}
+                                        checked={isSelected}
+                                        onChange={() => {
+                                          // 点击已选中则取消；否则填入选项值
+                                          if (isSelected) {
+                                            updateClarifyDraft(m.id, q.id, '')
+                                          } else {
+                                            updateClarifyDraft(m.id, q.id, opt)
+                                          }
+                                        }}
+                                        style={{
+                                          cursor: 'pointer',
+                                          borderRadius: 6,
+                                          padding: '2px 10px',
+                                          fontSize: 13,
+                                          transition: 'all 0.15s',
+                                          ...(isSelected ? {
+                                            background: '#1677ff',
+                                            color: '#fff',
+                                            borderColor: '#1677ff',
+                                          } : {
+                                            background: '#fafafa',
+                                            color: '#555',
+                                            border: '1px solid #e8e8e8',
+                                          }),
+                                        }}
+                                      >
+                                        {opt}
+                                      </Tag.CheckableTag>
+                                    )
+                                  })}
+                                </div>
+                              ) : null}
+
+                              <Input.TextArea
+                                value={m.submitted ? (m.submittedAnswers?.[q.id] || '') : val}
+                                onChange={e => updateClarifyDraft(m.id, q.id, e.target.value)}
+                                placeholder="或自定义输入…"
+                                autoSize={{ minRows: 1, maxRows: 3 }}
+                                disabled={disabled}
+                                style={{ marginTop: options.length > 0 ? 6 : 4, borderRadius: 8 }}
+                              />
+                            </div>
+                          )
+                        })}
+                        {!m.submitted ? (
+                          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                            <Button size="small" onClick={() => skipClarification(m.id)} loading={clarifySubmitting === m.id}>
+                              跳过，生成排查步骤
+                            </Button>
+                            <Button size="small" type="primary" onClick={() => submitClarification(m.id)} loading={clarifySubmitting === m.id}>
+                              提交并生成排查步骤
+                            </Button>
+                          </div>
+                        ) : (
+                          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                            <Tag color={m.skipped ? 'default' : 'green'}>
+                              {m.skipped ? '已跳过' : '已提交，正在生成…'}
+                            </Tag>
+                          </div>
+                        )}
+                      </div>
+                    ) : null}
+                    {m.kind === 'steps' ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                        <div>
+                          <Text strong>建议排查步骤</Text>
+                          <div style={{ marginTop: 4 }}>
+                            <Text type="secondary" style={{ fontSize: 12 }}>
+                              针对「{m.top_event}」{m.meta?.reused ? `（命中历史记录，复用次数 ${m.meta?.hit_count || 0}）` : ''}
+                              {Array.isArray(m.steps) && m.steps.length > 0 ? ` · 步骤 ${Math.min((m.currentStep || 0) + 1, m.steps.length)} / ${m.steps.length}` : ''}
+                            </Text>
+                          </div>
+                        </div>
+                        {m.summary && (m.currentStep || 0) === 0 && (
+                          <div style={{ padding: 10, background: '#f6ffed', borderRadius: 8, border: '1px solid #b7eb8f' }}>
+                            <Text style={{ whiteSpace: 'pre-wrap' }}>{m.summary}</Text>
+                          </div>
+                        )}
+                        {(() => {
+                          const steps = Array.isArray(m.steps) ? m.steps : []
+                          const idx = Math.min(m.currentStep || 0, steps.length - 1)
+                          const s = steps[idx]
+                          if (!s) return null
+                          return (
+                            <div style={{ padding: 12, background: '#fafafa', borderRadius: 8, border: '1px solid #f0f0f0' }}>
+                              <div style={{ display: 'flex', gap: 8, alignItems: 'baseline' }}>
+                                <Tag color="blue">步骤 {s.step || idx + 1}</Tag>
+                                <Text strong style={{ fontSize: 15 }}>{s.title}</Text>
+                              </div>
+                              <div style={{ marginTop: 8 }}>
+                                <Text style={{ whiteSpace: 'pre-wrap' }}>{s.action}</Text>
+                              </div>
+                              {s.expected && (
+                                <div style={{ marginTop: 8, padding: 8, background: '#e6f7ff', borderRadius: 6 }}>
+                                  <Text type="secondary" style={{ fontSize: 12 }}>预期结果：{s.expected}</Text>
+                                </div>
+                              )}
+                              {s.decision && (
+                                <div style={{ marginTop: 6 }}>
+                                  <Text type="secondary" style={{ fontSize: 12 }}>决策：{s.decision}</Text>
+                                </div>
+                              )}
+                              {s.note && (
+                                <div style={{ marginTop: 6 }}>
+                                  <Text type="warning" style={{ fontSize: 12 }}>注意：{s.note}</Text>
+                                </div>
+                              )}
+                            </div>
+                          )
+                        })()}
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <div>
+                            {(m.finished || (m.currentStep || 0) >= (Array.isArray(m.steps) ? m.steps.length : 0) - 1) ? (
+                              <Button size="small" onClick={() => setMessages(prev => prev.map(x => x.id === m.id ? { ...x, resolved: true } : x))}>
+                                问题已解决，无需生成
+                              </Button>
+                            ) : null}
+                          </div>
+                          <Space>
+                            {!m.finished && (m.currentStep || 0) < (Array.isArray(m.steps) ? m.steps.length : 0) - 1 ? (
+                              <>
+                                <Text type="secondary" style={{ fontSize: 12 }}>这一步结果：</Text>
+                                <Button size="small" onClick={() => advanceStep(m.id, 'normal')}>正常</Button>
+                                <Button size="small" danger onClick={() => advanceStep(m.id, 'abnormal')}>异常</Button>
+                                <Button size="small" type="primary" ghost onClick={() => advanceStep(m.id, 'unknown')}>不确定</Button>
+                              </>
+                            ) : (
+                              <Button size="small" type="primary" onClick={() => generateTreeFromSteps(m.id)} loading={loading}>
+                                生成故障树
+                              </Button>
+                            )}
+                          </Space>
+                        </div>
                       </div>
                     ) : null}
                     {m.kind === 'troubleshooting' || m.kind === 'troubleshooting_done' ? (
@@ -979,46 +1571,101 @@ export default function Dashboard({ onNavigate, user }) {
         )}
       </div>
 
-      <div style={{ padding: '12px 0 18px 0', background: 'transparent' }}>
+      <div style={{ padding: isMobile ? `10px 0 calc(10px + env(safe-area-inset-bottom)) 0` : '12px 0 18px 0', background: isMobile ? 'rgba(245,247,250,0.92)' : 'transparent', position: isMobile ? 'fixed' : 'static', left: isMobile ? 0 : undefined, right: isMobile ? 0 : undefined, bottom: isMobile ? 0 : undefined, zIndex: isMobile ? 1000 : undefined, backdropFilter: isMobile ? 'blur(10px)' : undefined }}>
         <div style={{ maxWidth: 980, margin: '0 auto', padding: '0 12px' }}>
           <Card className="glass-card" style={{ borderRadius: 16 }} styles={{ body: { padding: 12 } }}>
-            <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end' }}>
-              <Input.TextArea
-                value={input}
-                onChange={e => setInput(e.target.value)}
-                onPressEnter={(e) => { if (!e.shiftKey) { e.preventDefault(); send() } }}
-                placeholder="发消息…"
-                autoSize={{ minRows: 2, maxRows: 6 }}
-                disabled={loading}
-                style={{ borderRadius: 12 }}
-              />
-              <Button type="primary" icon={<SendOutlined />} onClick={send} loading={loading} style={{ height: 40 }}>
-                发送
-              </Button>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>
-              <Space size={8} wrap>
-                <Button size="small" icon={<ThunderboltOutlined />} onClick={() => setInput('设备运行异常')}>
-                  快速
-                </Button>
-                <Select
-                  size="small"
-                  value={selectedPipeline}
-                  onChange={setSelectedPipeline}
-                  style={{ width: 124 }}
-                  options={(pipelines.length ? pipelines : ['流水线1']).map(v => ({ value: v, label: v }))}
-                />
-              </Space>
-              <Popover content={composerSettings} trigger="click" placement="topRight">
-                <Button size="small" icon={<SettingOutlined />}>
-                  设置
-                </Button>
-              </Popover>
-            </div>
+            {isMobile ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <div style={{ display: 'flex', gap: 10, overflowX: 'auto', paddingBottom: 2, WebkitOverflowScrolling: 'touch' }}>
+                  <Button size="small" shape="round" icon={<ThunderboltOutlined />} onClick={() => setInput('设备运行异常')}>
+                    快速
+                  </Button>
+                  <Button size="small" shape="round" onClick={() => onNavigate?.('manual')}>
+                    规范手册
+                  </Button>
+                  <Button size="small" shape="round" onClick={() => onNavigate?.('knowledgeGraph')}>
+                    数据云图
+                  </Button>
+                  <Select
+                    size="small"
+                    value={selectedPipeline}
+                    onChange={setSelectedPipeline}
+                    style={{ width: 120 }}
+                    options={(pipelines.length ? pipelines : ['流水线1']).map(v => ({ value: v, label: v }))}
+                  />
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <Button
+                    type="text"
+                    icon={<CameraOutlined style={{ fontSize: 20 }} />}
+                    onClick={() => openVision('image')}
+                    disabled={loading}
+                    style={{ width: 40, height: 40 }}
+                  />
+                  <Input
+                    value={input}
+                    onChange={e => setInput(e.target.value)}
+                    onPressEnter={() => send()}
+                    placeholder="发消息…"
+                    disabled={loading}
+                    style={{ borderRadius: 20, height: 40 }}
+                    suffix={
+                      <Button type="text" icon={<SendOutlined />} onClick={send} disabled={loading} style={{ width: 36, height: 36 }} />
+                    }
+                  />
+                  <Button
+                    type="text"
+                    icon={<PlusOutlined style={{ fontSize: 22 }} />}
+                    onClick={openMobileActions}
+                    disabled={loading}
+                    style={{ width: 40, height: 40 }}
+                  />
+                </div>
+              </div>
+            ) : (
+              <>
+                <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end' }}>
+                  <Input.TextArea
+                    value={input}
+                    onChange={e => setInput(e.target.value)}
+                    onPressEnter={(e) => { if (!e.shiftKey) { e.preventDefault(); send() } }}
+                    placeholder="发消息…"
+                    autoSize={{ minRows: 2, maxRows: 6 }}
+                    disabled={loading}
+                    style={{ borderRadius: 12 }}
+                  />
+                  <Button type="primary" icon={<SendOutlined />} onClick={send} loading={loading} style={{ height: 40 }}>
+                    发送
+                  </Button>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>
+                  <Space size={8} wrap>
+                    <Button size="small" icon={<ThunderboltOutlined />} onClick={() => setInput('设备运行异常')}>
+                      快速
+                    </Button>
+                    <Select
+                      size="small"
+                      value={selectedPipeline}
+                      onChange={setSelectedPipeline}
+                      style={{ width: 124 }}
+                      options={(pipelines.length ? pipelines : ['流水线1']).map(v => ({ value: v, label: v }))}
+                    />
+                  </Space>
+                  <Popover content={composerSettings} trigger="click" placement="topRight">
+                    <Button size="small" icon={<SettingOutlined />}>
+                      设置
+                    </Button>
+                  </Popover>
+                </div>
+              </>
+            )}
           </Card>
-          <div style={{ marginTop: 10, textAlign: 'center', color: '#888', fontSize: 12 }}>
-            Enter 发送，Shift+Enter 换行
-          </div>
+          {!isMobile && (
+            <div style={{ marginTop: 10, textAlign: 'center', color: '#888', fontSize: 12 }}>
+              Enter 发送，Shift+Enter 换行
+            </div>
+          )}
         </div>
       </div>
       {fsNativeOpen && (

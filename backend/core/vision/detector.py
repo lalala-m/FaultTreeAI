@@ -112,7 +112,8 @@ class YOLODetector:
         iou_threshold: float = 0.45,
         img_size: int = 640,
         half: bool = True,  # GPU 下启用半精度加速
-        verbose: bool = False
+        verbose: bool = False,
+        warmup_runs: int = 1,  # 默认只预热 1 次，降低初始内存峰值
     ):
         """
         初始化检测器
@@ -125,6 +126,7 @@ class YOLODetector:
             img_size: 输入图片尺寸
             half: 是否使用半精度推理
             verbose: 是否输出详细日志
+            warmup_runs: 预热次数，默认 1，可通过环境变量 YOLO_WARMUP_RUNS 覆盖
         """
         self.model_path = model_path
         self.device = self._validate_device(device)
@@ -133,6 +135,7 @@ class YOLODetector:
         self.img_size = img_size
         self.half = half and self.device == DeviceType.CUDA
         self.verbose = verbose
+        self.warmup_runs = max(0, int(os.environ.get("YOLO_WARMUP_RUNS", warmup_runs)))
         
         self.model = None
         self.class_names = {}
@@ -200,7 +203,8 @@ class YOLODetector:
             logger.info(f"Model loaded successfully: {self.model_path}")
             
             # 预热模型
-            self.warmup()
+            if self.warmup_runs > 0:
+                self.warmup(self.warmup_runs)
             
             return True
             

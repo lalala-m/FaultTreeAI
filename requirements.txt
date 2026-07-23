@@ -1,10 +1,11 @@
 # ============================================================
-# FaultTreeAI - External API + LangChain + PostgreSQL
+# 故障检修系统 - External API + LangChain + PostgreSQL
 # ============================================================
 
 # Web framework
 fastapi>=0.115.0
 uvicorn>=0.30.0
+websockets>=12.0
 pydantic>=2.9.0
 pydantic-settings>=2.5.0
 
@@ -21,15 +22,22 @@ sqlalchemy[asyncio]>=2.0.30
 pgvector>=0.3.0
 langchain-postgres>=0.0.17
 
-# MiniMax API
-# MiniMax SDK
+# Async HTTP / API
 aiohttp>=3.9.0
+httpx>=0.27.0
+
+# Volcengine Ark SDK (for doubao-seed-1-6-vision and other Ark-only models)
+volcengine-python-sdk[ark]>=1.0.0
 
 # Document parsing
 PyMuPDF>=1.24.0
 python-docx>=1.1.0
 rapidocr-onnxruntime==1.2.3
 openai-whisper>=20231117
+
+# RTC AI Bot TTS/ASR
+pydub>=0.25.1
+audioop-lts>=0.2.1; python_version >= "3.13"
 
 # Graph computation
 networkx>=3.3
@@ -39,9 +47,6 @@ numpy>=1.26.0
 opencv-python>=4.9.0.80
 ultralytics>=8.3.0
 Pillow>=10.3.0
-
-# HTTP client
-httpx>=0.27.0
 
 # Auth
 passlib[bcrypt]>=1.7.4
@@ -54,8 +59,6 @@ reportlab>=4.2.0
 python-multipart>=0.0.9
 aiofiles>=24.1.0
 python-dotenv>=1.0.0
-aiohttp>=3.9.0
-aiofiles>=23.0.0
 beautifulsoup4>=4.12.0
 lxml>=4.9.0
 tenacity>=9.0.0
@@ -64,5 +67,5 @@ tiktoken>=0.12.0
 # Keyword retrieval
 rank-bm25>=0.2.2
 
-# Vision (YOLO)
-ultralytics>=8.3.0
+# Feishu / Lark bot SDK
+lark-oapi>=1.4.0

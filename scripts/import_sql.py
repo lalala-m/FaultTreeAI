@@ -45,7 +45,7 @@ def main():
     samples_dir = Path("data/samples")
     files = list(samples_dir.glob("*.md"))
     
-    all_sql = "-- FaultTreeAI 知识库导入 SQL\n"
+    all_sql = "-- 故障检修系统 知识库导入 SQL\n"
     all_sql += "-- 生成时间: 2024\n\n"
     all_sql += "BEGIN;\n\n"
     

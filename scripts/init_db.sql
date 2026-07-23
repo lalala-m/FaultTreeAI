@@ -1,5 +1,5 @@
 -- ============================================================
--- FaultTreeAI 数据库 Schema
+-- 故障检修系统 数据库 Schema
 -- PostgreSQL 18 + pgvector
 --
 -- 使用方式：
@@ -139,10 +139,12 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS update_fault_trees_updated_at ON fault_trees;
 CREATE TRIGGER update_fault_trees_updated_at
     BEFORE UPDATE ON fault_trees
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS update_sessions_updated_at ON sessions;
 CREATE TRIGGER update_sessions_updated_at
     BEFORE UPDATE ON sessions
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
@@ -197,9 +199,16 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
     machine_category VARCHAR(120) NOT NULL DEFAULT '',
     machine          VARCHAR(160) NOT NULL DEFAULT '',
     problem_category VARCHAR(120) NOT NULL DEFAULT '',
-    problem          TEXT NOT NULL,
+    problem          TEXT NOT NULL DEFAULT '',
     root_cause       TEXT NOT NULL DEFAULT '',
     solution         TEXT NOT NULL DEFAULT '',
+    -- 维修作业类专用字段（方案 2）
+    knowledge_type   VARCHAR(32) NOT NULL DEFAULT 'fault',
+    operation_category VARCHAR(120) NOT NULL DEFAULT '',
+    operation_item   TEXT NOT NULL DEFAULT '',
+    operation_steps  TEXT NOT NULL DEFAULT '',
+    check_standard   TEXT NOT NULL DEFAULT '',
+    precautions      TEXT NOT NULL DEFAULT '',
     metadata         JSONB NOT NULL DEFAULT '{}'::jsonb,
     status           VARCHAR(20) NOT NULL DEFAULT 'active',
     created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -212,6 +221,16 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_items_machine
     ON knowledge_items(machine);
 CREATE INDEX IF NOT EXISTS idx_knowledge_items_problem_category
     ON knowledge_items(problem_category);
+CREATE INDEX IF NOT EXISTS idx_knowledge_items_operation_category
+    ON knowledge_items(operation_category);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_knowledge_items_unique
+    ON knowledge_items (pipeline, machine, problem, root_cause)
+    WHERE COALESCE(knowledge_type, 'fault') = 'fault';
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_knowledge_items_maintenance_unique
+    ON knowledge_items (pipeline, machine, operation_item)
+    WHERE COALESCE(knowledge_type, 'fault') = 'maintenance';
 
 CREATE TABLE IF NOT EXISTS knowledge_item_embeddings (
     embedding_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

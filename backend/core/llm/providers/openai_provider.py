@@ -9,6 +9,7 @@ import time
 import httpx
 
 from backend.config import settings
+from backend.core.llm.async_http import get_async_http_client
 from backend.core.llm.base_provider import BaseLLMProvider, LLMResponse, EmbedResult
 
 
@@ -23,9 +24,10 @@ class OpenAIProvider(BaseLLMProvider):
         temperature: float | None = None,
         max_tokens: int | None = None,
     ):
-        self.api_key = api_key or settings.OPENAI_API_KEY
-        self.base_url = (base_url or settings.OPENAI_BASE_URL).rstrip("/")
-        self.model = model or settings.LLM_MODEL
+        # LLM 未配置时，回退到 VLM 配置（OpenAI 兼容接口通用）
+        self.api_key = api_key or settings.OPENAI_API_KEY or settings.VLM_API_KEY
+        self.base_url = (base_url or settings.OPENAI_BASE_URL or settings.VLM_BASE_URL).rstrip("/")
+        self.model = model or settings.LLM_MODEL or settings.VLM_MODEL
         self.temperature = temperature if temperature is not None else settings.LLM_TEMPERATURE
         self.max_tokens = max_tokens if max_tokens is not None else settings.LLM_MAX_TOKENS
 
@@ -58,24 +60,29 @@ class OpenAIProvider(BaseLLMProvider):
         if max_tokens is not None:
             payload["max_tokens"] = int(max_tokens)
 
-        async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.post(self._endpoint(), json=payload, headers=self._headers())
-            try:
-                resp.raise_for_status()
-            except Exception:
-                try:
-                    data = resp.json()
-                    detail = data.get("error") or data.get("message") or data.get("detail") or str(data)
-                except Exception:
-                    detail = (resp.text or "").strip()[:400] or f"HTTP {resp.status_code}"
-                raise RuntimeError(detail)
+        # 透传 response_format（如 json_object），Provider 不支持时会自然报错，外层可回退
+        response_format = kwargs.get("response_format")
+        if response_format is not None:
+            payload["response_format"] = response_format
 
-            data = resp.json()
-            choices = data.get("choices") or []
-            content = ""
-            if choices:
-                msg = (choices[0] or {}).get("message") or {}
-                content = str(msg.get("content") or "")
+        client = get_async_http_client()
+        resp = await client.post(self._endpoint(), json=payload, headers=self._headers(), timeout=120)
+        try:
+            resp.raise_for_status()
+        except Exception:
+            try:
+                data = resp.json()
+                detail = data.get("error") or data.get("message") or data.get("detail") or str(data)
+            except Exception:
+                detail = (resp.text or "").strip()[:400] or f"HTTP {resp.status_code}"
+            raise RuntimeError(detail)
+
+        data = resp.json()
+        choices = data.get("choices") or []
+        content = ""
+        if choices:
+            msg = (choices[0] or {}).get("message") or {}
+            content = str(msg.get("content") or "")
 
         return LLMResponse(content=content, latency_ms=round((time.time() - t0) * 1000.0, 2), raw=None)
 

@@ -168,6 +168,11 @@ export const getDocumentSummary = async (docId) => {
   }
 }
 
+export const listDiagnosisCases = async () => {
+  const { data } = await api.get('/generate/cases')
+  return data
+}
+
 export const generateDocumentSummary = async (docId) => {
   const traceId = Math.random().toString(16).slice(2, 10)
   // #region debug-point A:ai-summary-empty-post
@@ -292,6 +297,15 @@ export const exportManualWord = async (pipeline = '流水线1', params = {}) => 
   return api.get('/knowledge/manual/export/word', { params: { pipeline, ...(params || {}) }, responseType: 'blob' })
 }
 
+export const listStructuredManual = async (pipeline = '流水线1', params = {}) => {
+  const { data } = await api.get('/knowledge/manual/structured', { params: { pipeline, ...(params || {}) } })
+  return data
+}
+
+export const exportStructuredManualWord = async (pipeline = '流水线1', params = {}) => {
+  return api.get('/knowledge/manual/structured/export/word', { params: { pipeline, ...(params || {}) }, responseType: 'blob' })
+}
+
 export const reextractKnowledgeItems = async (pipeline = '流水线1', mode = 'replace', docIds = null) => {
   const payload = { pipeline, mode }
   if (Array.isArray(docIds) && docIds.length) payload.doc_ids = docIds
@@ -322,6 +336,11 @@ export const generateFaultTree = async (params) => {
   return data
 }
 
+export const clarifyProblem = async (params) => {
+  const { data } = await api.post('/generate/clarify', params, { timeout: 120000 })
+  return data
+}
+
 export const getFaultTree = async (treeId) => {
   const { data } = await api.get(`/generate/${treeId}`)
   return data
@@ -331,6 +350,12 @@ export const getSessionByTree = async (treeId) => {
   const { data } = await api.get(`/generate/${treeId}/session`)
   return data
 }
+
+export const saveSession = async (params) => {
+  const { data } = await api.post('/generate/save_session', params, { timeout: 30000 })
+  return data
+}
+
 export const listFaultTrees = async () => {
   return _cached('faultTrees', 15_000, async () => {
     const { data } = await api.get('/generate/')
@@ -353,6 +378,36 @@ export const lookupFaultTree = async (query) => {
 export const rateFaultTree = async (treeId, vote) => {
   const { data } = await api.post('/generate/rate', { tree_id: treeId, vote })
   invalidateCache(['faqs'])
+  return data
+}
+
+// ── 排查步骤 ────────────────────────────────────────
+
+export const generateSteps = async (params) => {
+  const { data } = await api.post('/generate/steps', params, { timeout: 120000 })
+  return data
+}
+
+export const stepsLookup = async (topEvent, answers) => {
+  const { data } = await api.post('/generate/steps_lookup', {
+    top_event: topEvent,
+    answers: answers || {},
+  }, { timeout: 30000 })
+  return data
+}
+
+export const clarifyLookup = async (topEvent) => {
+  const { data } = await api.post('/generate/clarify_lookup', {
+    top_event: topEvent,
+  }, { timeout: 30000 })
+  return data
+}
+
+export const diagnosisLookup = async (topEvent, answers) => {
+  const { data } = await api.post('/generate/diagnosis_lookup', {
+    top_event: topEvent,
+    answers: answers || {},
+  }, { timeout: 30000 })
   return data
 }
 
@@ -445,6 +500,7 @@ api.listDocuments = listDocuments
 api.deleteDocument = deleteDocument
 api.getDocumentSummary = getDocumentSummary
 api.generateDocumentSummary = generateDocumentSummary
+api.listDiagnosisCases = listDiagnosisCases
 api.updateDocumentPipeline = updateDocumentPipeline
 api.searchKnowledge = searchKnowledge
 api.getKnowledgeStats = getKnowledgeStats
@@ -463,15 +519,23 @@ api.listKnowledgeItemSuggestions = listKnowledgeItemSuggestions
 api.listManualEntries = listManualEntries
 api.reextractManualEntries = reextractManualEntries
 api.exportManualWord = exportManualWord
+api.listStructuredManual = listStructuredManual
+api.exportStructuredManualWord = exportStructuredManualWord
 api.reextractKnowledgeItems = reextractKnowledgeItems
 api.cleanupKnowledgeItems = cleanupKnowledgeItems
 api.autofillKnowledgeItems = autofillKnowledgeItems
 api.generateFaultTree = generateFaultTree
+api.generateSteps = generateSteps
+api.clarifyProblem = clarifyProblem
+api.clarifyLookup = clarifyLookup
 api.getFaultTree = getFaultTree
 api.getSessionByTree = getSessionByTree
+api.saveSession = saveSession
 api.listFaultTrees = listFaultTrees
 api.listFAQs = listFAQs
 api.lookupFaultTree = lookupFaultTree
+api.stepsLookup = stepsLookup
+api.diagnosisLookup = diagnosisLookup
 api.rateFaultTree = rateFaultTree
 api.saveFaultTree = saveFaultTree
 api.validateFaultTree = validateFaultTree

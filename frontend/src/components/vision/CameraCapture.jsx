@@ -9,6 +9,19 @@ import { CameraOutlined, StopOutlined, SaveOutlined, ReloadOutlined } from '@ant
 
 const CAMERA_CONFIG = { width: 640, height: 480, frameRate: { ideal: 60, max: 60 }, facingMode: 'environment' };
 
+// 与环境变量协议不一致时回退相对路径，避免 ALPN/混合内容错误
+const getApiBaseUrl = () => {
+  const envUrl = import.meta.env.VITE_API_URL || ''
+  if (!envUrl) return ''
+  try {
+    const env = new URL(envUrl, window.location.href)
+    if (env.protocol !== window.location.protocol) return ''
+    return envUrl
+  } catch {
+    return envUrl
+  }
+}
+
 export default function CameraCapture({
   title = '摄像头实时识别',
   active = true,
@@ -152,6 +165,12 @@ export default function CameraCapture({
 
   const startMultiCam = useCallback(async () => {
     try {
+      if (!navigator?.mediaDevices?.getUserMedia) {
+        setDeviceCandidates([])
+        setCameraError('当前环境不支持摄像头/麦克风调用（需要 HTTPS 或 localhost 访问）')
+        message.error('当前环境不支持摄像头/麦克风调用（需要 HTTPS 或 localhost 访问）')
+        return
+      }
       setLoading(true)
       setMultiCamActive(true)
       const devices = await navigator.mediaDevices.enumerateDevices()
@@ -195,6 +214,12 @@ export default function CameraCapture({
   const startCamera = useCallback(async (options = {}) => {
     const { silent = false, deviceId = null } = options || {}
     try {
+      if (!navigator?.mediaDevices?.getUserMedia) {
+        const errorMsg = '当前环境不支持摄像头/麦克风调用（需要 HTTPS 或 localhost 访问）'
+        setCameraError(errorMsg)
+        message.error(errorMsg)
+        return
+      }
       setLoading(true);
       setCameraError(null);
       stopMultiCam()
@@ -350,9 +375,15 @@ export default function CameraCapture({
     if (!ctx) return
     ctx.drawImage(video, 0, 0, tw, th)
     const frameDataUrl = canvas.toDataURL('image/jpeg', 0.75)
-    const base64Data = frameDataUrl.split(',')[1] || frameDataUrl
+    const base64Data = String(frameDataUrl || '').includes(',')
+      ? String(frameDataUrl).split(',')[1]
+      : String(frameDataUrl || '')
+    if (!base64Data || base64Data.length < 50) {
+      setLastError('画面为空，请确认摄像头已正常开启')
+      return
+    }
 
-    const API_URL = import.meta.env.VITE_API_URL || ''
+    const API_URL = getApiBaseUrl()
     const formData = new FormData()
     formData.append('image_data', base64Data)
     formData.append('conf_threshold', String(confThreshold))

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+trap 'echo "[错误] 脚本在 ${BASH_SOURCE[0]} 第 $LINENO 行执行失败，命令: $BASH_COMMAND" >&2' ERR
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
@@ -234,6 +236,46 @@ else
   echo "[!] 未检测到 docker，跳过数据库容器启动。"
 fi
 
+# 等待 PostgreSQL 就绪并自动创建数据库
+_wait_for_postgres() {
+  local max_wait=30
+  local waited=0
+  while [ "$waited" -lt "$max_wait" ]; do
+    if $SUDO docker exec faulttree-db pg_isready -U postgres >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  return 1
+}
+
+if _select_docker_cli && [ -n "$($DOCKER_SUDO $DOCKER_BIN ps -q -f name=faulttree-db)" ]; then
+  echo "[*] 等待 PostgreSQL 就绪..."
+  if _wait_for_postgres; then
+    echo "[OK] PostgreSQL 已就绪"
+
+    # 从 .env 解析数据库名，自动创建
+    DB_NAME_FROM_ENV="postgres"
+    if [ -f ".env" ]; then
+      DB_NAME_FROM_ENV="$(grep '^DATABASE_URL=' .env | head -n1 | sed -n 's|.*@.*/\([^?]*\).*|\1|p')"
+      [ -z "$DB_NAME_FROM_ENV" ] && DB_NAME_FROM_ENV="postgres"
+    fi
+
+    if [ "$DB_NAME_FROM_ENV" != "postgres" ]; then
+      echo "[*] 检查数据库 $DB_NAME_FROM_ENV 是否存在..."
+      if ! $SUDO docker exec faulttree-db psql -U postgres -d postgres -Atc "SELECT 1 FROM pg_database WHERE datname='$DB_NAME_FROM_ENV';" | grep -q '^1$'; then
+        $SUDO docker exec faulttree-db psql -U postgres -d postgres -c "CREATE DATABASE \"$DB_NAME_FROM_ENV\";" >/dev/null 2>&1
+        echo "[OK] 数据库 $DB_NAME_FROM_ENV 已创建"
+      else
+        echo "[OK] 数据库 $DB_NAME_FROM_ENV 已存在"
+      fi
+    fi
+  else
+    echo "[!] 等待 PostgreSQL 超时，后端可能无法连接数据库"
+  fi
+fi
+
 if command -v firewall-cmd >/dev/null 2>&1; then
   $SUDO firewall-cmd --add-port=8000/tcp --permanent >/dev/null 2>&1 || true
   $SUDO firewall-cmd --reload >/dev/null 2>&1 || true
@@ -244,10 +286,48 @@ if [ -z "${VM_IP:-}" ]; then
   VM_IP="127.0.0.1"
 fi
 
+# 设置 RTC Bot 动态库路径
+# 优先从 .env 中的 RTC_BOT_SO_PATH 推导 sdk/lib 目录
+_RTC_BOT_SO_PATH=""
+if [ -f "$PROJECT_ROOT/.env" ]; then
+  _RTC_BOT_SO_PATH="$(grep '^RTC_BOT_SO_PATH=' "$PROJECT_ROOT/.env" 2>/dev/null | head -n1 | cut -d= -f2- | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr -d '\r' || true)"
+fi
+if [ -n "$_RTC_BOT_SO_PATH" ]; then
+  case "$_RTC_BOT_SO_PATH" in
+    /*) _RTC_BOT_SO_ABS="$_RTC_BOT_SO_PATH" ;;
+    *) _RTC_BOT_SO_ABS="$PROJECT_ROOT/$_RTC_BOT_SO_PATH" ;;
+  esac
+  _RTC_BOT_SDK_LIB="$(dirname "$_RTC_BOT_SO_ABS")/../sdk/lib"
+  _RTC_BOT_SDK_LIB="$(cd "$_RTC_BOT_SDK_LIB" 2>/dev/null && pwd || true)"
+  if [ -d "$_RTC_BOT_SDK_LIB" ]; then
+    export LD_LIBRARY_PATH="${_RTC_BOT_SDK_LIB}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  fi
+fi
+# 兜底：项目内置路径
+RTC_BOT_SO_DIR="$PROJECT_ROOT/deploy/vm/rtc_bot/sdk/lib"
+if [ -d "$RTC_BOT_SO_DIR" ]; then
+  export LD_LIBRARY_PATH="${RTC_BOT_SO_DIR}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
+
 BACKEND_PORT="${BACKEND_PORT:-8000}"
 echo "[OK] 后端启动中..."
 echo "[OK] 虚拟机访问: http://127.0.0.1:${BACKEND_PORT}/docs"
 echo "[OK] 宿主机访问: http://${VM_IP}:${BACKEND_PORT}/docs"
+
+# 若启用飞书且使用 WS 客户端，则自动启动（不阻塞后端）
+FEISHU_ENABLED=""
+FEISHU_USE_WS_CLIENT=""
+if [ -f "$PROJECT_ROOT/.env" ]; then
+  FEISHU_ENABLED="$(grep '^FEISHU_ENABLED=' "$PROJECT_ROOT/.env" 2>/dev/null | head -n1 | cut -d= -f2- | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr -d '\r' || true)"
+  FEISHU_USE_WS_CLIENT="$(grep '^FEISHU_USE_WS_CLIENT=' "$PROJECT_ROOT/.env" 2>/dev/null | head -n1 | cut -d= -f2- | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr -d '\r' || true)"
+fi
+if [ "$FEISHU_ENABLED" = "true" ] && [ "$FEISHU_USE_WS_CLIENT" = "true" ]; then
+  FEISHU_BACKEND_URL="${FEISHU_BACKEND_URL:-http://127.0.0.1:${BACKEND_PORT}}"
+  IM_LOG="$PROJECT_ROOT/logs/feishu_im_event.log"
+  mkdir -p "$PROJECT_ROOT/logs"
+  echo "[OK] 飞书 WS 客户端启动中，日志: $IM_LOG"
+  nohup "$PYTHON_BIN" "$PROJECT_ROOT/scripts/feishu_ws_client.py" >>"$IM_LOG" 2>&1 &
+fi
 
 cd "$PROJECT_ROOT/backend"
 exec "$PYTHON_BIN" -m uvicorn main:app --host 0.0.0.0 --port "${BACKEND_PORT}"

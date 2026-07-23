@@ -129,9 +129,16 @@ def _ensure_structured_knowledge_tables(conn) -> None:
                 machine_category VARCHAR(120) NOT NULL DEFAULT '',
                 machine VARCHAR(160) NOT NULL DEFAULT '',
                 problem_category VARCHAR(120) NOT NULL DEFAULT '',
-                problem TEXT NOT NULL,
+                problem TEXT NOT NULL DEFAULT '',
                 root_cause TEXT NOT NULL DEFAULT '',
                 solution TEXT NOT NULL DEFAULT '',
+                -- 维修作业类专用字段（方案 2）
+                knowledge_type VARCHAR(32) NOT NULL DEFAULT 'fault',
+                operation_category VARCHAR(120) NOT NULL DEFAULT '',
+                operation_item TEXT NOT NULL DEFAULT '',
+                operation_steps TEXT NOT NULL DEFAULT '',
+                check_standard TEXT NOT NULL DEFAULT '',
+                precautions TEXT NOT NULL DEFAULT '',
                 metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
                 status VARCHAR(20) NOT NULL DEFAULT 'active',
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -139,10 +146,23 @@ def _ensure_structured_knowledge_tables(conn) -> None:
             )
             """
         )
+        # 旧表迁移：每条 ALTER 独立执行，避免 asyncpg 不支持多命令 prepared statement
+        cur.execute("ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS knowledge_type VARCHAR(32) NOT NULL DEFAULT 'fault'")
+        cur.execute("ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS operation_category VARCHAR(120) NOT NULL DEFAULT ''")
+        cur.execute("ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS operation_item TEXT NOT NULL DEFAULT ''")
+        cur.execute("ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS operation_steps TEXT NOT NULL DEFAULT ''")
+        cur.execute("ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS check_standard TEXT NOT NULL DEFAULT ''")
+        cur.execute("ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS precautions TEXT NOT NULL DEFAULT ''")
         cur.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_knowledge_items_pipeline
             ON knowledge_items(pipeline)
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_knowledge_items_operation_category
+            ON knowledge_items(operation_category)
             """
         )
         cur.execute(
@@ -155,6 +175,7 @@ def _ensure_structured_knowledge_tables(conn) -> None:
                         ORDER BY updated_at DESC, created_at DESC
                     ) AS rn
                 FROM knowledge_items
+                WHERE COALESCE(knowledge_type, 'fault') = 'fault'
             )
             DELETE FROM knowledge_items k
             USING ranked r
@@ -164,8 +185,21 @@ def _ensure_structured_knowledge_tables(conn) -> None:
         )
         cur.execute(
             """
+            DROP INDEX IF EXISTS uq_knowledge_items_unique
+            """
+        )
+        cur.execute(
+            """
             CREATE UNIQUE INDEX IF NOT EXISTS uq_knowledge_items_unique
             ON knowledge_items (pipeline, machine, problem, root_cause)
+            WHERE COALESCE(knowledge_type, 'fault') = 'fault'
+            """
+        )
+        cur.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_knowledge_items_maintenance_unique
+            ON knowledge_items (pipeline, machine, operation_item)
+            WHERE COALESCE(knowledge_type, 'fault') = 'maintenance'
             """
         )
         cur.execute(
@@ -210,9 +244,15 @@ class KnowledgeItemCreateRequest(BaseModel):
     machine_category: str = ""
     machine: str = ""
     problem_category: str = ""
-    problem: str
+    problem: str = ""
     root_cause: str = ""
     solution: str = ""
+    knowledge_type: str = "fault"
+    operation_category: str = ""
+    operation_item: str = ""
+    operation_steps: str = ""
+    check_standard: str = ""
+    precautions: str = ""
     metadata: dict | None = None
 
 
@@ -224,17 +264,49 @@ def _clean_single_line_text(raw: str, max_len: int) -> str:
     return s[:max_len].strip()
 
 
-def _validate_knowledge_item_fields(pipeline: str, machine_category: str, machine: str, problem_category: str, problem: str, root_cause: str, solution: str):
+def _validate_knowledge_item_fields(
+    pipeline: str,
+    machine_category: str,
+    machine: str,
+    problem_category: str,
+    problem: str,
+    root_cause: str,
+    solution: str,
+    knowledge_type: str = "fault",
+    operation_category: str = "",
+    operation_item: str = "",
+    operation_steps: str = "",
+    check_standard: str = "",
+    precautions: str = "",
+):
     if not pipeline:
         raise HTTPException(status_code=400, detail="pipeline 不能为空")
-    if not problem:
-        raise HTTPException(status_code=400, detail="problem 不能为空")
-    if not root_cause:
-        raise HTTPException(status_code=400, detail="root_cause 不能为空")
-    if len(problem) > 240:
-        raise HTTPException(status_code=400, detail="problem 太长（最多240字）")
-    if len(root_cause) > 320:
-        raise HTTPException(status_code=400, detail="root_cause 太长（最多320字）")
+    if knowledge_type == "maintenance":
+        if not operation_item:
+            raise HTTPException(status_code=400, detail="maintenance 类型条目的 operation_item 不能为空")
+        if len(operation_item) > 240:
+            raise HTTPException(status_code=400, detail="operation_item 太长（最多240字）")
+        if len(operation_steps) > 1200:
+            raise HTTPException(status_code=400, detail="operation_steps 太长（最多1200字）")
+        if len(check_standard) > 800:
+            raise HTTPException(status_code=400, detail="check_standard 太长（最多800字）")
+        if len(precautions) > 800:
+            raise HTTPException(status_code=400, detail="precautions 太长（最多800字）")
+        if any(k in operation_item for k in ["来源：", "来源:", "doc_id", "chunk_id"]):
+            raise HTTPException(status_code=400, detail="operation_item 包含不允许的来源信息")
+    else:
+        if not problem:
+            raise HTTPException(status_code=400, detail="problem 不能为空")
+        if not root_cause:
+            raise HTTPException(status_code=400, detail="root_cause 不能为空")
+        if len(problem) > 240:
+            raise HTTPException(status_code=400, detail="problem 太长（最多240字）")
+        if len(root_cause) > 320:
+            raise HTTPException(status_code=400, detail="root_cause 太长（最多320字）")
+        if any(k in problem for k in ["来源：", "来源:", "doc_id", "chunk_id"]):
+            raise HTTPException(status_code=400, detail="problem 包含不允许的来源信息")
+        if any(k in root_cause for k in ["来源：", "来源:", "doc_id", "chunk_id"]):
+            raise HTTPException(status_code=400, detail="root_cause 包含不允许的来源信息")
     if len(machine) > 160:
         raise HTTPException(status_code=400, detail="machine 太长（最多160字）")
     if len(machine_category) > 120:
@@ -243,10 +315,8 @@ def _validate_knowledge_item_fields(pipeline: str, machine_category: str, machin
         raise HTTPException(status_code=400, detail="problem_category 太长（最多120字）")
     if len(solution) > 800:
         raise HTTPException(status_code=400, detail="solution 太长（最多800字）")
-    if any(k in problem for k in ["来源：", "来源:", "doc_id", "chunk_id"]):
-        raise HTTPException(status_code=400, detail="problem 包含不允许的来源信息")
-    if any(k in root_cause for k in ["来源：", "来源:", "doc_id", "chunk_id"]):
-        raise HTTPException(status_code=400, detail="root_cause 包含不允许的来源信息")
+    if len(operation_category) > 120:
+        raise HTTPException(status_code=400, detail="operation_category 太长（最多120字）")
 
 
 async def _ai_enrich_categories(pipeline: str, machine: str, problem: str, root_cause: str) -> dict:
@@ -337,6 +407,12 @@ class KnowledgeItemUpdateRequest(BaseModel):
     problem: str | None = None
     root_cause: str | None = None
     solution: str | None = None
+    knowledge_type: str | None = None
+    operation_category: str | None = None
+    operation_item: str | None = None
+    operation_steps: str | None = None
+    check_standard: str | None = None
+    precautions: str | None = None
     metadata: dict | None = None
     status: str | None = None
 
@@ -345,6 +421,7 @@ class KnowledgeItemSearchRequest(BaseModel):
     query: str = ""
     pipeline: str | None = None
     top_k: int = 10
+    knowledge_type: str | None = None
 
 
 class KnowledgeItemWeightFeedbackRequest(BaseModel):
@@ -1392,7 +1469,15 @@ async def upload_document(
             async def _structured_extract_task(_doc_id: str, _pipeline: str):
                 import psycopg2.extras
                 import asyncio
-                if (settings.LLM_PROVIDER or "").lower() == "openai" and (not getattr(settings, "OPENAI_API_KEY", "") or not getattr(settings, "OPENAI_BASE_URL", "")):
+                print(f"[EXTRACT] 开始结构化抽取 doc_id={_doc_id} pipeline={_pipeline}", flush=True)
+                # 仅当 LLM 与 VLM 都未配置时才直接失败，避免 VLM 已配但 LLM 未配时跳过抽取
+                has_llm = bool(
+                    (settings.OPENAI_API_KEY and settings.OPENAI_BASE_URL)
+                    or (settings.VLM_API_KEY and settings.VLM_BASE_URL)
+                )
+                print(f"[EXTRACT] LLM/VLM 配置检查: has_llm={has_llm}", flush=True)
+                if not has_llm:
+                    print(f"[EXTRACT] LLM/VLM 都未配置，跳过抽取", flush=True)
                     with psycopg2.connect(
                         host=settings.DB_HOST, port=settings.DB_PORT,
                         user=settings.DB_USER, password=settings.DB_PASSWORD,
@@ -1405,12 +1490,13 @@ async def upload_document(
                                 SET metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb
                                 WHERE doc_id = %s
                                 """,
-                                (psycopg2.extras.Json({"structured_kb": "failed", "structured_error": "LLM 未配置（缺少 OPENAI_API_KEY 或 OPENAI_BASE_URL）", "ai_summary_status": "failed", "ai_summary_error": "LLM 未配置（缺少 OPENAI_API_KEY 或 OPENAI_BASE_URL）"}), _doc_id),
+                                (psycopg2.extras.Json({"structured_kb": "failed", "structured_error": "LLM 未配置（缺少 OPENAI_API_KEY 或 VLM_API_KEY）", "ai_summary_status": "failed", "ai_summary_error": "LLM 未配置（缺少 OPENAI_API_KEY 或 VLM_API_KEY）"}), _doc_id),
                             )
                             conn2.commit()
                     return
 
                 try:
+                    print(f"[EXTRACT] 调用 extract_knowledge_items_with_ai", flush=True)
                     r = await asyncio.wait_for(
                         extract_knowledge_items_with_ai(pipeline=_pipeline, doc_ids=[_doc_id], replace=True),
                         timeout=1200,
@@ -1420,6 +1506,7 @@ async def upload_document(
                     skipped = int(getattr(r, "skipped", 0))
                     provider = str(getattr(r, "provider", "") or "")
                     errors = list(getattr(r, "errors", []) or [])
+                    print(f"[EXTRACT] 抽取完成 doc_id={_doc_id} extracted={extracted} inserted={inserted} skipped={skipped} provider={provider}", flush=True)
                     if inserted <= 0:
                         err_msg = " | ".join([str(e) for e in (errors[:3] if errors else [])]).strip()
                         payload = {
@@ -1440,8 +1527,10 @@ async def upload_document(
                             "structured_error": (" | ".join([str(e) for e in (errors[:3] if errors else [])]).strip() or "")[:200],
                         }
                 except asyncio.TimeoutError:
+                    print(f"[EXTRACT] 抽取超时 doc_id={_doc_id}", flush=True)
                     payload = {"structured_kb": "failed", "structured_error": "结构化抽取超时（1200s），请稍后重试或缩小文档范围。"}
                 except Exception as e:
+                    print(f"[EXTRACT] 抽取异常 doc_id={_doc_id} err={str(e)[:200]}", flush=True)
                     payload = {"structured_kb": "failed", "structured_error": str(e)[:200]}
 
                 try:
@@ -1459,7 +1548,11 @@ async def upload_document(
                                     ki.machine,
                                     ki.problem_category,
                                     ki.problem,
-                                    ki.root_cause
+                                    ki.root_cause,
+                                    ki.knowledge_type,
+                                    ki.operation_category,
+                                    ki.operation_item,
+                                    ki.operation_steps
                                 FROM knowledge_items ki
                                 WHERE ki.status = 'active'
                                   AND COALESCE(ki.metadata->>'doc_id','') = %s
@@ -1482,7 +1575,11 @@ async def upload_document(
                                             ki.machine,
                                             ki.problem_category,
                                             ki.problem,
-                                            ki.root_cause
+                                            ki.root_cause,
+                                            ki.knowledge_type,
+                                            ki.operation_category,
+                                            ki.operation_item,
+                                            ki.operation_steps
                                         FROM knowledge_items ki
                                         WHERE ki.status = 'active'
                                           AND COALESCE(ki.metadata->>'filename','') = %s
@@ -1498,13 +1595,17 @@ async def upload_document(
                             last_mc = None
                             last_m = None
                             last_pc = None
-                            for pl, mc, m, pc, p, rc in rows:
+                            for pl, mc, m, pc, p, rc, knowledge_type, operation_category, operation_item, operation_steps in rows:
                                 pl_s = str(pl or "").strip() or "流水线1"
                                 mc_s = str(mc or "").strip() or "通用设备"
                                 m_s = str(m or "").strip() or "设备"
                                 pc_s = str(pc or "").strip() or "其他"
                                 p_s = str(p or "").strip()
                                 rc_s = str(rc or "").strip() or "未明确"
+                                kt_s = str(knowledge_type or "fault").strip()
+                                oc_s = str(operation_category or "").strip()
+                                oi_s = str(operation_item or "").strip()
+                                os_s = str(operation_steps or "").strip()
                                 if pl_s != last_pl:
                                     lines.append(f"流水线：{pl_s}")
                                     last_pl = pl_s
@@ -1520,11 +1621,18 @@ async def upload_document(
                                     lines.append(f"  机械：{m_s}")
                                     last_m = m_s
                                     last_pc = None
-                                if pc_s != last_pc:
-                                    lines.append(f"    问题类别：{pc_s}")
-                                    last_pc = pc_s
-                                if p_s:
-                                    lines.append(f"      - 问题：{p_s}；原因：{rc_s}")
+                                if kt_s == "maintenance":
+                                    if oc_s and oc_s != last_pc:
+                                        lines.append(f"    作业类别：{oc_s}")
+                                        last_pc = oc_s
+                                    if oi_s:
+                                        lines.append(f"      - 作业项：{oi_s}；步骤：{os_s}")
+                                else:
+                                    if pc_s != last_pc:
+                                        lines.append(f"    问题类别：{pc_s}")
+                                        last_pc = pc_s
+                                    if p_s:
+                                        lines.append(f"      - 问题：{p_s}；原因：{rc_s}")
 
                             summary_text = "\n".join(lines).strip()
                             summary_payload = {
@@ -1680,7 +1788,11 @@ async def generate_doc_summary(doc_id: str, user: dict = Depends(require_expert)
                     ki.machine,
                     ki.problem_category,
                     ki.problem,
-                    ki.root_cause
+                    ki.root_cause,
+                    ki.knowledge_type,
+                    ki.operation_category,
+                    ki.operation_item,
+                    ki.operation_steps
                 FROM knowledge_items ki
                 WHERE ki.status = 'active'
                   AND COALESCE(ki.metadata->>'doc_id','') = %s
@@ -1699,7 +1811,11 @@ async def generate_doc_summary(doc_id: str, user: dict = Depends(require_expert)
                         ki.machine,
                         ki.problem_category,
                         ki.problem,
-                        ki.root_cause
+                        ki.root_cause,
+                        ki.knowledge_type,
+                        ki.operation_category,
+                        ki.operation_item,
+                        ki.operation_steps
                     FROM knowledge_items ki
                     WHERE ki.status = 'active'
                       AND COALESCE(ki.metadata->>'filename','') = %s
@@ -1718,13 +1834,17 @@ async def generate_doc_summary(doc_id: str, user: dict = Depends(require_expert)
             last_mc = None
             last_m = None
             last_pc = None
-            for pl, mc, m, pc, p, rc in rows:
+            for pl, mc, m, pc, p, rc, knowledge_type, operation_category, operation_item, operation_steps in rows:
                 pl_s = str(pl or "").strip() or "流水线1"
                 mc_s = str(mc or "").strip() or "通用设备"
                 m_s = str(m or "").strip() or "设备"
                 pc_s = str(pc or "").strip() or "其他"
                 p_s = str(p or "").strip()
                 rc_s = str(rc or "").strip() or "未明确"
+                kt_s = str(knowledge_type or "fault").strip()
+                oc_s = str(operation_category or "").strip()
+                oi_s = str(operation_item or "").strip()
+                os_s = str(operation_steps or "").strip()
                 if pl_s != last_pl:
                     lines.append(f"流水线：{pl_s}")
                     last_pl = pl_s
@@ -1740,11 +1860,18 @@ async def generate_doc_summary(doc_id: str, user: dict = Depends(require_expert)
                     lines.append(f"  机械：{m_s}")
                     last_m = m_s
                     last_pc = None
-                if pc_s != last_pc:
-                    lines.append(f"    问题类别：{pc_s}")
-                    last_pc = pc_s
-                if p_s:
-                    lines.append(f"      - 问题：{p_s}；原因：{rc_s}")
+                if kt_s == "maintenance":
+                    if oc_s and oc_s != last_pc:
+                        lines.append(f"    作业类别：{oc_s}")
+                        last_pc = oc_s
+                    if oi_s:
+                        lines.append(f"      - 作业项：{oi_s}；步骤：{os_s}")
+                else:
+                    if pc_s != last_pc:
+                        lines.append(f"    问题类别：{pc_s}")
+                        last_pc = pc_s
+                    if p_s:
+                        lines.append(f"      - 问题：{p_s}；原因：{rc_s}")
 
             summary_text = "\n".join(lines).strip()
             _dbg_event("E", "built summary text", {"summary_len": len(summary_text), "line_count": len(lines)}, trace_id=trace_id)
@@ -2014,6 +2141,80 @@ async def search_knowledge(query: str, top_k: int = 5):
 @router.post("/items")
 async def create_knowledge_item(payload: KnowledgeItemCreateRequest, enrich: bool = False):
     pipeline = _normalize_pipeline(payload.pipeline)
+    knowledge_type = str(payload.knowledge_type or "fault").strip().lower()
+    machine = _clean_single_line_text(payload.machine, 160)
+    machine_category = _clean_single_line_text(payload.machine_category, 120)
+
+    if knowledge_type == "maintenance":
+        operation_item = _clean_single_line_text(payload.operation_item, 240)
+        operation_category = _clean_single_line_text(payload.operation_category, 120)
+        operation_steps = _clean_single_line_text(payload.operation_steps, 1200)
+        check_standard = _clean_single_line_text(payload.check_standard, 800)
+        precautions = _clean_single_line_text(payload.precautions, 800)
+        _validate_knowledge_item_fields(
+            pipeline, machine_category, machine, "", "", "", "",
+            knowledge_type=knowledge_type,
+            operation_category=operation_category,
+            operation_item=operation_item,
+            operation_steps=operation_steps,
+            check_standard=check_standard,
+            precautions=precautions,
+        )
+
+        with psycopg2.connect(
+            host=settings.DB_HOST, port=settings.DB_PORT,
+            user=settings.DB_USER, password=settings.DB_PASSWORD,
+            database=settings.DB_NAME
+        ) as conn:
+            _ensure_structured_knowledge_tables(conn)
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO knowledge_items (
+                        pipeline, machine_category, machine, problem_category,
+                        problem, root_cause, solution,
+                        knowledge_type, operation_category, operation_item,
+                        operation_steps, check_standard, precautions,
+                        metadata, status
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, 'active')
+                    ON CONFLICT (pipeline, machine, operation_item) WHERE COALESCE(knowledge_type, 'fault') = 'maintenance'
+                        machine_category = EXCLUDED.machine_category,
+                        operation_category = EXCLUDED.operation_category,
+                        operation_steps = EXCLUDED.operation_steps,
+                        check_standard = EXCLUDED.check_standard,
+                        precautions = EXCLUDED.precautions,
+                        metadata = COALESCE(knowledge_items.metadata, '{}'::jsonb) || EXCLUDED.metadata,
+                        status = 'active',
+                        updated_at = NOW()
+                    RETURNING item_id::text
+                    """,
+                    (
+                        pipeline,
+                        machine_category,
+                        machine,
+                        "", "", "", "",
+                        knowledge_type,
+                        operation_category,
+                        operation_item,
+                        operation_steps,
+                        check_standard,
+                        precautions,
+                        json.dumps(payload.metadata or {}, ensure_ascii=False),
+                    ),
+                )
+                item_id = (cur.fetchone() or [None])[0]
+                cur.execute(
+                    """
+                    INSERT INTO knowledge_item_weights (item_id, helpful_weight, misleading_weight, feedback_count, current_weight)
+                    VALUES (%s::uuid, 0, 0, 0, 0.5)
+                    ON CONFLICT (item_id) DO NOTHING
+                    """,
+                    (item_id,),
+                )
+                conn.commit()
+        return {"item_id": item_id}
+
     problem = _clean_single_line_text(payload.problem, 240)
     if not problem:
         raise HTTPException(status_code=400, detail="problem 不能为空")
@@ -2021,8 +2222,6 @@ async def create_knowledge_item(payload: KnowledgeItemCreateRequest, enrich: boo
     if not root_cause:
         raise HTTPException(status_code=400, detail="root_cause 不能为空")
 
-    machine = _clean_single_line_text(payload.machine, 160)
-    machine_category = _clean_single_line_text(payload.machine_category, 120)
     problem_category = _clean_single_line_text(payload.problem_category, 120)
     solution = _clean_single_line_text(payload.solution, 800)
 
@@ -2057,10 +2256,10 @@ async def create_knowledge_item(payload: KnowledgeItemCreateRequest, enrich: boo
                 """
                 INSERT INTO knowledge_items (
                     pipeline, machine_category, machine, problem_category,
-                    problem, root_cause, solution, metadata, status
+                    problem, root_cause, solution, knowledge_type, metadata, status
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, 'active')
-                ON CONFLICT (pipeline, machine, problem, root_cause)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, 'active')
+                ON CONFLICT (pipeline, machine, problem, root_cause) WHERE COALESCE(knowledge_type, 'fault') = 'fault'
                 DO UPDATE SET
                     machine_category = EXCLUDED.machine_category,
                     problem_category = EXCLUDED.problem_category,
@@ -2078,6 +2277,7 @@ async def create_knowledge_item(payload: KnowledgeItemCreateRequest, enrich: boo
                     problem,
                     root_cause,
                     solution,
+                    knowledge_type,
                     json.dumps(payload.metadata or {}, ensure_ascii=False),
                 ),
             )
@@ -2127,6 +2327,12 @@ async def list_knowledge_items(pipeline: str | None = None, status: str = "activ
                     ki.problem,
                     ki.root_cause,
                     ki.solution,
+                    ki.knowledge_type,
+                    ki.operation_category,
+                    ki.operation_item,
+                    ki.operation_steps,
+                    ki.check_standard,
+                    ki.precautions,
                     ki.metadata,
                     ki.status,
                     ki.created_at,
@@ -2149,7 +2355,7 @@ async def list_knowledge_items(pipeline: str | None = None, status: str = "activ
 
     out = []
     for r in rows:
-        metadata = r[8] if isinstance(r[8], dict) else {}
+        metadata = r[14] if isinstance(r[14], dict) else {}
         machine = str(r[3] or "").strip()
         machine_category = _canonicalize_machine_category(r[2], machine)
         problem_category = _canonicalize_problem_category(str(r[4] or "").strip(), str(r[5] or ""), str(r[6] or ""))
@@ -2170,16 +2376,22 @@ async def list_knowledge_items(pipeline: str | None = None, status: str = "activ
                 "problem": r[5],
                 "root_cause": r[6],
                 "solution": r[7],
+                "knowledge_type": str(r[8] or "fault"),
+                "operation_category": str(r[9] or ""),
+                "operation_item": r[10],
+                "operation_steps": r[11],
+                "check_standard": r[12],
+                "precautions": r[13],
                 "metadata": metadata,
-                "status": r[9],
-                "created_at": r[10].isoformat() if r[10] else None,
-                "updated_at": r[11].isoformat() if r[11] else None,
-                "helpful_weight": float(r[12] or 0),
-                "misleading_weight": float(r[13] or 0),
-                "feedback_count": int(r[14] or 0),
-                "current_weight": float(r[15] if r[15] is not None else 0.5),
-                "expert_weight": float(r[16]) if r[16] is not None else None,
-                "effective_weight": float(r[17] if r[17] is not None else (r[15] if r[15] is not None else 0.5)),
+                "status": r[15],
+                "created_at": r[16].isoformat() if r[16] else None,
+                "updated_at": r[17].isoformat() if r[17] else None,
+                "helpful_weight": float(r[18] or 0),
+                "misleading_weight": float(r[19] or 0),
+                "feedback_count": int(r[20] or 0),
+                "current_weight": float(r[21] if r[21] is not None else 0.5),
+                "expert_weight": float(r[22]) if r[22] is not None else None,
+                "effective_weight": float(r[23] if r[23] is not None else (r[21] if r[21] is not None else 0.5)),
             }
         )
     return out
@@ -2292,6 +2504,9 @@ async def cleanup_knowledge_items(payload: KnowledgeItemCleanupRequest, user: di
                     ki.problem_category,
                     ki.problem,
                     ki.root_cause,
+                    ki.knowledge_type,
+                    ki.operation_category,
+                    ki.operation_item,
                     ki.metadata
                 FROM knowledge_items ki
                 WHERE ki.status = 'active'
@@ -2304,19 +2519,44 @@ async def cleanup_knowledge_items(payload: KnowledgeItemCleanupRequest, user: di
 
         to_delete: list[str] = []
         to_update: list[tuple] = []
-        for item_id, mc, m, pc, p, rc, meta in rows:
+        for item_id, mc, m, pc, p, rc, knowledge_type, operation_category, operation_item, meta in rows:
             metadata = meta if isinstance(meta, dict) else {}
             machine = str(m or "").strip()
             machine_category = str(mc or "").strip()
             problem_category = str(pc or "").strip()
             problem = str(p or "").strip()
             root_cause = str(rc or "").strip()
+            kt = str(knowledge_type or "fault").strip().lower()
+            oc = str(operation_category or "").strip()
+            oi = str(operation_item or "").strip()
 
             if not machine:
                 machine = _infer_device_from_filename(str((metadata or {}).get("filename") or "")) if metadata else ""
             machine_category = _canonicalize_machine_category(machine_category, machine)
             if not machine_category and machine:
                 machine_category = _infer_machine_category_from_machine(machine)
+            if kt == "maintenance":
+                if not oc and oi:
+                    oc = _infer_problem_category_from_problem(oi) or "维护"
+                norm_machine = _norm_text(machine)
+                norm_oi = _norm_text(oi)
+                is_noise = False
+                if delete_noise:
+                    if norm_machine in machine_noise_norm:
+                        is_noise = True
+                    if any(k in norm_oi for k in noise_problem_norm if k):
+                        is_noise = True
+                    if _is_noise_phrase(oi):
+                        is_noise = True
+                    if machine_category == "" and (norm_machine in machine_noise_norm or any(k in norm_oi for k in noise_problem_norm if k)):
+                        is_noise = True
+                should_delete = is_noise
+                if should_delete:
+                    to_delete.append(str(item_id))
+                else:
+                    to_update.append((machine_category, machine, oc, str(item_id)))
+                continue
+
             if not problem_category and problem:
                 problem_category = _infer_problem_category_from_problem(problem)
 
@@ -2366,7 +2606,8 @@ async def cleanup_knowledge_items(payload: KnowledgeItemCleanupRequest, user: di
                         UPDATE knowledge_items
                         SET machine_category = %s,
                             machine = %s,
-                            problem_category = %s,
+                            problem_category = CASE WHEN COALESCE(knowledge_type, 'fault') = 'fault' THEN %s ELSE problem_category END,
+                            operation_category = CASE WHEN COALESCE(knowledge_type, 'fault') = 'maintenance' THEN %s ELSE operation_category END,
                             updated_at = NOW()
                         WHERE item_id = %s::uuid
                         """,
@@ -2407,6 +2648,7 @@ async def autofill_knowledge_items(payload: KnowledgeItemAutoFillRequest, user: 
                 FROM knowledge_items ki
                 WHERE ki.status = 'active'
                   AND ki.pipeline = %s
+                  AND COALESCE(ki.knowledge_type, 'fault') = 'fault'
                   AND (
                     COALESCE(ki.machine_category, '') = ''
                     OR COALESCE(ki.machine, '') = ''
@@ -2536,7 +2778,11 @@ async def update_knowledge_item(item_id: str, payload: KnowledgeItemUpdateReques
 
     fields = []
     params: list = []
-    for col in ["pipeline", "machine_category", "machine", "problem_category", "problem", "root_cause", "solution", "status"]:
+    for col in [
+        "pipeline", "machine_category", "machine", "problem_category", "problem",
+        "root_cause", "solution", "knowledge_type", "operation_category",
+        "operation_item", "operation_steps", "check_standard", "precautions", "status",
+    ]:
         v = getattr(payload, col)
         if v is None:
             continue
@@ -2544,6 +2790,10 @@ async def update_knowledge_item(item_id: str, payload: KnowledgeItemUpdateReques
             v = _normalize_pipeline(v)
         if col == "machine_category":
             v = _canonicalize_machine_category(v, payload.machine)
+        if col == "knowledge_type":
+            v = str(v).strip().lower()
+            if v not in {"fault", "maintenance"}:
+                raise HTTPException(status_code=400, detail="knowledge_type 仅支持 fault / maintenance")
         fields.append(f"{col} = %s")
         params.append(v)
     if payload.metadata is not None:
@@ -2604,6 +2854,10 @@ async def search_knowledge_items(payload: KnowledgeItemSearchRequest):
     if pipeline_value:
         filters.append("ki.pipeline = %s")
         params.append(pipeline_value)
+    if payload.knowledge_type:
+        kt = str(payload.knowledge_type).strip().lower()
+        filters.append("COALESCE(ki.knowledge_type, 'fault') = %s")
+        params.append(kt)
     where_sql = " AND ".join(filters)
 
     like = f"%{query}%"
@@ -2625,15 +2879,25 @@ async def search_knowledge_items(payload: KnowledgeItemSearchRequest):
                     ki.problem,
                     ki.root_cause,
                     ki.solution,
+                    ki.knowledge_type,
+                    ki.operation_category,
+                    ki.operation_item,
+                    ki.operation_steps,
+                    ki.check_standard,
+                    ki.precautions,
                     COALESCE(kw.expert_weight, kw.current_weight, 0.5) AS item_weight
                 FROM knowledge_items ki
                 LEFT JOIN knowledge_item_weights kw ON kw.item_id = ki.item_id
                 WHERE {where_sql}
-                  AND (ki.problem ILIKE %s OR ki.root_cause ILIKE %s OR ki.solution ILIKE %s)
+                  AND (
+                    ki.problem ILIKE %s OR ki.root_cause ILIKE %s OR ki.solution ILIKE %s
+                    OR ki.operation_item ILIKE %s OR ki.operation_steps ILIKE %s
+                    OR ki.check_standard ILIKE %s OR ki.precautions ILIKE %s
+                  )
                 ORDER BY item_weight DESC, ki.updated_at DESC
                 LIMIT %s
                 """,
-                (*params, like, like, like, top_k),
+                (*params, like, like, like, like, like, like, like, top_k),
             )
             rows = cur.fetchall() or []
 
@@ -2649,7 +2913,13 @@ async def search_knowledge_items(payload: KnowledgeItemSearchRequest):
                 "problem": r[5],
                 "root_cause": r[6],
                 "solution": r[7],
-                "item_weight": float(r[8] if r[8] is not None else 0.5),
+                "knowledge_type": str(r[8] or "fault"),
+                "operation_category": str(r[9] or ""),
+                "operation_item": r[10],
+                "operation_steps": r[11],
+                "check_standard": r[12],
+                "precautions": r[13],
+                "item_weight": float(r[14] if r[14] is not None else 0.5),
             }
         )
     return {"results": results, "count": len(results), "query": query, "pipeline": pipeline_value or ""}
@@ -2977,10 +3247,11 @@ async def list_manual_entries(pipeline: str = "流水线1", category: str | None
 @router.post("/manual/reextract")
 async def reextract_manual_entries(pipeline: str = "流水线1", use_ai: bool = True, user: dict = Depends(require_expert)):
     pipeline = _normalize_pipeline(pipeline)
-    # 清缓存并强制重建
+    # 清内存缓存和数据库缓存，强制重建
     global _MANUAL_CACHE
     if pipeline in _MANUAL_CACHE:
         _MANUAL_CACHE.pop(pipeline, None)
+    _clear_manual_book_db_cache(pipeline, use_ai=use_ai)
     if use_ai:
         manual = await _build_manual_with_ai(pipeline)
         entries = _flatten_manual_entries(manual)
@@ -3063,6 +3334,80 @@ def _flatten_manual_entries(manual: dict) -> list[dict]:
 _MANUAL_CACHE = {}
 _MANUAL_CACHE_TTL = 3600  # 1 hour
 
+
+def _load_manual_book_from_db(pipeline: str, use_ai: bool = True) -> dict | None:
+    """从数据库加载持久化的规范手册"""
+    try:
+        with psycopg2.connect(
+            host=settings.DB_HOST, port=settings.DB_PORT,
+            user=settings.DB_USER, password=settings.DB_PASSWORD,
+            database=settings.DB_NAME
+        ) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT sections
+                    FROM manual_books
+                    WHERE pipeline = %s AND use_ai = %s
+                    ORDER BY updated_at DESC
+                    LIMIT 1
+                    """,
+                    (pipeline, use_ai),
+                )
+                row = cur.fetchone()
+                if row and row[0]:
+                    sections = row[0]
+                    if isinstance(sections, str):
+                        sections = json.loads(sections)
+                    return {"pipeline": pipeline, "sections": sections}
+    except Exception as e:
+        print(f"[WARN] load manual book from db failed: {e}")
+    return None
+
+
+def _save_manual_book_to_db(pipeline: str, manual: dict, use_ai: bool = True) -> None:
+    """将规范手册持久化到数据库"""
+    try:
+        sections = manual.get("sections", [])
+        with psycopg2.connect(
+            host=settings.DB_HOST, port=settings.DB_PORT,
+            user=settings.DB_USER, password=settings.DB_PASSWORD,
+            database=settings.DB_NAME
+        ) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO manual_books (pipeline, use_ai, sections)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (pipeline, use_ai) DO UPDATE SET
+                        sections = EXCLUDED.sections,
+                        updated_at = NOW()
+                    """,
+                    (pipeline, use_ai, json.dumps(sections, ensure_ascii=False)),
+                )
+                conn.commit()
+    except Exception as e:
+        print(f"[WARN] save manual book to db failed: {e}")
+
+
+def _clear_manual_book_db_cache(pipeline: str, use_ai: bool = True) -> None:
+    """清除数据库中的规范手册缓存（重新生成时用）"""
+    try:
+        with psycopg2.connect(
+            host=settings.DB_HOST, port=settings.DB_PORT,
+            user=settings.DB_USER, password=settings.DB_PASSWORD,
+            database=settings.DB_NAME
+        ) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM manual_books WHERE pipeline = %s AND use_ai = %s",
+                    (pipeline, use_ai),
+                )
+                conn.commit()
+    except Exception as e:
+        print(f"[WARN] clear manual book db cache failed: {e}")
+
+
 async def _build_manual_with_ai(pipeline: str) -> dict:
     global _MANUAL_CACHE
     now = time.time()
@@ -3072,6 +3417,14 @@ async def _build_manual_with_ai(pipeline: str) -> dict:
             return cached_data
 
     pipeline = _normalize_pipeline(pipeline)
+
+    # 优先从数据库读取持久化缓存
+    db_manual = _load_manual_book_from_db(pipeline, use_ai=True)
+    if db_manual:
+        _MANUAL_CACHE[pipeline] = (db_manual, time.time())
+        return db_manual
+
+    base = _extract_manual_entries(pipeline, limit=420)
     base = _extract_manual_entries(pipeline, limit=420)
     grouped: dict[str, list[str]] = {"安全": [], "操作": [], "规范": []}
     for e in base:
@@ -3161,15 +3514,280 @@ async def _build_manual_with_ai(pipeline: str) -> dict:
 
         if cleaned_sections:
             res = {"pipeline": pipeline, "sections": cleaned_sections}
+            _save_manual_book_to_db(pipeline, res, use_ai=True)
             _MANUAL_CACHE[pipeline] = (res, time.time())
             return res
     except Exception:
         pass
 
     res = {"pipeline": pipeline, "sections": _group_fallback_manual(base)}
+    _save_manual_book_to_db(pipeline, res, use_ai=True)
     _MANUAL_CACHE[pipeline] = (res, time.time())
     return res
 
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 规范手册（结构化知识版）—— 普通用户可访问
+# 展示 knowledge_items 中的结构化知识：机械类别 → 机械 → 问题类别 → 问题 → 根因 → 解决方案
+# ─────────────────────────────────────────────────────────────────────────
+
+@router.get("/manual/structured")
+async def list_structured_manual(
+    pipeline: str = "流水线1",
+    machine_category: str | None = None,
+    limit: int = 1000,
+    user: dict = Depends(get_current_user),
+):
+    """列出某流水线下的结构化知识（普通用户可访问，只读）。
+
+    返回按 机械类别 → 机械 分组的结构化知识，便于规范手册页面树形展示。
+    """
+    pipeline_value = _normalize_pipeline(pipeline)
+    lim = max(1, min(int(limit or 1000), 5000))
+    mc_filter = str(machine_category or "").strip()
+
+    with psycopg2.connect(
+        host=settings.DB_HOST, port=settings.DB_PORT,
+        user=settings.DB_USER, password=settings.DB_PASSWORD,
+        database=settings.DB_NAME,
+    ) as conn:
+        _ensure_structured_knowledge_tables(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    ki.item_id::text,
+                    ki.pipeline,
+                    ki.machine_category,
+                    ki.machine,
+                    ki.problem_category,
+                    ki.problem,
+                    ki.root_cause,
+                    ki.solution,
+                    ki.knowledge_type,
+                    ki.operation_category,
+                    ki.operation_item,
+                    ki.operation_steps,
+                    ki.check_standard,
+                    ki.precautions,
+                    ki.metadata,
+                    ki.status,
+                    ki.created_at,
+                    ki.updated_at,
+                    COALESCE(kw.current_weight, 0.5),
+                    kw.expert_weight,
+                    COALESCE(kw.expert_weight, kw.current_weight, 0.5) AS effective_weight
+                FROM knowledge_items ki
+                LEFT JOIN knowledge_item_weights kw ON kw.item_id = ki.item_id
+                WHERE ki.status = 'active'
+                  AND ki.pipeline = %s
+                ORDER BY ki.machine_category ASC, ki.machine ASC, ki.updated_at DESC
+                LIMIT %s
+                """,
+                (pipeline_value, lim),
+            )
+            rows = cur.fetchall() or []
+
+    items = []
+    mc_set = []  # 保留出现顺序
+    mc_seen = set()
+    for r in rows:
+        metadata = r[14] if isinstance(r[14], dict) else {}
+        machine = str(r[3] or "").strip()
+        machine_category = _canonicalize_machine_category(r[2], machine)
+        problem_category = _canonicalize_problem_category(str(r[4] or "").strip(), str(r[5] or "").strip(), str(r[6] or ""))
+        if not machine:
+            machine = _infer_device_from_filename(str((metadata or {}).get("filename") or "")) if metadata else ""
+        machine = _normalize_machine_name(machine) or machine
+        if not machine_category:
+            machine_category = _infer_machine_category_from_machine(machine)
+        if not problem_category:
+            problem_category = _infer_problem_category_from_problem(str(r[5] or ""))
+
+        if machine_category and machine_category not in mc_seen:
+            mc_seen.add(machine_category)
+            mc_set.append(machine_category)
+
+        items.append({
+            "item_id": r[0],
+            "pipeline": r[1],
+            "machine_category": machine_category,
+            "machine": machine,
+            "problem_category": problem_category,
+            "problem": r[5],
+            "root_cause": r[6],
+            "solution": r[7],
+            "knowledge_type": str(r[8] or "fault"),
+            "operation_category": str(r[9] or ""),
+            "operation_item": r[10],
+            "operation_steps": r[11],
+            "check_standard": r[12],
+            "precautions": r[13],
+            "metadata": metadata,
+            "status": r[15],
+            "created_at": r[16].isoformat() if r[16] else None,
+            "updated_at": r[17].isoformat() if r[17] else None,
+            "current_weight": float(r[18] if r[18] is not None else 0.5),
+            "expert_weight": float(r[19]) if r[19] is not None else None,
+            "effective_weight": float(r[20] if r[20] is not None else (r[18] if r[18] is not None else 0.5)),
+        })
+
+    # 可选：按机械类别过滤
+    if mc_filter:
+        items = [x for x in items if str(x.get("machine_category") or "") == mc_filter]
+
+    # 按 机械类别 → 机械 分组
+    groups: dict[str, dict[str, list]] = {}
+    for it in items:
+        mc = str(it.get("machine_category") or "其他")
+        m = str(it.get("machine") or "未指定")
+        groups.setdefault(mc, {}).setdefault(m, []).append(it)
+
+    sections = []
+    for mc in sorted(groups.keys()):
+        machines = groups[mc]
+        machine_sections = []
+        for m in sorted(machines.keys()):
+            machine_sections.append({
+                "machine": m,
+                "count": len(machines[m]),
+                "items": machines[m],
+            })
+        sections.append({
+            "machine_category": mc,
+            "count": sum(x["count"] for x in machine_sections),
+            "machines": machine_sections,
+        })
+
+    return {
+        "pipeline": pipeline_value,
+        "machine_categories": mc_set,
+        "total": len(items),
+        "sections": sections,
+        "items": items,  # 扁平列表，便于表格直接渲染
+    }
+
+
+@router.get("/manual/structured/export/word")
+async def export_structured_manual_word(
+    pipeline: str = "流水线1",
+    user: dict = Depends(get_current_user),
+):
+    """将结构化知识按 机械类别 → 机械 → 问题 层级导出为 Word 文档。"""
+    pipeline_value = _normalize_pipeline(pipeline)
+
+    with psycopg2.connect(
+        host=settings.DB_HOST, port=settings.DB_PORT,
+        user=settings.DB_USER, password=settings.DB_PASSWORD,
+        database=settings.DB_NAME,
+    ) as conn:
+        _ensure_structured_knowledge_tables(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    ki.machine_category,
+                    ki.machine,
+                    ki.problem_category,
+                    ki.problem,
+                    ki.root_cause,
+                    ki.solution,
+                    ki.knowledge_type,
+                    ki.operation_category,
+                    ki.operation_item,
+                    ki.operation_steps,
+                    ki.check_standard,
+                    ki.precautions,
+                    ki.metadata
+                FROM knowledge_items ki
+                WHERE ki.status = 'active'
+                  AND ki.pipeline = %s
+                ORDER BY ki.machine_category ASC, ki.machine ASC, ki.updated_at DESC
+                """,
+                (pipeline_value,),
+            )
+            rows = cur.fetchall() or []
+
+    # 规整 + 分组（与 list_structured_manual 一致）
+    groups: dict[str, dict[str, list]] = {}
+    for r in rows:
+        (
+            mc_raw, m_raw, pc_raw, p, rc, sol,
+            knowledge_type, operation_category, operation_item, operation_steps,
+            check_standard, precautions, meta,
+        ) = r
+        metadata = meta if isinstance(meta, dict) else {}
+        machine = str(m_raw or "").strip()
+        machine_category = _canonicalize_machine_category(mc_raw, machine)
+        problem_category = _canonicalize_problem_category(str(pc_raw or "").strip(), str(p or "").strip(), str(rc or ""))
+        if not machine:
+            machine = _infer_device_from_filename(str((metadata or {}).get("filename") or "")) if metadata else ""
+        machine = _normalize_machine_name(machine) or machine
+        if not machine_category:
+            machine_category = _infer_machine_category_from_machine(machine)
+        if not problem_category:
+            problem_category = _infer_problem_category_from_problem(str(p or ""))
+
+        mc = machine_category or "其他"
+        m = machine or "未指定"
+        groups.setdefault(mc, {}).setdefault(m, []).append({
+            "knowledge_type": str(knowledge_type or "fault"),
+            "problem_category": problem_category or "",
+            "problem": str(p or "").strip(),
+            "root_cause": str(rc or "").strip(),
+            "solution": str(sol or "").strip(),
+            "operation_category": str(operation_category or "").strip(),
+            "operation_item": str(operation_item or "").strip(),
+            "operation_steps": str(operation_steps or "").strip(),
+            "check_standard": str(check_standard or "").strip(),
+            "precautions": str(precautions or "").strip(),
+        })
+
+    doc = Document()
+    doc.add_heading("规范手册（结构化知识）", 0)
+    doc.add_paragraph(f"流水线：{pipeline_value}")
+    doc.add_paragraph(f"导出时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    total = sum(len(items) for machines in groups.values() for items in machines.values())
+    doc.add_paragraph(f"知识条目数：{total}")
+    doc.add_paragraph("")
+
+    if not groups:
+        doc.add_paragraph("暂无结构化知识，请先在知识库中整理。")
+    else:
+        for mc in sorted(groups.keys()):
+            doc.add_heading(f"一、{mc}", level=1)
+            machines = groups[mc]
+            for m in sorted(machines.keys()):
+                items = machines[m]
+                doc.add_heading(f"{m}（共 {len(items)} 条）", level=2)
+                # 用表格呈现：类别 / 作业项或问题 / 步骤或原因 / 标准或方案
+                table = doc.add_table(rows=1, cols=4)
+                table.style = "Table Grid"
+                hdr = table.rows[0].cells
+                hdr[0].text, hdr[1].text, hdr[2].text, hdr[3].text = "类型", "作业项/问题", "步骤/原因", "标准/方案"
+                for it in items:
+                    row = table.add_row().cells
+                    if str(it.get("knowledge_type") or "") == "maintenance":
+                        row[0].text = str(it.get("operation_category") or "维护")[:60]
+                        row[1].text = str(it.get("operation_item") or "")[:300]
+                        row[2].text = str(it.get("operation_steps") or "")[:300]
+                        row[3].text = str(it.get("check_standard") or "")[:500]
+                    else:
+                        row[0].text = str(it.get("problem_category") or "")[:60]
+                        row[1].text = str(it.get("problem") or "")[:300]
+                        row[2].text = str(it.get("root_cause") or "")[:300]
+                        row[3].text = str(it.get("solution") or "")[:500]
+                doc.add_paragraph("")
+
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".docx")
+    doc.save(tmp.name)
+    filename = f"规范手册_结构化知识_{pipeline_value}.docx"
+    return FileResponse(
+        tmp.name,
+        filename=filename,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
 
 @router.get("/graph")
 async def knowledge_graph(pipeline: str = "流水线1"):

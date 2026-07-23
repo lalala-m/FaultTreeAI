@@ -1,4 +1,4 @@
-/* FaultTreeAI - 全局样式 - 浅色简洁主题 */
+/* 故障检修系统 - 全局样式 - 浅色简洁主题 */
 
 :root {
   /* 主色调 */
@@ -42,7 +42,7 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   background: var(--bg-page);
   color: var(--text-primary);
-  min-height: 100vh;
+  min-height: 100dvh;
   overflow-x: hidden;
 }
 
@@ -266,6 +266,11 @@ body {
 
 .table-glass .ant-table-tbody > tr:hover > td {
   background: var(--bg-hover) !important;
+}
+
+/* 禁止表头文字竖排/折行 */
+.ant-table-thead > tr > th {
+  white-space: nowrap !important;
 }
 
 /* 标签样式 */

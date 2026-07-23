@@ -48,6 +48,7 @@ export default defineConfig(({ mode }) => {
     plugins: [react()],
     server: {
       port: 5173,
+      host: true,
       proxy: {
         '/api': {
           target: apiTarget,
@@ -56,14 +57,22 @@ export default defineConfig(({ mode }) => {
       },
     },
     build: {
+      chunkSizeWarningLimit: 1000,
+      sourcemap: false,
+      minify: 'terser',
       rollupOptions: {
         output: {
           manualChunks(id) {
             if (!id.includes('node_modules')) return
+            // 将大型依赖拆分为独立 chunk，减少初始加载内存
             if (id.includes('reactflow')) return 'reactflow'
             if (id.includes('antd')) return 'antd'
+            if (id.includes('@ant-design/icons')) return 'antd-icons'
             if (id.includes('axios')) return 'axios'
-            return
+            if (id.includes('pixi.js')) return 'pixi'
+            if (id.includes('gsap')) return 'gsap'
+            if (id.includes('@byteplus/rtc')) return 'rtc'
+            return 'vendor'
           },
         },
       },

@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+  android:layout_width="match_parent"
+  android:layout_height="wrap_content"
+  android:orientation="vertical"
+  android:padding="24dp">
+
+  <TextView
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:text="服务器设置"
+    android:textSize="18sp"
+    android:textStyle="bold"
+    android:textColor="#1A1A1A" />
+
+  <TextView
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginTop="8dp"
+    android:text="请输入后端服务地址"
+    android:textSize="14sp"
+    android:textColor="#6B7280" />
+
+  <EditText
+    android:id="@+id/et_server_url"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginTop="16dp"
+    android:background="@drawable/bg_input_bar"
+    android:hint="如 http://192.168.43.122:8000"
+    android:padding="12dp"
+    android:textSize="15sp"
+    android:textColor="#1A1A1A"
+    android:textColorHint="#9CA3AF"
+    android:inputType="textUri" />
+
+</LinearLayout>

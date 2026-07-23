@@ -1,11 +1,10 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useMemo, useSyncExternalStore } from 'react'
 import {
-  Card, Upload, Table, Button, Space, Tag, Typography, message, Progress, Empty, Popconfirm, Steps, Alert, Select, Input, Modal, Form, Slider, Tooltip
+  Card, Upload, Table, Button, Space, Tag, Typography, message, Progress, Empty, Popconfirm, Alert, Select, Input, Modal, Form, Slider, Tooltip
 } from 'antd'
 import { 
-  UploadOutlined, 
-  DeleteOutlined, 
-  FileTextOutlined, 
+  DeleteOutlined,
+  FileTextOutlined,
   CheckCircleOutlined,
   InboxOutlined,
   FilePdfOutlined,
@@ -15,16 +14,32 @@ import {
   PlusOutlined
 } from '@ant-design/icons'
 import api from '../services/api.js'
+import { uploadStore } from '../services/uploadStore.js'
+import { uploadDocument } from '../services/api.js'
 
 const { Title, Text, Paragraph } = Typography
 const { Dragger } = Upload
 
+// 可展开单元格：超过指定行数显示“展开”
+const ExpandableCell = ({ text, color, rows = 2 }) => {
+  const content = text || '-'
+  return (
+    <div style={{ color, lineHeight: 1.6 }}>
+      <Paragraph ellipsis={{ rows, expandable: true, symbol: '展开' }} style={{ margin: 0 }}>
+        {content}
+      </Paragraph>
+    </div>
+  )
+}
+
 export default function KnowledgeBase() {
   const [docs, setDocs] = useState([])
-  const [uploading, setUploading] = useState(false)
-  const [progress, setProgress] = useState(0)
+  const uploadTasks = useSyncExternalStore(
+    (callback) => uploadStore.subscribe(callback),
+    () => uploadStore.getSnapshot(),
+    () => uploadStore.getSnapshot()
+  )
   const [loading, setLoading] = useState(true)
-  const [uploadStep, setUploadStep] = useState(0)
   const [uploadPipeline, setUploadPipeline] = useState(() => {
     try {
       return String(window?.localStorage?.getItem('kb_upload_pipeline') || '流水线1') || '流水线1'
@@ -53,12 +68,12 @@ export default function KnowledgeBase() {
   const [expertWeightValue, setExpertWeightValue] = useState(null)
   const [expertWeightSubmitting, setExpertWeightSubmitting] = useState(false)
   const [itemQuery, setItemQuery] = useState('')
+  const [itemTypeFilter, setItemTypeFilter] = useState('all')
   const [docSummaryOpen, setDocSummaryOpen] = useState(false)
   const [docSummaryLoading, setDocSummaryLoading] = useState(false)
   const [docSummaryTitle, setDocSummaryTitle] = useState('')
   const [docSummaryText, setDocSummaryText] = useState('')
   const [itemForm] = Form.useForm()
-  const pollRef = useRef({ token: 0, timer: null })
 
   const loadDocs = async (force = false) => {
     try {
@@ -97,16 +112,19 @@ export default function KnowledgeBase() {
   }
 
   useEffect(() => {
-    loadDocs()
+    // 强制刷新，避免看到旧缓存（特别是从别的页面切回来时）
+    loadDocs(true)
     loadPipelines()
-    return () => {
-      try {
-        if (pollRef.current?.timer) clearTimeout(pollRef.current.timer)
-      } catch {
-      }
-      pollRef.current = { token: 0, timer: null }
-    }
   }, [])
+
+  useEffect(() => {
+    // 有上传任务完成时，刷新文档列表、流水线、结构化知识条目
+    if (uploadTasks.some((t) => t.status === 'completed')) {
+      loadDocs(true)
+      loadPipelines()
+      loadItems(itemsPipeline)
+    }
+  }, [uploadTasks])
 
   useEffect(() => {
     loadItems(itemsPipeline)
@@ -126,77 +144,21 @@ export default function KnowledgeBase() {
     }
   }, [uploadPipeline])
 
-  const handleUpload = async ({ file }) => {
-    setUploading(true)
-    setProgress(0)
-    setUploadStep(1)
-    
-    try {
-      // 步骤1: 上传中
-      setUploadStep(1)
-      await new Promise(r => setTimeout(r, 500))
-      
-      // 步骤2: 解析中
-      setUploadStep(2)
-      setProgress(30)
-      await new Promise(r => setTimeout(r, 500))
-      
-      // 步骤3: 向量化
-      setUploadStep(3)
-      setProgress(60)
-      
-      const p = (uploadPipeline || '').trim() || '流水线1'
-      const uploaded = await api.uploadDocument(file, setProgress, p, true)
-      
-      // 步骤4: 完成
-      setUploadStep(4)
-      setProgress(100)
-      message.success('文档上传完成，已触发生成并入库（后台进行）')
-      await loadDocs()
-      await loadPipelines()
+  const hasActiveUpload = uploadTasks.some((t) => t.status === 'pending' || t.status === 'uploading' || t.status === 'processing')
 
-      if (uploaded?.doc_id) {
-        try {
-          if (pollRef.current?.timer) clearTimeout(pollRef.current.timer)
-        } catch {
-        }
-        const token = Date.now()
-        pollRef.current = { token, timer: null }
+  const handleUpload = async ({ file, onSuccess, onError, onProgress }) => {
+    const p = (uploadPipeline || '').trim() || '流水线1'
+    const task = uploadStore.addTask(file, p, true)
+    // 启动实际上传，进度由 store 内部维护；store 会在完成后自动刷新文档列表
+    uploadStore.startUpload(task.id, (f, _, pipeline, autoExtract) =>
+      uploadDocument(f, onProgress, pipeline, autoExtract)
+    )
+      .then(() => onSuccess?.())
+      .catch((err) => onError?.(err))
+  }
 
-        const tick = async (attempt = 0) => {
-          if (pollRef.current?.token !== token) return
-          let list = null
-          try {
-            api.invalidateCache?.(['documents'])
-            list = await api.listDocuments()
-          } catch {
-          }
-          const arr = Array.isArray(list) ? list : null
-          if (arr) {
-            setDocs(arr)
-            const doc = arr.find((d) => String(d?.doc_id || '') === String(uploaded.doc_id || ''))
-            const structured = String(doc?.structured_kb || '')
-            const summaryStatus = String(doc?.ai_summary_status || '')
-            if (structured && structured !== 'pending' && summaryStatus !== 'pending') {
-              if (String(doc?.pipeline || p) === String(itemsPipeline)) {
-                await loadItems(String(doc?.pipeline || p))
-              }
-              return
-            }
-          }
-          if (attempt >= 240) return
-          pollRef.current.timer = setTimeout(() => tick(attempt + 1), 1500)
-        }
-
-        tick(0)
-      }
-    } catch (err) {
-      message.error('上传失败: ' + (err.response?.data?.detail || err.message))
-      setUploadStep(0)
-    }
-    setUploading(false)
-    setProgress(0)
-    setTimeout(() => setUploadStep(0), 2000)
+  const handleClearCompleted = () => {
+    uploadStore.clearCompleted()
   }
 
   const handleDelete = async (docId) => {
@@ -230,10 +192,18 @@ export default function KnowledgeBase() {
     setCreatingPipeline(false)
   }
 
+  const getKnowledgeTypeLabel = (type) => {
+    const t = String(type || 'fault')
+    if (t === 'maintenance') return { text: '维修类', color: 'orange' }
+    if (t === 'fault') return { text: '故障类', color: 'blue' }
+    return { text: t, color: 'default' }
+  }
+
   // 获取文件图标 - 使用 FileTextOutlined 代替不存在的 FileTxtOutlined
   const getFileIcon = (type) => {
     if (type === 'pdf') return <FilePdfOutlined style={{ color: '#ff4d4f' }} />
     if (type === 'docx' || type === 'doc') return <FileWordOutlined style={{ color: '#1890ff' }} />
+    if (type === 'mp4') return <FileTextOutlined style={{ color: '#722ed1' }} />
     return <FileTextOutlined style={{ color: '#52c41a' }} />
   }
 
@@ -360,139 +330,259 @@ export default function KnowledgeBase() {
     },
   ]
 
-  // 上传步骤
-  const uploadSteps = [
-    { title: '上传文件', icon: <UploadOutlined /> },
-    { title: '解析文本', icon: <FileTextOutlined /> },
-    { title: '生成向量', icon: <InboxOutlined /> },
-    { title: '完成', icon: <CheckCircleOutlined /> },
-  ]
+  const itemColumns = (() => {
+    const baseColumns = [
+      { title: '机械类别', dataIndex: 'machine_category', key: 'machine_category', width: 120, render: (v) => <Text>{v || '-'}</Text> },
+      { title: '机械', dataIndex: 'machine', key: 'machine', width: 140, render: (v) => <Text>{v || '-'}</Text> },
+    ]
 
-  const itemColumns = [
-    { title: '机械类别', dataIndex: 'machine_category', key: 'machine_category', width: 120, render: (v) => <Text>{v || '-'}</Text> },
-    { title: '机械', dataIndex: 'machine', key: 'machine', width: 140, render: (v) => <Text>{v || '-'}</Text> },
-    { title: '问题类别', dataIndex: 'problem_category', key: 'problem_category', width: 120, render: (v) => <Text>{v || '-'}</Text> },
-    {
-      title: '问题',
-      dataIndex: 'problem',
-      key: 'problem',
-      width: 320,
-      render: (v) => (
-        <div style={{ minWidth: 240, whiteSpace: 'normal', wordBreak: 'break-word', lineHeight: 1.6, color: '#1a1a1a' }}>
-          {v || '-'}
-        </div>
-      ),
-    },
-    {
-      title: '导致原因',
-      dataIndex: 'root_cause',
-      key: 'root_cause',
-      width: 180,
-      render: (v) => (
-        <div style={{ minWidth: 140, whiteSpace: 'normal', wordBreak: 'break-word', lineHeight: 1.6, color: '#8c8c8c' }}>
-          {v || '-'}
-        </div>
-      ),
-    },
-    {
-      title: '权重',
-      dataIndex: 'effective_weight',
-      key: 'effective_weight',
-      width: 120,
-      render: (v, row) => {
-        const weight = Number(v)
-        const fallback = Number(row?.current_weight ?? 0.5)
-        const pct = Math.round((Number.isFinite(weight) ? weight : (Number.isFinite(fallback) ? fallback : 0.5)) * 100)
-        const tag = <Tag color={pct >= 70 ? 'green' : pct >= 50 ? 'blue' : 'orange'}>{pct}%</Tag>
-        return row?.expert_weight != null ? <Space size={6}>{tag}<Tag>专家</Tag></Space> : tag
+    const faultColumns = [
+      { title: '问题类别', dataIndex: 'problem_category', key: 'problem_category', width: 120, render: (v) => <Text>{v || '-'}</Text> },
+      {
+        title: '问题',
+        dataIndex: 'problem',
+        key: 'problem',
+        width: 320,
+        render: (v) => <ExpandableCell text={v} color="#1a1a1a" rows={2} />,
       },
-    },
-    {
-      title: '操作',
-      key: 'action',
-      width: 240,
-      render: (_, row) => (
-        <Space size={8}>
-          <Button
-            size="small"
-            onClick={async () => {
-              const key = `${row.item_id}:helpful`
-              setItemWeightSubmitting(prev => ({ ...prev, [key]: true }))
-              try {
-                await api.feedbackKnowledgeItemWeight({ item_id: row.item_id, feedback_type: 'helpful', amount: 1 })
-                await loadItems()
-                message.success('已反馈')
-              } catch (e) {
-                message.error(e.response?.data?.detail || e.message || '反馈失败')
-              }
-              setItemWeightSubmitting(prev => ({ ...prev, [key]: false }))
-            }}
-            loading={!!itemWeightSubmitting[`${row.item_id}:helpful`]}
-          >
-            有效 +1
-          </Button>
-          <Button
-            size="small"
-            danger
-            onClick={async () => {
-              const key = `${row.item_id}:misleading`
-              setItemWeightSubmitting(prev => ({ ...prev, [key]: true }))
-              try {
-                await api.feedbackKnowledgeItemWeight({ item_id: row.item_id, feedback_type: 'misleading', amount: 1 })
-                await loadItems()
-                message.success('已反馈')
-              } catch (e) {
-                message.error(e.response?.data?.detail || e.message || '反馈失败')
-              }
-              setItemWeightSubmitting(prev => ({ ...prev, [key]: false }))
-            }}
-            loading={!!itemWeightSubmitting[`${row.item_id}:misleading`]}
-          >
-            误导 +1
-          </Button>
-          <Button
-            size="small"
-            onClick={() => {
-              setExpertWeightItem(row)
-              const w = row?.expert_weight != null ? Number(row.expert_weight) : (row?.effective_weight != null ? Number(row.effective_weight) : 0.5)
-              setExpertWeightValue(Number.isFinite(w) ? Math.round(w * 100) : 50)
-              setExpertWeightModalOpen(true)
-            }}
-          >
-            专家权重
-          </Button>
-          <Popconfirm
-            title="确认删除此条结构化知识？"
-            onConfirm={async () => {
-              try {
-                await api.deleteKnowledgeItem(row.item_id)
-                await loadItems()
-                message.success('已删除')
-              } catch (e) {
-                message.error(e.response?.data?.detail || e.message || '删除失败')
-              }
-            }}
-          >
-            <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
-          </Popconfirm>
-        </Space>
-      ),
-    },
-  ]
+      {
+        title: '导致原因',
+        dataIndex: 'root_cause',
+        key: 'root_cause',
+        width: 180,
+        render: (v) => <ExpandableCell text={v} color="#8c8c8c" rows={2} />,
+      },
+      {
+        title: '解决方法',
+        dataIndex: 'solution',
+        key: 'solution',
+        width: 180,
+        render: (v) => <ExpandableCell text={v} color="#389e0d" rows={2} />,
+      },
+    ]
 
-  const filteredItems = items.filter(row => {
+    const maintenanceColumns = [
+      { title: '操作类别', dataIndex: 'operation_category', key: 'operation_category', width: 120, render: (v) => <Text>{v || '-'}</Text> },
+      {
+        title: '操作项目',
+        dataIndex: 'operation_item',
+        key: 'operation_item',
+        width: 280,
+        render: (v) => <ExpandableCell text={v} color="#1a1a1a" rows={2} />,
+      },
+      {
+        title: '操作步骤',
+        dataIndex: 'operation_steps',
+        key: 'operation_steps',
+        width: 220,
+        render: (v) => <ExpandableCell text={v} color="#595959" rows={2} />,
+      },
+      {
+        title: '检查标准',
+        dataIndex: 'check_standard',
+        key: 'check_standard',
+        width: 180,
+        render: (v) => <ExpandableCell text={v} color="#1890ff" rows={2} />,
+      },
+      {
+        title: '注意事项',
+        dataIndex: 'precautions',
+        key: 'precautions',
+        width: 180,
+        render: (v) => <ExpandableCell text={v} color="#fa8c16" rows={2} />,
+      },
+    ]
+
+    const combinedColumns = [
+      {
+        title: '知识类型',
+        dataIndex: 'knowledge_type',
+        key: 'knowledge_type',
+        width: 100,
+        render: (v) => {
+          const { text, color } = getKnowledgeTypeLabel(v)
+          return <Tag color={color}>{text}</Tag>
+        },
+      },
+      ...baseColumns,
+      {
+        title: '问题类别/操作类别',
+        key: 'category',
+        width: 140,
+        render: (_, row) => (
+          <Text>{String(row?.knowledge_type || 'fault') === 'maintenance' ? (row?.operation_category || '-') : (row?.problem_category || '-')}</Text>
+        ),
+      },
+      {
+        title: '问题/操作项目',
+        key: 'subject',
+        width: 280,
+        render: (_, row) => {
+          const text = String(row?.knowledge_type || 'fault') === 'maintenance' ? (row?.operation_item || '-') : (row?.problem || '-')
+          return <ExpandableCell text={text} color="#1a1a1a" rows={2} />
+        },
+      },
+      {
+        title: '导致原因/检查标准',
+        key: 'cause_standard',
+        width: 180,
+        render: (_, row) => {
+          const text = String(row?.knowledge_type || 'fault') === 'maintenance' ? (row?.check_standard || '-') : (row?.root_cause || '-')
+          return <ExpandableCell text={text} color="#595959" rows={2} />
+        },
+      },
+      {
+        title: '解决方法/操作步骤',
+        key: 'solution_steps',
+        width: 180,
+        render: (_, row) => {
+          const text = String(row?.knowledge_type || 'fault') === 'maintenance' ? (row?.operation_steps || '-') : (row?.solution || '-')
+          return <ExpandableCell text={text} color="#389e0d" rows={2} />
+        },
+      },
+      {
+        title: '注意事项',
+        dataIndex: 'precautions',
+        key: 'precautions',
+        width: 160,
+        render: (v) => <ExpandableCell text={v} color="#fa8c16" rows={2} />,
+      },
+    ]
+
+    const typeTagColumn = {
+      title: '知识类型',
+      dataIndex: 'knowledge_type',
+      key: 'knowledge_type',
+      width: 100,
+      render: (v) => {
+        const { text, color } = getKnowledgeTypeLabel(v)
+        return <Tag color={color}>{text}</Tag>
+      },
+    }
+
+    let contentColumns = []
+    if (itemTypeFilter === 'fault') {
+      contentColumns = [typeTagColumn, ...baseColumns, ...faultColumns]
+    } else if (itemTypeFilter === 'maintenance') {
+      contentColumns = [typeTagColumn, ...baseColumns, ...maintenanceColumns]
+    } else {
+      contentColumns = combinedColumns
+    }
+
+    return [
+      ...contentColumns,
+      {
+        title: '权重',
+        dataIndex: 'effective_weight',
+        key: 'effective_weight',
+        width: 120,
+        render: (v, row) => {
+          const weight = Number(v)
+          const fallback = Number(row?.current_weight ?? 0.5)
+          const pct = Math.round((Number.isFinite(weight) ? weight : (Number.isFinite(fallback) ? fallback : 0.5)) * 100)
+          const tag = <Tag color={pct >= 70 ? 'green' : pct >= 50 ? 'blue' : 'orange'}>{pct}%</Tag>
+          return row?.expert_weight != null ? <Space size={6}>{tag}<Tag>专家</Tag></Space> : tag
+        },
+      },
+      {
+        title: '操作',
+        key: 'action',
+        width: 300,
+        render: (_, row) => (
+          <Space size={8}>
+            <Button
+              size="small"
+              onClick={async () => {
+                const key = `${row.item_id}:helpful`
+                setItemWeightSubmitting(prev => ({ ...prev, [key]: true }))
+                try {
+                  await api.feedbackKnowledgeItemWeight({ item_id: row.item_id, feedback_type: 'helpful', amount: 1 })
+                  await loadItems()
+                  message.success('已反馈')
+                } catch (e) {
+                  message.error(e.response?.data?.detail || e.message || '反馈失败')
+                }
+                setItemWeightSubmitting(prev => ({ ...prev, [key]: false }))
+              }}
+              loading={!!itemWeightSubmitting[`${row.item_id}:helpful`]}
+            >
+              有效 +1
+            </Button>
+            <Button
+              size="small"
+              danger
+              onClick={async () => {
+                const key = `${row.item_id}:misleading`
+                setItemWeightSubmitting(prev => ({ ...prev, [key]: true }))
+                try {
+                  await api.feedbackKnowledgeItemWeight({ item_id: row.item_id, feedback_type: 'misleading', amount: 1 })
+                  await loadItems()
+                  message.success('已反馈')
+                } catch (e) {
+                  message.error(e.response?.data?.detail || e.message || '反馈失败')
+                }
+                setItemWeightSubmitting(prev => ({ ...prev, [key]: false }))
+              }}
+              loading={!!itemWeightSubmitting[`${row.item_id}:misleading`]}
+            >
+              误导 +1
+            </Button>
+            <Button
+              size="small"
+              onClick={() => {
+                setExpertWeightItem(row)
+                const w = row?.expert_weight != null ? Number(row.expert_weight) : (row?.effective_weight != null ? Number(row.effective_weight) : 0.5)
+                setExpertWeightValue(Number.isFinite(w) ? Math.round(w * 100) : 50)
+                setExpertWeightModalOpen(true)
+              }}
+            >
+              专家权重
+            </Button>
+            <Popconfirm
+              title="确认删除此条结构化知识？"
+              onConfirm={async () => {
+                try {
+                  await api.deleteKnowledgeItem(row.item_id)
+                  await loadItems()
+                  message.success('已删除')
+                } catch (e) {
+                  message.error(e.response?.data?.detail || e.message || '删除失败')
+                }
+              }}
+            >
+              <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
+            </Popconfirm>
+          </Space>
+        ),
+      },
+    ]
+  })()
+
+  const filteredItems = useMemo(() => {
     const q = String(itemQuery || '').trim()
-    if (!q) return true
-    const hay = [
-      row?.machine_category,
-      row?.machine,
-      row?.problem_category,
-      row?.problem,
-      row?.root_cause,
-      row?.solution,
-    ].map(v => String(v || '')).join(' ')
-    return hay.includes(q)
-  })
+    let rows = items
+    if (itemTypeFilter !== 'all') {
+      rows = rows.filter(row => String(row?.knowledge_type || 'fault') === itemTypeFilter)
+    }
+    if (!q) return rows
+    return rows.filter(row => {
+      const hay = [
+        row?.machine_category,
+        row?.machine,
+        row?.knowledge_type,
+        row?.problem_category,
+        row?.problem,
+        row?.root_cause,
+        row?.solution,
+        row?.operation_category,
+        row?.operation_item,
+        row?.operation_steps,
+        row?.check_standard,
+        row?.precautions,
+      ].map(v => String(v || '')).join(' ')
+      return hay.includes(q)
+    })
+  }, [items, itemQuery, itemTypeFilter])
 
   return (
     <div className="page-container">
@@ -530,29 +620,52 @@ export default function KnowledgeBase() {
 
       {/* 上传区域 */}
       <Card className="glass-card kb-upload-card" style={{ marginBottom: 24 }}>
-        {/* 上传进度步骤条 */}
-        {uploading && (
+        {/* 后台任务列表 */}
+        {uploadTasks.length > 0 && (
           <div style={{ marginBottom: 24 }}>
-            <Steps 
-              className="kb-upload-steps"
-              current={uploadStep} 
-              size="small" 
-              status="process"
-              direction="horizontal"
-              responsive={false}
-              items={uploadSteps}
-            />
-          </div>
-        )}
-
-        {/* 上传进度条 */}
-        {uploading && (
-          <div style={{ marginBottom: 24 }}>
-            <div className="flex-between" style={{ marginBottom: 8 }}>
-              <Text>正在处理文档...</Text>
-              <Text>{progress}%</Text>
+            <div className="flex-between" style={{ marginBottom: 12 }}>
+              <Text strong>上传任务（切换页面不会中断）</Text>
+              {uploadTasks.some((t) => t.status === 'completed') && (
+                <Button size="small" onClick={handleClearCompleted}>清空已完成</Button>
+              )}
             </div>
-            <Progress percent={progress} status="active" strokeColor="#1890ff" />
+            <Space direction="vertical" style={{ width: '100%' }} size="middle">
+              {uploadTasks.map((task) => {
+                const statusMap = {
+                  pending: { color: 'default', text: '等待中' },
+                  uploading: { color: 'processing', text: '上传中' },
+                  processing: { color: 'warning', text: 'AI 处理中' },
+                  completed: { color: 'success', text: '已完成' },
+                  failed: { color: 'error', text: '失败' },
+                }
+                const s = statusMap[task.status] || statusMap.pending
+                return (
+                  <div key={task.id} style={{ padding: 12, background: '#f6ffed', borderRadius: 8, border: '1px solid #b7eb8f' }}>
+                    <div className="flex-between" style={{ marginBottom: 8 }}>
+                      <Space>
+                        <Text>{task.filename}</Text>
+                        <Tag color={s.color}>{s.text}</Tag>
+                        {task.error && <Text type="danger" style={{ fontSize: 12 }}>{task.error}</Text>}
+                      </Space>
+                      {task.status !== 'completed' && task.status !== 'failed' && (
+                        <Text type="secondary" style={{ fontSize: 12 }}>可切换页面，后台继续</Text>
+                      )}
+                    </div>
+                    <Progress
+                      percent={task.status === 'completed' ? 100 : Math.min(task.progress || 0, 99)}
+                      status={task.status === 'failed' ? 'exception' : task.status === 'completed' ? 'success' : 'active'}
+                      strokeColor="#1890ff"
+                      size="small"
+                    />
+                    {task.status === 'completed' && (
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        已入库，可刷新列表查看
+                      </Text>
+                    )}
+                  </div>
+                )
+              })}
+            </Space>
           </div>
         )}
 
@@ -563,7 +676,7 @@ export default function KnowledgeBase() {
             value={uploadPipeline}
             onChange={setUploadPipeline}
             options={pipelines.map(v => ({ value: v, label: v }))}
-            disabled={uploading}
+            disabled={hasActiveUpload}
             showSearch
             optionFilterProp="label"
           />
@@ -572,14 +685,14 @@ export default function KnowledgeBase() {
             placeholder="新流水线名称"
             value={newPipelineName}
             onChange={(e) => setNewPipelineName(e.target.value)}
-            disabled={uploading || creatingPipeline}
+            disabled={hasActiveUpload || creatingPipeline}
             onPressEnter={handleCreatePipeline}
           />
           <Button
             icon={<PlusOutlined />}
             onClick={handleCreatePipeline}
             loading={creatingPipeline}
-            disabled={uploading}
+            disabled={hasActiveUpload}
           >
             新建流水线
           </Button>
@@ -588,12 +701,11 @@ export default function KnowledgeBase() {
 
         {/* 上传组件 */}
         <Dragger
-          accept=".pdf,.docx,.doc,.txt"
+          accept=".pdf,.docx,.doc,.txt,.mp4,.avi,.mov,.mkv,.flv,.wmv,.m4v,.webm"
+          customRequest={handleUpload}
           showUploadList={false}
-          beforeUpload={() => false}
-          onChange={handleUpload}
-          disabled={uploading}
-          className={`upload-dragger kb-upload-dragger ${uploading ? 'is-uploading' : ''}`}
+          disabled={hasActiveUpload}
+          className={`upload-dragger kb-upload-dragger ${hasActiveUpload ? 'is-uploading' : ''}`}
         >
           <div style={{ padding: '16px 0' }}>
             <p style={{ fontSize: 48, marginBottom: 16, color: '#1890ff' }}>
@@ -603,7 +715,7 @@ export default function KnowledgeBase() {
               点击或拖拽文件到此处上传
             </p>
             <p style={{ color: '#8c8c8c', fontSize: 13 }}>
-              支持 PDF、Word (.docx/.doc)、TXT 格式
+              支持 PDF、Word (.docx/.doc)、TXT、MP4 格式
             </p>
             <p style={{ color: '#8c8c8c', fontSize: 12, marginTop: 16 }}>
               文件大小限制：50MB以内
@@ -616,7 +728,7 @@ export default function KnowledgeBase() {
       <Card className="glass-card">
         <div className="flex-between" style={{ marginBottom: 16 }}>
           <Text strong style={{ fontSize: 15 }}>已上传文档 ({docs.length})</Text>
-          <Button icon={<CheckCircleOutlined />} onClick={loadDocs} className="btn-secondary">
+          <Button icon={<CheckCircleOutlined />} onClick={() => loadDocs(true)} className="btn-secondary">
             刷新列表
           </Button>
         </div>
@@ -670,6 +782,16 @@ export default function KnowledgeBase() {
               onChange={setItemsPipeline}
               options={pipelines.map(p => ({ value: p, label: p }))}
             />
+            <Select
+              style={{ width: 120 }}
+              value={itemTypeFilter}
+              onChange={setItemTypeFilter}
+              options={[
+                { value: 'all', label: '全部类型' },
+                { value: 'fault', label: '故障类' },
+                { value: 'maintenance', label: '维修类' },
+              ]}
+            />
             <Input
               style={{ width: 260 }}
               placeholder="过滤关键词"
@@ -700,7 +822,8 @@ export default function KnowledgeBase() {
           dataSource={filteredItems}
           rowKey="item_id"
           loading={itemsLoading}
-          scroll={{ x: 1280 }}
+          scroll={{ x: 1800 }}
+          tableLayout="fixed"
           pagination={{ pageSize: 8 }}
           locale={{ emptyText: <Empty description="暂无结构化知识，请新增" /> }}
         />
@@ -714,8 +837,17 @@ export default function KnowledgeBase() {
         confirmLoading={itemSubmitting}
         onOk={async () => {
           try {
-            const values = await itemForm.validateFields()
+            let values = await itemForm.validateFields()
             setItemSubmitting(true)
+            // 兼容后端：当前后端要求 problem/root_cause 非空；维修类时若未填则自动映射
+            if (String(values?.knowledge_type || 'fault') === 'maintenance') {
+              if (!String(values?.problem || '').trim()) {
+                values = { ...values, problem: String(values?.operation_item || '').trim() }
+              }
+              if (!String(values?.root_cause || '').trim()) {
+                values = { ...values, root_cause: String(values?.check_standard || values?.operation_steps || '').trim() }
+              }
+            }
             await api.createKnowledgeItem(values)
             setItemModalOpen(false)
             await loadItems(values.pipeline || itemsPipeline)
@@ -727,9 +859,18 @@ export default function KnowledgeBase() {
           setItemSubmitting(false)
         }}
       >
-        <Form form={itemForm} layout="vertical" initialValues={{ pipeline: itemsPipeline }}>
+        <Form form={itemForm} layout="vertical" initialValues={{ pipeline: itemsPipeline, knowledge_type: 'fault' }}>
           <Form.Item name="pipeline" label="流水线" rules={[{ required: true, message: '请输入流水线' }]}>
             <Input placeholder="例如：流水线1" />
+          </Form.Item>
+          <Form.Item name="knowledge_type" label="知识类型" rules={[{ required: true, message: '请选择知识类型' }]}>
+            <Select
+              options={[
+                { value: 'fault', label: '故障类' },
+                { value: 'maintenance', label: '维修类' },
+              ]}
+              onChange={() => itemForm.validateFields(['knowledge_type'])}
+            />
           </Form.Item>
           <Form.Item name="machine_category" label="机械类别">
             <Input placeholder="例如：变频器" />
@@ -737,17 +878,47 @@ export default function KnowledgeBase() {
           <Form.Item name="machine" label="机械">
             <Input placeholder="例如：1FT7 电机" />
           </Form.Item>
-          <Form.Item name="problem_category" label="问题类别">
-            <Input placeholder="例如：运行异常" />
-          </Form.Item>
-          <Form.Item name="problem" label="问题" rules={[{ required: true, message: '请输入问题' }]}>
-            <Input.TextArea placeholder="例如：电机有异响" autoSize={{ minRows: 2, maxRows: 4 }} />
-          </Form.Item>
-          <Form.Item name="root_cause" label="导致原因">
-            <Input.TextArea placeholder="例如：转子不平衡" autoSize={{ minRows: 2, maxRows: 4 }} />
-          </Form.Item>
-          <Form.Item name="solution" label="解决方法">
-            <Input.TextArea placeholder="例如：重新做动平衡校正" autoSize={{ minRows: 2, maxRows: 4 }} />
+          <Form.Item noStyle shouldUpdate={(prev, curr) => prev.knowledge_type !== curr.knowledge_type}>
+            {({ getFieldValue }) => {
+              const ktype = String(getFieldValue('knowledge_type') || 'fault')
+              if (ktype === 'maintenance') {
+                return (
+                  <>
+                    <Form.Item name="operation_category" label="操作类别">
+                      <Input placeholder="例如：定期保养" />
+                    </Form.Item>
+                    <Form.Item name="operation_item" label="操作项目" rules={[{ required: true, message: '请输入操作项目' }]}>
+                      <Input.TextArea placeholder="例如：主轴润滑脂检查" autoSize={{ minRows: 2, maxRows: 4 }} />
+                    </Form.Item>
+                    <Form.Item name="operation_steps" label="操作步骤">
+                      <Input.TextArea placeholder="例如：1. 停机断电 2. 打开注油口 3. 检查油位" autoSize={{ minRows: 2, maxRows: 4 }} />
+                    </Form.Item>
+                    <Form.Item name="check_standard" label="检查标准">
+                      <Input.TextArea placeholder="例如：油位处于刻度线 1/2 至 2/3 之间" autoSize={{ minRows: 2, maxRows: 4 }} />
+                    </Form.Item>
+                    <Form.Item name="precautions" label="注意事项">
+                      <Input.TextArea placeholder="例如：确认设备已完全断电并悬挂警示牌" autoSize={{ minRows: 2, maxRows: 4 }} />
+                    </Form.Item>
+                  </>
+                )
+              }
+              return (
+                <>
+                  <Form.Item name="problem_category" label="问题类别">
+                    <Input placeholder="例如：运行异常" />
+                  </Form.Item>
+                  <Form.Item name="problem" label="问题" rules={[{ required: true, message: '请输入问题' }]}>
+                    <Input.TextArea placeholder="例如：电机有异响" autoSize={{ minRows: 2, maxRows: 4 }} />
+                  </Form.Item>
+                  <Form.Item name="root_cause" label="导致原因">
+                    <Input.TextArea placeholder="例如：转子不平衡" autoSize={{ minRows: 2, maxRows: 4 }} />
+                  </Form.Item>
+                  <Form.Item name="solution" label="解决方法">
+                    <Input.TextArea placeholder="例如：重新做动平衡校正" autoSize={{ minRows: 2, maxRows: 4 }} />
+                  </Form.Item>
+                </>
+              )
+            }}
           </Form.Item>
         </Form>
       </Modal>
@@ -775,8 +946,14 @@ export default function KnowledgeBase() {
       >
         <Space direction="vertical" size={16} style={{ width: '100%' }}>
           <div>
-            <Text strong style={{ display: 'block', marginBottom: 8 }}>问题</Text>
-            <Text type="secondary">{expertWeightItem?.problem || '-'}</Text>
+            <Text strong style={{ display: 'block', marginBottom: 8 }}>
+              {String(expertWeightItem?.knowledge_type || 'fault') === 'maintenance' ? '操作项目' : '问题'}
+            </Text>
+            <Text type="secondary">
+              {String(expertWeightItem?.knowledge_type || 'fault') === 'maintenance'
+                ? (expertWeightItem?.operation_item || '-')
+                : (expertWeightItem?.problem || '-')}
+            </Text>
           </div>
           <div>
             <Text strong style={{ display: 'block', marginBottom: 8 }}>专家权重</Text>

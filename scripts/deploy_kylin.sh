@@ -1,12 +1,12 @@
 #!/bin/bash
 
-# FaultTreeAI 银河麒麟/Linux 自动化部署脚本
+# 故障检修系统 银河麒麟/Linux 自动化部署脚本
 # 适用环境: 银河麒麟 V10 / Ubuntu / Debian
 
 set -e
 
 echo "==========================================="
-echo "   FaultTreeAI 自动化部署工具 (Kylin/Linux)"
+echo "   故障检修系统 自动化部署工具 (Kylin/Linux)"
 echo "==========================================="
 
 # 1. 检查权限
@@ -19,13 +19,13 @@ fi
 echo "[*] 正在安装系统依赖..."
 if command -v apt &> /dev/null; then
     apt update
-    apt install -y git build-essential python3 python3-dev python3-pip python3-venv \
+    apt install -y git build-essential cmake python3 python3-dev python3-pip python3-venv \
                    libpq-dev nodejs npm postgresql postgresql-contrib \
-                   libgl1-mesa-glx libglib2.0-0 curl
+                   libgl1-mesa-glx libglib2.0-0 curl ffmpeg
 elif command -v dnf &> /dev/null; then
     dnf update -y
-    dnf install -y git gcc gcc-c++ make python3 python3-devel python3-pip \
-                   postgresql-devel nodejs npm mesa-libGL glib2-devel curl
+    dnf install -y git gcc gcc-c++ cmake make python3 python3-devel python3-pip \
+                   postgresql-devel nodejs npm mesa-libGL glib2-devel curl ffmpeg
 else
     echo "[错误] 找不到支持的包管理器 (apt 或 dnf)。请手动安装依赖。"
     exit 1
@@ -62,11 +62,63 @@ else
     docker start faulttree-db
 fi
 
-# 5. 配置后端虚拟环境
+# 5. 配置后端虚拟环境（先进入项目根目录）
 echo "[*] 正在配置后端虚拟环境..."
 # 脚本假设在项目根目录运行
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$SCRIPT_DIR/.."
+
+# 6. 编译 RTC AI Bot（C++ Linux SDK）
+# 注意：以下步骤编号保持 6，原步骤 6 改为 7
+echo "[*] 正在准备 RTC AI Bot..."
+RTC_BOT_DIR="$SCRIPT_DIR/../deploy/vm/rtc_bot"
+if [ -d "$RTC_BOT_DIR" ]; then
+    cd "$RTC_BOT_DIR"
+
+    if [ ! -d "sdk" ]; then
+        SDK_ZIP=$(ls -1 BytePlusRTC_Linux_*.zip 2>/dev/null | head -n1 || true)
+        if [ -z "$SDK_ZIP" ]; then
+            echo "[*] 未找到本地 SDK zip，尝试从官方链接下载..."
+            SDK_URL="https://p9-arcosite.byteimg.com/obj/tos-cn-i-goo7wpa0wc/6f63cec654a14cea94fdb4111e21e37c"
+            SDK_ZIP="BytePlusRTC_Linux_3.60.104.1400_x86_64.zip"
+            if curl -fsSL "$SDK_URL" -o "$SDK_ZIP"; then
+                echo "[✓] SDK 下载成功"
+            else
+                echo "[!] SDK 下载失败。请手动下载 BytePlusRTC Linux SDK x86_64 zip 并放到 $RTC_BOT_DIR 目录下，然后重新运行部署脚本。"
+                SDK_ZIP=""
+            fi
+        fi
+        if [ -n "$SDK_ZIP" ] && [ -f "$SDK_ZIP" ]; then
+            unzip -q "$SDK_ZIP" -d sdk_temp
+            SDK_INNER=$(find sdk_temp -maxdepth 2 -name "include" -type d | head -n1 | xargs dirname 2>/dev/null || true)
+            if [ -n "$SDK_INNER" ]; then
+                mv "$SDK_INNER" sdk
+            else
+                mv sdk_temp sdk
+            fi
+            rm -rf sdk_temp
+        fi
+    fi
+
+    if [ -d "sdk" ]; then
+        mkdir -p build
+        cd build
+        if cmake .. && make -j$(nproc); then
+            echo "[✓] librtc_bot.so 编译成功"
+            if [ -d "$(pwd)/../sdk/lib" ]; then
+                echo "$(pwd)/../sdk/lib" > /etc/ld.so.conf.d/rtc_bot.conf
+                ldconfig
+            fi
+        else
+            echo "[!] librtc_bot.so 编译失败，RTC AI Bot 功能不可用，但后端服务仍可启动。"
+        fi
+    else
+        echo "[!] 未找到 RTC SDK，跳过 Bot 编译。如需启用 AI Bot，请准备 SDK 后重新运行此脚本。"
+    fi
+    cd "$SCRIPT_DIR/.."
+else
+    echo "[!] 未找到 rtc_bot 目录，跳过 Bot 编译"
+fi
 
 if [ ! -d ".venv" ]; then
     if python3 -m venv .venv; then
@@ -82,13 +134,13 @@ source .venv/bin/activate
 pip install --upgrade pip -i https://pypi.tuna.tsinghua.edu.cn/simple
 pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
-# 6. 配置前端环境
+# 7. 配置前端环境
 echo "[*] 正在安装前端依赖并构建..."
 cd frontend
 npm install --registry=https://registry.npmmirror.com
 npm run build
 
-# 7. 生成 .env 文件
+# 8. 生成 .env 文件
 cd ..
 if [ ! -f ".env" ]; then
     cp .env.example .env

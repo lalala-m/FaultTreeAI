@@ -33,7 +33,13 @@ data/chroma_db/
 
 # 向量数据（本地存储，不需要提交）
 data/manuals/
-# data/samples/ - 示例知识库（可提交）
+backend/data/manuals/
+
+# 提交打包目录
+submit/
+
+# 部署环境密钥
+deploy/vm/.env
 
 # IDE
 .vscode/
@@ -76,3 +82,45 @@ yarn-error.log*
 
 # Windows 特殊文件名（避免误生成导致 Git 报错）
 NUL
+
+# BytePlus RTC Linux SDK 二进制（通过 deploy 脚本下载）
+deploy/vm/rtc_bot/sdk/
+deploy/vm/rtc_bot/build/
+
+# 临时下载目录
+.tmp/
+
+# 虚拟机部署目录（由 scripts/sync_deploy_vm.sh 生成，保留 .env 与 rtc_bot）
+deploy/vm/backend/
+deploy/vm/core/
+deploy/vm/data/
+deploy/vm/frontend/
+deploy/vm/scripts/
+deploy/vm/ssl/
+deploy/vm/docker-compose.yml
+deploy/vm/Dockerfile
+deploy/vm/requirements.txt
+deploy/vm/.env.example
+deploy/vm/.env.docker
+deploy/vm/README.md
+
+# Android 构建产物
+android-app/app/build/
+android-app/app/release/
+*.apk
+*.aab
+
+# 前端生产构建产物
+frontend/dist/
+deploy/vm/frontend/dist/
+
+# lark-cli 安装包（通过脚本下载）
+lark-cli-*.tar.gz
+lark-cli-*.zip
+
+# 竞赛提交大文件（演示视频、zip 包）
+deliverables/competition_docs/*.zip
+deliverables/competition_docs/*.mp4
+
+
+ssl/*.pem

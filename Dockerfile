@@ -1,4 +1,4 @@
-# FaultTreeAI Backend Dockerfile
+# 故障检修系统 Backend Dockerfile
 FROM python:3.11-slim
 
 WORKDIR /app

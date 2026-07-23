@@ -25,10 +25,13 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from backend.api import knowledge, generate, validate, export, edit, template, feedback, auth
 from backend.api import llm
 from backend.api import vision  # 视觉识别 API
+from backend.api import realtime  # 实时 AI 通话 WebSocket
+from backend.api import feishu  # 飞书机器人 Webhook
 from backend.core.database.connection import init_db, close_db
 from backend.core.database.psycopg_pool import init_pg_pool, close_pg_pool
 
@@ -40,6 +43,19 @@ async def lifespan(app: FastAPI):
     await init_db()
     init_pg_pool()
     print("[OK] Database initialized (pgvector + schema)")
+    # 打印关键配置状态，便于排查“没有arkkey”类问题
+    try:
+        from backend.config import settings
+        vlm_provider = str(getattr(settings, "VLM_PROVIDER", "") or "").strip()
+        vlm_model = str(getattr(settings, "VLM_MODEL", "") or "").strip()
+        vlm_base_url = str(getattr(settings, "VLM_BASE_URL", "") or "").strip()
+        vlm_api_key = str(getattr(settings, "VLM_API_KEY", "") or "").strip()
+        print(f"[CONFIG] VLM_PROVIDER={vlm_provider or '(未配置)'}")
+        print(f"[CONFIG] VLM_MODEL={vlm_model or '(未配置)'}")
+        print(f"[CONFIG] VLM_BASE_URL={vlm_base_url or '(未配置)'}")
+        print(f"[CONFIG] VLM_API_KEY={'已设置 (' + vlm_api_key[:6] + '...)' if vlm_api_key else '未设置'}")
+    except Exception as e:
+        print(f"[WARN] 读取 VLM 配置失败: {e}")
     yield
     # 退出时：关闭连接池
     await close_db()
@@ -48,7 +64,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="FaultTreeAI",
+    title="故障检修系统",
     version="2.0.0",
     description="基于知识的工业设备故障树智能生成与辅助构建系统",
     lifespan=lifespan,
@@ -75,6 +91,13 @@ app.include_router(template.router, prefix="/api/template", tags=["template"])
 app.include_router(feedback.router, prefix="/api/feedback", tags=["feedback"])
 app.include_router(llm.router, tags=["llm"])
 app.include_router(vision.router, tags=["vision"])
+app.include_router(realtime.router, tags=["realtime"])
+app.include_router(feishu.router, prefix="/api/feishu", tags=["feishu"])
+
+# 静态资源：RTC 视频排查独立页面
+_static_dir = Path(__file__).resolve().parent / "static"
+if _static_dir.exists():
+    app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
 
 
 @app.get("/health")
@@ -90,7 +113,7 @@ def health():
 @app.get("/")
 def root():
     return {
-        "message": "FaultTreeAI API",
+        "message": "故障检修系统 API",
         "docs": "/docs",
         "health": "/health",
     }

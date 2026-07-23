@@ -14,6 +14,7 @@ from pydantic import Field
 import httpx
 
 from backend.config import settings
+from backend.core.llm.async_http import get_async_http_client
 
 
 # ─────────────────────────────────────────────
@@ -112,26 +113,26 @@ class MiniMaxChatModel(BaseChatModel):
             "Content-Type": "application/json",
         }
 
-        async with httpx.AsyncClient(timeout=120) as client:
-            try:
-                response = await client.post(self.base_url, json=payload, headers=headers)
-                response.raise_for_status()
-                data = response.json()
+        client = get_async_http_client()
+        try:
+            response = await client.post(self.base_url, json=payload, headers=headers, timeout=120)
+            response.raise_for_status()
+            data = response.json()
 
-                if data.get("base_resp", {}).get("status_code", 0) != 0:
-                    err_code = data["base_resp"]["status_code"]
-                    err_msg = data["base_resp"].get("status_msg", "未知错误")
-                    raise RuntimeError(f"MiniMax API 错误 [{err_code}]: {err_msg}")
+            if data.get("base_resp", {}).get("status_code", 0) != 0:
+                err_code = data["base_resp"]["status_code"]
+                err_msg = data["base_resp"].get("status_msg", "未知错误")
+                raise RuntimeError(f"MiniMax API 错误 [{err_code}]: {err_msg}")
 
-                content = self._parse_response(data)
-                ai_msg = AIMessage(content=content)
-                generation = ChatGeneration(message=ai_msg)
-                return ChatResult(generations=[generation])
+            content = self._parse_response(data)
+            ai_msg = AIMessage(content=content)
+            generation = ChatGeneration(message=ai_msg)
+            return ChatResult(generations=[generation])
 
-            except httpx.HTTPStatusError as e:
-                raise RuntimeError(f"MiniMax HTTP 请求失败: {e.response.status_code}")
-            except Exception as e:
-                raise RuntimeError(f"MiniMax 异步调用异常: {str(e)}")
+        except httpx.HTTPStatusError as e:
+            raise RuntimeError(f"MiniMax HTTP 请求失败: {e.response.status_code}")
+        except Exception as e:
+            raise RuntimeError(f"MiniMax 异步调用异常: {str(e)}")
 
     def is_available(self) -> bool:
         """检查 MiniMax 服务是否可用"""
@@ -220,24 +221,25 @@ class OllamaChatModel(BaseChatModel):
                 "num_predict": self.max_tokens,
             },
         }
-        async with httpx.AsyncClient(timeout=120) as client:
-            try:
-                response = await client.post(
-                    f"{self.base_url}/api/generate",
-                    json=payload,
-                )
-                response.raise_for_status()
-                data = response.json()
-                if data.get("error"):
-                    raise RuntimeError(f"Ollama 返回错误: {data['error']}")
-                content = data.get("response", "")
-                ai_msg = AIMessage(content=content)
-                generation = ChatGeneration(message=ai_msg)
-                return ChatResult(generations=[generation])
-            except httpx.HTTPStatusError as e:
-                raise RuntimeError(f"Ollama HTTP 请求失败: {e.response.status_code}")
-            except Exception as e:
-                raise RuntimeError(f"Ollama 异步调用异常: {str(e)}")
+        client = get_async_http_client()
+        try:
+            response = await client.post(
+                f"{self.base_url}/api/generate",
+                json=payload,
+                timeout=120,
+            )
+            response.raise_for_status()
+            data = response.json()
+            if data.get("error"):
+                raise RuntimeError(f"Ollama 返回错误: {data['error']}")
+            content = data.get("response", "")
+            ai_msg = AIMessage(content=content)
+            generation = ChatGeneration(message=ai_msg)
+            return ChatResult(generations=[generation])
+        except httpx.HTTPStatusError as e:
+            raise RuntimeError(f"Ollama HTTP 请求失败: {e.response.status_code}")
+        except Exception as e:
+            raise RuntimeError(f"Ollama 异步调用异常: {str(e)}")
 
     def is_available(self) -> bool:
         """检查 Ollama 服务是否可用"""

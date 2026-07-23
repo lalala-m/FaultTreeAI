@@ -1,95 +1,48 @@
+
 @echo off
-chcp 65001 >nul 2>&1
-setlocal EnableDelayedExpansion
-
-set "PROJECT_ROOT=%~dp0"
-set "PROJECT_ROOT=%PROJECT_ROOT:~0,-1%"
-set "BACKEND_DIR=%PROJECT_ROOT%\backend"
-set "FRONTEND_DIR=%PROJECT_ROOT%\frontend"
-set "VENV_DIR=%PROJECT_ROOT%\.venv"
-
-echo.
-echo ===========================================
-echo FaultTreeAI Startup Script
-echo ===========================================
+chcp 65001 >nul
+echo ========================================
+echo   故障检修系统 一键启动
+echo ========================================
 echo.
 
-REM Check Python
-where python >nul 2>&1
+REM 检查是否存在 .env 文件
+if not exist ".env" (
+    echo [提示] 未找到 .env 文件，正在从 .env.example 创建...
+    copy ".env.example" ".env"
+    echo.
+    echo [!] 请编辑 .env 文件配置您的 API 密钥！
+    echo.
+)
+
+REM 检查 SSL 证书
+if not exist "ssl\cert.pem" (
+    echo [提示] 未找到 SSL 证书，正在生成...
+    python tools\generate_cert.py
+    echo.
+)
+
+echo [*] 正在启动服务...
+echo.
+
+REM 尝试用 docker compose（新版本），失败则用 docker-compose（旧版本）
+docker compose up -d --build 2>nul
 if errorlevel 1 (
-    echo [X] Python not found
-    pause
-    exit /b 1
+    docker-compose up -d --build
 )
-echo [OK] Python found
-
-REM Check Node.js
-where node >nul 2>&1
-if errorlevel 1 (
-    echo [X] Node.js not found
-    pause
-    exit /b 1
-)
-echo [OK] Node.js found
-
-REM Check PostgreSQL port 5432
-netstat -an | findstr "5432" | findstr "LISTENING" >nul 2>&1
-if errorlevel 1 (
-    echo [!] PostgreSQL not running on port 5432
-    echo     Try: docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=faulttree123 pgvector/pgvector:pg16
-    pause
-    exit /b 1
-)
-echo [OK] PostgreSQL is running
-
-REM Create venv if not exists
-if not exist "%VENV_DIR%\Scripts\python.exe" (
-    echo [*] Creating virtual environment...
-    python -m venv "%VENV_DIR%"
-)
-
-REM Install Python deps
-echo [*] Installing Python dependencies...
-call "%VENV_DIR%\Scripts\pip.exe" install -r "%PROJECT_ROOT%\requirements.txt" -q
-echo [OK] Python dependencies installed
-
-REM Install Node deps
-if not exist "%FRONTEND_DIR%\node_modules" (
-    echo [*] Installing npm dependencies...
-    cd /d "%FRONTEND_DIR%"
-    call npm install -q
-    cd /d "%PROJECT_ROOT%"
-)
-echo [OK] npm dependencies installed
-
-REM Check .env file
-if not exist "%PROJECT_ROOT%\.env" (
-    echo [!] .env file not found, copying from .env.example...
-    copy "%PROJECT_ROOT%\.env.example" "%PROJECT_ROOT%\.env"
-)
-echo [OK] .env file ready
 
 echo.
-echo ===========================================
-set "BACKEND_HOST=127.0.0.1"
-if "%BACKEND_PORT%"=="" set "BACKEND_PORT=8000"
-echo Starting Backend on http://%BACKEND_HOST%:%BACKEND_PORT%
-echo ===========================================
-start "FaultTreeAI Backend" cmd /k "cd /d %BACKEND_DIR% && %VENV_DIR%\Scripts\python.exe -m uvicorn main:app --reload --host %BACKEND_HOST% --port %BACKEND_PORT%"
-
-timeout /t 2 >nul
-
+echo ========================================
+echo   启动完成！
+echo ========================================
 echo.
-echo ===========================================
-echo Starting Frontend on http://localhost:5173
-echo ===========================================
-start "FaultTreeAI Frontend" cmd /k "cd /d %FRONTEND_DIR% && set VITE_API_TARGET=http://%BACKEND_HOST%:%BACKEND_PORT% && npm run dev"
-
+echo 访问地址：
+echo   - HTTP (浏览器): http://localhost:5173
+echo   - HTTPS (App): https://192.168.43.122:8443
+echo   - API 文档: http://localhost:8000/docs
 echo.
-echo ===========================================
-echo Done! Check the new windows for status.
-echo Open: http://localhost:5173
-echo API Docs: http://%BACKEND_HOST%:%BACKEND_PORT%/docs
-echo ===========================================
+echo 查看日志: docker compose logs -f ^(或 docker-compose logs -f^)
+echo 停止服务: docker compose down ^(或 docker-compose down^)
 echo.
 pause
+

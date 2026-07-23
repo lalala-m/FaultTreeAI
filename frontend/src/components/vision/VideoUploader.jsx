@@ -3,11 +3,23 @@
  * 支持视频文件上传、逐帧识别
  */
 
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { Button, Card, Space, Slider, message, List } from 'antd';
-import { VideoCameraOutlined, PlayCircleOutlined, PauseCircleOutlined, StepForwardOutlined, DeleteOutlined, ThunderboltOutlined } from '@ant-design/icons';
+import { VideoCameraOutlined, PlayCircleOutlined, PauseCircleOutlined, StepForwardOutlined, DeleteOutlined, ThunderboltOutlined, CloudUploadOutlined } from '@ant-design/icons';
 
-export default function VideoUploader({ onFrameCapture, onDetect, disabled = false }) {
+const getApiBaseUrl = () => {
+  const envUrl = import.meta.env.VITE_API_URL || ''
+  if (!envUrl) return ''
+  try {
+    const env = new URL(envUrl, window.location.href)
+    if (env.protocol !== window.location.protocol) return ''
+    return envUrl
+  } catch {
+    return envUrl
+  }
+}
+
+export default function VideoUploader({ onFrameCapture, onDetect, disabled = false, autoExtract = true }) {
   const [videoFile, setVideoFile] = useState(null);
   const [videoUrl, setVideoUrl] = useState(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -18,6 +30,8 @@ export default function VideoUploader({ onFrameCapture, onDetect, disabled = fal
   
   const videoRef = useRef(null);
   const fileInputRef = useRef(null);
+  const autoExtractedRef = useRef(false);
+  const extractRef = useRef(null);
 
   const handleFileSelect = useCallback((event) => {
     const file = event.target.files?.[0];
@@ -39,14 +53,30 @@ export default function VideoUploader({ onFrameCapture, onDetect, disabled = fal
     setFrames([]);
     setCurrentTime(0);
     setIsPlaying(false);
+    autoExtractedRef.current = false;
     message.success('视频已加载');
   }, []);
 
   const handleLoadedMetadata = useCallback(() => {
     if (!videoRef.current) return
     const d = Number(videoRef.current.duration)
-    if (Number.isFinite(d) && d > 0) setDuration(d)
+    if (Number.isFinite(d) && d > 0) {
+      setDuration(d)
+    }
   }, []);
+
+  const handleLoadedData = useCallback(() => {
+    if (!videoRef.current) return
+    const d = Number(videoRef.current.duration)
+    if (Number.isFinite(d) && d > 0) {
+      setDuration(d)
+    }
+    if (autoExtract && !autoExtractedRef.current && !extracting) {
+      autoExtractedRef.current = true
+      // 稍延迟一点，让浏览器有机会完成首帧解码
+      window.setTimeout(() => extractRef.current?.(), 600)
+    }
+  }, [autoExtract, extracting]);
 
   const handleDurationChange = useCallback(() => {
     if (!videoRef.current) return
@@ -75,6 +105,11 @@ export default function VideoUploader({ onFrameCapture, onDetect, disabled = fal
     if (!videoRef.current) return;
     
     const video = videoRef.current;
+    if (!video.videoWidth || !video.videoHeight || video.readyState < 2) {
+      message.error('视频尚未准备好，请等待加载完成');
+      return;
+    }
+
     const canvas = document.createElement('canvas');
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
@@ -82,10 +117,14 @@ export default function VideoUploader({ onFrameCapture, onDetect, disabled = fal
     ctx.drawImage(video, 0, 0);
     
     const imageData = canvas.toDataURL('image/jpeg', 0.85);
-    
+    if (!imageData || imageData.length < 100 || imageData === 'data:,' || imageData === 'data:image/jpeg;base64,') {
+      message.error('当前帧画面为空，请等待视频加载完成后再捕获');
+      return
+    }
+
     const newFrame = { id: Date.now(), time: video.currentTime, image: imageData };
     setFrames(prev => [...prev, newFrame]);
-    
+
     if (onFrameCapture) onFrameCapture(newFrame);
     message.success(`已捕获第 ${frames.length + 1} 帧`);
   }, [frames.length, onFrameCapture]);
@@ -124,35 +163,87 @@ export default function VideoUploader({ onFrameCapture, onDetect, disabled = fal
     })
   }, [])
 
-  const _waitFrame = useCallback((video) => {
-    return new Promise((resolve) => {
-      const cb = () => resolve()
-      if (typeof video.requestVideoFrameCallback === 'function') {
-        video.requestVideoFrameCallback(() => cb())
-        setTimeout(cb, 800)
-        return
+  // 等待视频画面尺寸就绪；某些浏览器/编码下需要触发播放才能拿到 videoWidth
+  const _waitVideoDimensions = useCallback(async (video) => {
+    const maxWaitMs = 4000
+    const start = Date.now()
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+    let triedPlay = false
+    while (Date.now() - start < maxWaitMs) {
+      const vw = Number(video.videoWidth || 0)
+      const vh = Number(video.videoHeight || 0)
+      if (vw > 0 && vh > 0) return { width: vw, height: vh }
+      // 如果尺寸还没出来，尝试触发一次解码（静音播放再暂停）
+      if (!triedPlay && video.paused && video.muted === false) {
+        try { video.muted = true } catch {}
       }
-      setTimeout(cb, 120)
-    })
+      if (!triedPlay && video.paused) {
+        try {
+          const playPromise = video.play()
+          if (playPromise && typeof playPromise.then === 'function') {
+            playPromise.then(() => {
+              setTimeout(() => { try { video.pause() } catch {} }, 80)
+            }).catch(() => {})
+          }
+        } catch {}
+        triedPlay = true
+      }
+      await sleep(200)
+    }
+    return { width: Number(video.videoWidth || 0), height: Number(video.videoHeight || 0) }
   }, [])
 
-  const _isMostlyBlack = useCallback((ctx, w, h) => {
-    const sw = Math.max(16, Math.min(64, Math.floor(w / 10)))
-    const sh = Math.max(16, Math.min(48, Math.floor(h / 10)))
-    const x = Math.max(0, Math.floor((w - sw) / 2))
-    const y = Math.max(0, Math.floor((h - sh) / 2))
+  const _extractFramesViaBackend = useCallback(async (file) => {
+    if (!file) return
+    const API_URL = getApiBaseUrl()
+    const endpoint = API_URL ? `${API_URL}/api/vision/video/extract-frames` : '/api/vision/video/extract-frames'
+    setExtracting(true)
     try {
-      const data = ctx.getImageData(x, y, sw, sh).data
-      let sum = 0
-      for (let i = 0; i < data.length; i += 16) {
-        sum += data[i] + data[i + 1] + data[i + 2]
+      const formData = new FormData()
+      formData.append('video', file)
+      formData.append('max_seconds', '10')
+      formData.append('max_frames', '24')
+      const resp = await fetch(endpoint, {
+        method: 'POST',
+        body: formData,
+      })
+      if (!resp.ok) {
+        let detail = ''
+        try {
+          const errJson = await resp.json()
+          detail = errJson?.detail || errJson?.message || errJson?.error || ''
+        } catch {
+          detail = resp.statusText
+        }
+        message.error(`服务器抽帧失败: ${detail || resp.statusText}`)
+        return
       }
-      const samples = Math.floor(data.length / 16)
-      const avg = sum / (samples * 3)
-      return avg < 8
-    } catch {
-      return false
+      const data = await resp.json()
+      const backendFrames = (data.frames || []).filter(f => f.image)
+      if (backendFrames.length === 0) {
+        message.error('服务器未能从视频中抽取有效帧')
+        return
+      }
+      const mapped = backendFrames.map((f, idx) => ({
+        id: Date.now() + idx,
+        time: f.time,
+        image: f.image,
+      }))
+      setFrames(mapped)
+      mapped.forEach(f => onFrameCapture?.(f))
+      message.success(`服务器已抽取 ${mapped.length} 帧并开始识别`)
+      onDetect?.(mapped)
+    } catch (e) {
+      console.error('服务器抽帧失败:', e)
+      message.error('服务器抽帧失败，请检查网络或后端 ffmpeg')
+    } finally {
+      setExtracting(false)
     }
+  }, [onFrameCapture, onDetect])
+
+  const _isValidFrameImage = useCallback((dataUrl) => {
+    const s = String(dataUrl || '')
+    return s.length > 100 && s.startsWith('data:image/') && s.includes(',') && s.split(',')[1].length > 50
   }, [])
 
   const extractKeyFramesAndDetect = useCallback(async () => {
@@ -164,142 +255,91 @@ export default function VideoUploader({ onFrameCapture, onDetect, disabled = fal
       await _waitReady(videoRef.current)
       const d = Number(videoRef.current.duration)
       if (!(Number.isFinite(d) && d > 0)) {
-        message.error('视频元信息未加载或不支持该视频编码')
+        // 浏览器连时长都读不到，说明编码不支持，直接走服务器抽帧
+        if (videoFile) {
+          return await _extractFramesViaBackend(videoFile)
+        }
+        message.error('视频元信息未加载或不支持该视频编码，请尝试 MP4/H.264 格式')
         return
       }
       setDuration(d)
     }
     setExtracting(true);
-    
+
     try {
       const maxSeconds = 10
-      const maxFrames = 150
+      const maxFrames = 24
       const newFrames = [];
       const video = videoRef.current
       const wasPlaying = !video.paused
       const prevPlaybackRate = Number(video.playbackRate || 1)
       try { video.pause() } catch {}
       await _waitReady(video)
+
+      const { width: vw, height: vh } = await _waitVideoDimensions(video)
+      if (!vw || !vh) {
+        // 前端读不到尺寸时，尝试由后端 ffmpeg 抽帧
+        if (videoFile) {
+          return await _extractFramesViaBackend(videoFile)
+        }
+        message.error('无法读取视频画面尺寸，可能是当前浏览器不支持该视频编码（如 H.265/HEVC/AV1），请尝试转换为 MP4/H.264 后重试')
+        return
+      }
+
       const canvas = document.createElement('canvas');
-      const vw = Number(video.videoWidth || 1280)
-      const vh = Number(video.videoHeight || 720)
       const maxSide = 768
       const scale = Math.min(1, maxSide / Math.max(vw, vh))
       canvas.width = Math.max(1, Math.round(vw * scale))
       canvas.height = Math.max(1, Math.round(vh * scale))
-      let ctx = null
-      try {
-        ctx = canvas.getContext('2d', { willReadFrequently: true })
-      } catch {
-        ctx = canvas.getContext('2d')
-      }
+      const ctx = canvas.getContext('2d')
       if (!ctx) throw new Error('无法创建 Canvas 上下文')
 
       let lastCommitLen = 0
       const commitFrames = (force = false) => {
-        if (!force && (newFrames.length - lastCommitLen) < 8) return
+        if (!force && (newFrames.length - lastCommitLen) < 4) return
         lastCommitLen = newFrames.length
         setFrames([...newFrames])
       }
       setFrames([])
-      
+
       const segment = Math.min(duration, maxSeconds)
+      // 均匀抽取：把 segment 分成 maxFrames 段，每段取中间一帧
+      const count = Math.max(1, Math.min(maxFrames, Math.floor(segment * 3)))
+      const step = segment / count
 
-      const startTime = 0
-      await _seekTo(video, startTime)
-      await _waitFrame(video)
-
-      const useRVFC = typeof video.requestVideoFrameCallback === 'function'
-      if (useRVFC) {
-        let stop = false
-        let take = true
-        let rafId = null
-
-        const finish = async () => {
-          if (stop) return
-          stop = true
+      for (let i = 0; i < count; i += 1) {
+        const t = Math.min(segment - 0.001, Math.max(0, (i + 0.5) * step))
+        await _seekTo(video, t)
+        await _waitReady(video)
+        if (video.paused === false) {
           try { video.pause() } catch {}
-          if (rafId != null) {
-            try { video.cancelVideoFrameCallback?.(rafId) } catch {}
-          }
         }
-
-        await new Promise((resolve) => {
-          const onFrame = (_now, metadata) => {
-            if (stop) {
-              resolve()
-              return
-            }
-            const t = Number(metadata?.mediaTime ?? video.currentTime ?? 0)
-            if (t >= segment || newFrames.length >= maxFrames) {
-              finish().finally(resolve)
-              return
-            }
-
-            if (take) {
-              try {
-                ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-                const frame = { id: Date.now() + newFrames.length, time: t, image: canvas.toDataURL('image/jpeg', 0.75) }
-                newFrames.push(frame)
-                onFrameCapture?.(frame)
-                commitFrames(false)
-              } catch {
-              }
-            }
-            take = !take
-            rafId = video.requestVideoFrameCallback(onFrame)
+        try {
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+          const imageData = canvas.toDataURL('image/jpeg', 0.75)
+          if (_isValidFrameImage(imageData)) {
+            const frame = { id: Date.now() + i, time: t, image: imageData }
+            newFrames.push(frame)
+            onFrameCapture?.(frame)
+            commitFrames(false)
           }
-
-          try {
-            try {
-              video.muted = true
-              video.playbackRate = 8
-            } catch {
-            }
-            video.play().then(() => {
-              rafId = video.requestVideoFrameCallback(onFrame)
-            }).catch(() => {
-              stop = true
-              resolve()
-            })
-          } catch {
-            stop = true
-            resolve()
-          }
-        })
-      } else {
-        const stepSeconds = 2 / 30
-        let t = 0
-        let guard = 0
-        while (t < segment && newFrames.length < maxFrames && guard < 500) {
-          guard += 1
-          await _seekTo(video, t)
-          try {
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-            if (!_isMostlyBlack(ctx, canvas.width, canvas.height)) {
-              const frame = { id: Date.now() + newFrames.length, time: t, image: canvas.toDataURL('image/jpeg', 0.75) }
-              newFrames.push(frame)
-              onFrameCapture?.(frame)
-              commitFrames(false)
-            }
-          } catch {
-          }
-          t += stepSeconds
+        } catch {
         }
+        if (newFrames.length >= maxFrames) break
       }
-      
+
       commitFrames(true)
       if (newFrames.length === 0) {
         message.error('未能从视频中抽取有效画面（可能是编码不支持或视频全黑）')
         return
       }
       if (duration > maxSeconds) {
-        message.success(`已抽取前 ${maxSeconds}s 的 ${newFrames.length} 帧（隔帧抽取）并开始识别`)
+        message.success(`已自动抽取前 ${maxSeconds}s 的 ${newFrames.length} 帧并开始识别`)
       } else {
-        message.success(`已抽取 ${newFrames.length} 帧（隔帧抽取）并开始识别`)
+        message.success(`已自动抽取 ${newFrames.length} 帧并开始识别`)
       }
       onDetect?.(newFrames)
-      
+
       try { video.currentTime = 0 } catch {}
       try { video.playbackRate = prevPlaybackRate } catch {}
       if (wasPlaying) {
@@ -311,7 +351,7 @@ export default function VideoUploader({ onFrameCapture, onDetect, disabled = fal
     } finally {
       setExtracting(false);
     }
-  }, [duration, onFrameCapture, onDetect, _seekTo, _waitReady, _waitFrame, _isMostlyBlack]);
+  }, [duration, onFrameCapture, onDetect, _seekTo, _waitReady, _waitVideoDimensions, _extractFramesViaBackend, _isValidFrameImage]);
 
   const removeFrame = useCallback((frameId) => {
     setFrames(prev => prev.filter(f => f.id !== frameId));
@@ -325,10 +365,15 @@ export default function VideoUploader({ onFrameCapture, onDetect, disabled = fal
     setVideoUrl(null);
     setFrames([]);
     setCurrentTime(0);
+    autoExtractedRef.current = false;
     if (fileInputRef.current) fileInputRef.current.value = '';
   }, [videoUrl]);
 
   const formatTime = (seconds) => `${Math.floor(seconds / 60)}:${Math.floor(seconds % 60).toString().padStart(2, '0')}`;
+
+  useEffect(() => {
+    extractRef.current = extractKeyFramesAndDetect
+  }, [extractKeyFramesAndDetect])
 
   return (
     <Card size="small" title="视频识别"
@@ -349,9 +394,21 @@ export default function VideoUploader({ onFrameCapture, onDetect, disabled = fal
       {videoUrl && (
         <>
           <div style={{ position: 'relative', background: '#000', borderRadius: 8, overflow: 'hidden' }}>
-            <video ref={videoRef} src={videoUrl} onLoadedMetadata={handleLoadedMetadata} onDurationChange={handleDurationChange} onTimeUpdate={handleTimeUpdate}
-              onPlay={() => setIsPlaying(true)} onPause={() => setIsPlaying(false)} onEnded={() => setIsPlaying(false)}
-              style={{ width: '100%', display: 'block' }} />
+            <video
+              ref={videoRef}
+              src={videoUrl}
+              preload="auto"
+              playsInline
+              webkit-playsinline="true"
+              onLoadedMetadata={handleLoadedMetadata}
+              onLoadedData={handleLoadedData}
+              onDurationChange={handleDurationChange}
+              onTimeUpdate={handleTimeUpdate}
+              onPlay={() => setIsPlaying(true)}
+              onPause={() => setIsPlaying(false)}
+              onEnded={() => setIsPlaying(false)}
+              style={{ width: '100%', display: 'block' }}
+            />
           </div>
           
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
@@ -366,8 +423,11 @@ export default function VideoUploader({ onFrameCapture, onDetect, disabled = fal
                 {isPlaying ? '暂停' : '播放'}
               </Button>
               <Button icon={<StepForwardOutlined />} onClick={captureFrame}>捕获当前帧</Button>
-              <Button icon={<ThunderboltOutlined />} onClick={extractKeyFramesAndDetect} loading={extracting} disabled={disabled || extracting || !(Number.isFinite(duration) && duration > 0)}>
-                隔一帧抽一帧并识别
+              <Button type="primary" icon={<ThunderboltOutlined />} onClick={extractKeyFramesAndDetect} loading={extracting} disabled={disabled || extracting || !(Number.isFinite(duration) && duration > 0)}>
+                自动抽取关键帧并识别
+              </Button>
+              <Button icon={<CloudUploadOutlined />} onClick={() => _extractFramesViaBackend(videoFile)} loading={extracting} disabled={disabled || extracting || !videoFile}>
+                服务器抽帧
               </Button>
             </Space>
           </div>
